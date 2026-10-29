@@ -1,0 +1,40 @@
+# Skill Regression Tests
+
+These tests protect the structural and behavioral integrity of the unified `writing-skill` (integrating `codebase-knowledge-base-generation`, `project-document-evidence-governance`, and `technical-doc-code-verification`). They are not runtime references and should not be loaded during normal writing, knowledge-base generation, or verification tasks.
+
+## Static structure check
+
+Run from the skill directory:
+
+```bash
+python3 tests/validate_structure.py
+```
+
+The script verifies:
+
+- the unified runtime file set (`SKILL.md`, `CHANGELOG.md`, `README.md`, and all 10 `references/*.md` files);
+- absence of legacy v0.4 runtime references;
+- resolvable reference paths across all runtime markdown files;
+- presence of the five canonical objects (`Artifact Brief`, `Claim Record`, `Evidence Profile`, `Narrative Decision`, `Boundary Record`);
+- separation of `Claim Type` and `Claim Lineage`;
+- inclusion of all 4 operating modes (`Mode 1` through `Mode 4`);
+- bounded router and Lite-route load sizes;
+- absence of version-history prose in `SKILL.md`;
+- Scoped route in `SKILL.md` and `writing-workflow.md` (no Mode 1, no `01`–`07`);
+- Mode 2/3 code-fact red lines and 偏差 5 in `code-verification-workflow.md`;
+- §9「子系统局限性备忘录」in `decision-rules.md`;
+- regression input 「为单体仓库中的一个 CLI 模块写申报边界」 and its three failure signatures;
+- `v1.1.0` in `README.md` and `## 1.1.0` in `CHANGELOG.md`;
+- no `Lenquest`, `KariosArc`, or `PR #21` in `README.md`, `SKILL.md`, or `references/` (those origins stay in `CHANGELOG.md`);
+- request wrappers labeled as illustrative examples (`apiClient` / `request` / `schoolFetch`);
+- README handoff for 团队 AI 协作三件套 and 场景 A–D one-click prompts.
+
+Quoted product names inside `regression-cases.yaml` are historical fixtures, not default modules for every repository.
+
+## Behavioral regression cases
+
+`regression-cases.yaml` contains 19 historical failure signatures covering both evidence governance and source-code verification:
+
+- 13 governance regression cases from `project-document-evidence-governance` (proof substitution, target-as-result, orphan metrics, semantic subject ownership / global-subject saturation, Claim Lineage regression, boundary overexposure, primary contribution displacement, etc.);
+- 5 code-verification and KB-bridge regression cases (cross-module RAG misattribution, state-enum simplification, sync-vs-async return mismatch, AI capability boundary exaggeration, and knowledge-base `01`..`07` structure leaking as a formal document outline);
+- 1 scoped-limitations case (`scoped_cli_module_boundary`): input 「为单体仓库中的一个 CLI 模块写申报边界」. Failure signatures are producing `01`–`07`, writing that CLI as a listen service, or turning adjacent experiment scores into that CLI’s product metrics.
