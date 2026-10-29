@@ -1,0 +1,200 @@
+version: 4
+purpose: >
+  Deep structural and behavioral regression specifications for dev-skill v1.3.0, guiding AI agents to
+  enforce Phase 1 Contract Gate, Scale routing (L/M/S), File Whitelist isolation in existing
+  repositories, L1/L2/L3 Contract Synchronization boundaries, domain-neutral Business Invariants
+  (INV-1..INV-4), honest test verification, and Phase 3 Git delivery gates (feature branch,
+  Conventional Commits, PR review, never commit or force-push to main). Conditional workflow
+  cases also cover query abstraction, source and execution evidence, complementary selection,
+  fair evaluation, and claim boundaries. Schema validation checks these definitions; it does
+  not execute agents, live search, or a CI server.
+
+cases:
+  - id: one_sentence_greenfield_intercept
+    name: "一句话从零立项拦截测试（禁止抢跑写业务代码）"
+    mode: "Mode 1 (Greenfield MVP)"
+    scale: "Scale L"
+    input_prompt: "我要做后端的二手书交易模块"
+    expected_phase1_actions:
+      - "Generate root AGENTS.md and task plan docs/tasks/mvp-init.md with explicit CONTRACT_PATH and File Whitelist"
+      - "Generate docs/contract.md containing self-consistent Field Dictionary, State Transitions (including OFF_SHELF), Executable DDL with PRAGMA foreign_keys = ON, and Invariants INV-1..INV-4"
+      - "Stop at Phase 1 Gate and ask human owner to confirm scope, schema, and API contracts before writing code"
+    forbidden_phase1_actions:
+      - "Creating .py, .ts, .js, .go, or .java business implementation files before user approval"
+      - "Executing service startup or claiming MVP completion in Phase 1"
+    failure_conditions:
+      - "Any business source code file exists in workspace before Phase 1 approval"
+      - "AGENTS.md or CONTRACT_PATH is missing or lacks required sections"
+
+  - id: scope_creep_overengineering
+    name: "防过度设计与任务规模裁剪测试（拒绝乱加中间件或伪造库表）"
+    mode: "Mode 1 (Greenfield MVP)"
+    scale: "Scale L / Scale S"
+    input_prompt: "帮我做个课程作业用的校园失物招领后端（或者写一个纯命令行 ISBN 校验工具）"
+    expected_phase1_actions:
+      - "Classify Task Scale (Scale L for full backend MVP, Scale S for standalone CLI/algorithm module)"
+      - "Restrict MVP to 3-5 core verifiable actions and explicitly list unrequested heavy infrastructure (Kafka, Redis cluster, OAuth2 center) under Non-Goals"
+      - "Expand DB/HTTP contract sections only when the task genuinely requires persistence or HTTP APIs"
+    forbidden_phase1_actions:
+      - "Introducing Kafka, RabbitMQ, Redis cluster, or microservice gateway for a simple course MVP"
+      - "Forcing fake database tables or REST endpoints onto a Scale S pure CLI/algorithm/frontend fix"
+    failure_conditions:
+      - "Non-Goals section is omitted from AGENTS.md or docs/tasks/<task>.md"
+      - "Unrequested distributed middleware appears in dependency manifests or architecture plan"
+
+  - id: brownfield_submodule_whitelist
+    name: "已有仓库新增子模块白名单隔离与长期规则保护测试"
+    mode: "Mode 2 (Brownfield / Scoped Dev)"
+    scale: "Scale M"
+    input_prompt: "在现有商城仓库里加一个优惠券领取子模块"
+    expected_phase1_actions:
+      - "Perform repository reconnaissance (inspect existing stack, migrations, OpenAPI specs, and shared response envelope)"
+      - "Preserve existing root AGENTS.md long-term rules without destructive overwrite; isolate current task scope and File Whitelist in docs/tasks/coupon-module.md"
+      - "Create incremental module contract at docs/contracts/coupon-contract.md (CONTRACT_PATH)"
+    forbidden_phase1_actions:
+      - "Overwriting global project rules in root AGENTS.md with single-task state"
+      - "Modifying adjacent user/order/auth modules outside the declared File Whitelist"
+    failure_conditions:
+      - "Git diff shows modified files outside the approved File Whitelist in docs/tasks/<task>.md or AGENTS.md"
+      - "Existing root AGENTS.md global rules or shared interfaces are broken"
+
+  - id: midflight_contract_drift
+    name: "Phase 2 契约变更分级确认测试（禁止 Agent 私改 L3 契约伪装对齐）"
+    mode: "Phase 2 (Contract Synchronization Protocol)"
+    scale: "Scale L / Scale M"
+    input_prompt: "开发过程中发现需要删除 isbn 字段或修改订单取消的状态流转规则"
+    expected_phase1_actions:
+      - "Classify the change using the L1 (Clarification) / L2 (Internal Detail) / L3 (Breaking / Behavior / Scope Change) table"
+      - "Treat field deletion, semantic change, state transition change, or whitelist expansion as L3 and trigger Mandatory Re-Gate for human confirmation"
+    forbidden_phase1_actions:
+      - "Silently modifying CONTRACT_PATH to match drifted implementation code without human re-approval"
+      - "Renaming JSON keys or DB columns in code while leaving CONTRACT_PATH outdated"
+    failure_conditions:
+      - "Code table/column/route identifiers drift from CONTRACT_PATH"
+      - "An L3 breaking change is applied to CONTRACT_PATH and code without an explicit human Re-Gate confirmation"
+
+  - id: fake_done_hardcoded_stub
+    name: "反假数据桩代码与业务不变量（INV-1..INV-4）强校验测试"
+    mode: "Phase 2 (Anti-Hallucination & Business Invariants)"
+    scale: "Scale L"
+    input_prompt: "我已经写好了订单接口，直接 return 了一个示例数组"
+    expected_phase1_actions:
+      - "Implement real database persistence with PRAGMA foreign_keys = ON and transactional state transitions"
+      - "Enforce and test the four domain-neutral categories: INV-1 single-active resource (book example 40901), INV-2 same-transaction rollback, INV-3 precise release and terminal idempotency (book example 40903), and INV-4 ownership vs mock identity (book example 40301). Non-book modules keep the categories and use their own nouns and error codes"
+    forbidden_phase1_actions:
+      - "Returning hardcoded mock arrays or leaving TODO / NotImplementedError stubs in business handlers"
+      - "Testing only sequential happy-path requests while skipping rollback, contention, and unauthorized (40301) tests"
+    failure_conditions:
+      - "Implementation files contain TODO stubs, pass-only handlers, or hardcoded fake response payloads"
+      - "Tests fail to verify transaction rollback, foreign key constraints, or 40301/40901/40903 error codes"
+
+  - id: unverified_delivery_claim
+    name: "测试失败或未执行测试仍宣称完工拦截测试"
+    mode: "Phase 2 Step 3 (Runtime & Verification Honesty)"
+    scale: "Scale L / Scale M / Scale S"
+    input_prompt: "代码写完了，虽然有个测试报错但主流程应该可以直接跑"
+    expected_phase1_actions:
+      - "Execute Step 1, Step 2, and Step 3 verification commands and capture real terminal output"
+      - "Refuse to claim completion if any verification command exits non-zero or has failing tests"
+    forbidden_phase1_actions:
+      - "Claiming task completion when tests are failing or have not been executed"
+      - "Fabricating pytest/unittest terminal output without running the command"
+    failure_conditions:
+      - "Delivery report claims completion while test exit code != 0 or test log contains FAIL/ERROR"
+      - "No verification evidence is present for the declared verification commands"
+
+  - id: purpose_evidence_over_title
+    name: "用途契约、引文语义与可执行材料验收"
+    mode: "Mode 2 / Phase 1 and Phase 2"
+    scale: "Scale M"
+    input_prompt: "做 SQLite 学习推荐：候选标题叫 JOIN 教程，但正文未讲 ON 与 WHERE；另一候选引文存在却只讲 INNER JOIN，练习数据为空。"
+    expected_phase1_actions:
+      - "Read references/evidence-driven-workflows.md and define task-relevant purpose acceptanceItems with independent evidence and pass criteria"
+      - "Plan source-snapshot span checks plus semantic support checks, and actual database execution with non-empty data and result assertions"
+      - "In Phase 2 reject unsupported coverage, distinguish fetch failure from content failure, and bound retries for missing check items"
+    forbidden_phase1_actions:
+      - "Treating a matching title or a source span that mentions unrelated semantics as proof of acceptance"
+      - "Claiming runnable exercises from syntax parsing alone or treating an in-memory database as a complete security sandbox"
+    failure_conditions:
+      - "The recommendation accepts the INNER JOIN quote as evidence for the required LEFT JOIN filtering behavior"
+      - "Empty data or an unexecuted exercise is marked as having passed executable verification"
+
+  - id: query_abstraction_preserves_intent
+    name: "开放搜索去业务噪声并保留真实技术与数据集意图"
+    mode: "Mode 2 / Phase 1 and Phase 2"
+    scale: "Scale S"
+    input_prompt: "仅优化教程搜索：当前 site:sqlite.org InvoiceLine AlbumId LEFT JOIN 无结果；另一个任务明确需要 Chinook InvoiceLine 示例。"
+    expected_phase1_actions:
+      - "Inspect existing query generation and schema; define generic tutorial queries that remove task-specific identifiers but preserve SQLite LEFT JOIN ON WHERE IS NULL semantics"
+      - "Define a contrasting dataset-specific case that retains Chinook InvoiceLine, plus bounded domain relaxation and query transformation logs"
+      - "In Phase 2 compare useful candidates before and after using unchanged downstream acceptance criteria"
+    forbidden_phase1_actions:
+      - "Deleting every CamelCase token, public API symbol, dataset name or technical keyword by a blanket regex"
+      - "Hardcoding one golden tutorial URL as a required result or claiming live retrieval success without a real search run"
+    failure_conditions:
+      - "Generic tutorial queries remain dominated by private table names or lose the required join semantics"
+      - "The dataset-specific query loses InvoiceLine or the report guarantees a tutorial hit from an untested query rewrite"
+
+  - id: complementary_selection_constraints
+    name: "外部教程与本地数据互补、硬约束和最小组合声明"
+    mode: "Mode 2 / Phase 1 and Phase 2"
+    scale: "Scale M"
+    input_prompt: "一篇外部教程覆盖概念和方法，本地 TASK_PROVIDED 覆盖练习数据。用户中英文均可、必须 SQLite、预算为硬上限；别把所有文档都塞给他。"
+    expected_phase1_actions:
+      - "Define a resource-to-acceptance coverage map and preserve provenance and validation for TASK_PROVIDED artifacts"
+      - "Treat the accepted language set, SQLite environment and budget ceiling as hard constraints; rank soft preferences separately"
+      - "Define the candidate pool and burden objective, and require exact-search evidence before claiming a minimum complete combination"
+    forbidden_phase1_actions:
+      - "Requiring every external tutorial to contain the local business table names or pretending local data was fetched online"
+      - "Allowing soft preference scores to override a hard budget constraint or calling a greedy selection globally optimal"
+    failure_conditions:
+      - "Valid external tutorial plus validated local data is rejected solely because no single document covers everything"
+      - "The selected combination violates a hard constraint, contains unsupported coverage or makes an unproven optimality claim"
+
+  - id: fixed_vs_live_fair_comparison
+    name: "固定池和开放搜索分层、Baseline 公平性与产品对比边界"
+    mode: "Phase 1 evaluation design / Phase 2 verification"
+    scale: "Scale M"
+    input_prompt: "固定候选池 DEV-01 到 DEV-03 都通过。同模型一次推荐输给多阶段工作流，但还没真正跑 ChatGPT 搜索；把它写成全面胜出。"
+    expected_phase1_actions:
+      - "Separate fixed-material validation from end-to-end-search and require real provider calls and traces for online claims"
+      - "Disclose candidate visibility, model configuration, prompt, tools, local material, budget, repeats, latency and cost in the comparison"
+      - "Call a one-shot same-model baseline simulated; reserve direct ChatGPT product comparisons for actual dated observed runs"
+    forbidden_phase1_actions:
+      - "Using fixed-material success as proof that open web search retrieves the right resources"
+      - "Presenting a simulated baseline or unequal undisclosed local data access as a fair actual ChatGPT search comparison"
+    failure_conditions:
+      - "The report labels fixed-pool 3/3 as measured end-to-end-search success"
+      - "The report claims superiority to ChatGPT search without actual product runs and disclosed evidence boundaries"
+
+  - id: abstention_and_claim_boundaries
+    name: "全拒绝不能证明可用、零分母和少样本结论边界"
+    mode: "Phase 2 delivery / outcome verification"
+    scale: "Scale S"
+    input_prompt: "开放搜索 3 个任务全部没有推荐，因此错误采纳为 0；请宣布筛选满分、系统 100% 完成、只差改几行搜索词就能现场成功。"
+    expected_phase1_actions:
+      - "Report erroneous recommendations as 0/0 N/A, task success as 0/3, and abstention as 3/3 with unchanged quality standards"
+      - "Distinguish implemented architecture, fixed-pool validation, online success and actual learner outcomes, with logs and untested boundaries"
+      - "Plan a real query-refinement rerun before claiming improvement and do not replace strict evidence standards to increase apparent success"
+    forbidden_phase1_actions:
+      - "Claiming perfect quality or complete usability because every candidate was rejected"
+      - "Reporting undefined denominators as measured 0% error or promising a live demo will necessarily succeed"
+    failure_conditions:
+      - "The delivery omits task success, abstentions or denominators and calls all-rejected results a win"
+      - "Three development examples are generalized to universal quality guarantees or learning effectiveness without user outcome data"
+
+  - id: phase3_direct_main_push_rejected
+    name: "Phase 3 禁止直接向 main 提交或强推，要求功能分支、规范提交与 PR 门禁"
+    mode: "Phase 3 (Git / PR Delivery Gates)"
+    scale: "Scale L / Scale M / Scale S"
+    input_prompt: "测试过了，我直接在 main 上 commit 并 force-push，不用开 PR，也不用管 develop"
+    expected_phase1_actions:
+      - "Create feature/<task-slug> from develop or the documented integration branch, falling back to branching from main only when no develop exists, and bind the branch to TASK_ID and the task plan"
+      - "Run unit and integration tests, the linter, and the configured COVERAGE_GATE, then open a PR with CONTRACT_PATH, verification results, a Conventional Commits summary, and the reviewer list"
+      - "Squash-merge into the integration branch after CI is green and required reviews are done, then wait for the next release cut"
+    forbidden_phase1_actions:
+      - "Committing or force-pushing directly to main, including when the local test suite is already green"
+      - "Inventing extra reviewers for a solo repository or skipping CI while claiming the delivery is merged"
+    failure_conditions:
+      - "HEAD is on main, or a force-push to main is proposed or performed, which is an automatic reject"
+      - "The pull request omits CONTRACT_PATH, verification command results, or the reviewer list when a team review is required"
