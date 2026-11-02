@@ -1,0 +1,6 @@
+# 实测版本（2026-11-02 / Python 3.13.14）
+langgraph==1.2.19
+langchain-core==1.7.3
+
+# 仅测试需要
+pytest==9.2.0
