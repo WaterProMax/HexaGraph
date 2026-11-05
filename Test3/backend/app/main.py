@@ -32,7 +32,11 @@ async def lifespan(app: FastAPI):
     gateway = Gateway(models, provider, data_dir=settings.data_dir())
     app.state.workbench = Workbench(gateway, RoleRegistry(roles), settings.data_dir())
     app.state.settings = settings
-    yield
+    app.state.workbench.start_loop()
+    try:
+        yield
+    finally:
+        await app.state.workbench.stop_loop()
 
 
 def create_app() -> FastAPI:

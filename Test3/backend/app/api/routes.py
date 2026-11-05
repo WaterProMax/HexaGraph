@@ -35,6 +35,10 @@ class ControlBody(BaseModel):
     payload: dict[str, Any] = {}
 
 
+class ConfirmBody(BaseModel):
+    confirm: bool = False
+
+
 def wb(request: Request) -> Workbench:
     return request.app.state.workbench
 
@@ -155,8 +159,13 @@ async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/terminate")
-async def terminate_run(run_id: str, request: Request) -> dict[str, Any]:
-    return _run_view(wb(request).set_run_control(_run(request, run_id), "terminate"))
+async def terminate_run(run_id: str, body: ConfirmBody, request: Request) -> dict[str, Any]:
+    if not body.confirm:
+        raise HTTPException(400, "终止运行需二次确认")
+    try:
+        return _run_view(wb(request).set_run_control(_run(request, run_id), "terminate", confirm=True))
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/runs/{run_id}/budget")

@@ -30,8 +30,8 @@
 | POST | `/gates/{id}/resolve` | `decision` + `payload` |
 | GET | `/runs/{id}/tasks` | 任务列表 |
 | GET | `/tasks/{id}` | 任务详情 |
-| POST | `/tasks/{id}/{action}` | pause/resume/retry/skip/takeover/force-pass/patch |
-| POST | `/runs/{id}/pause` `/resume` `/terminate` | 运行级控制 |
+| POST | `/tasks/{id}/{action}` | pause/resume/retry/skip/takeover/submit-takeover/force-pass/patch |
+| POST | `/runs/{id}/pause` `/resume` `/terminate` | 运行级控制；终止必须 `{confirm: true}` |
 | GET | `/runs/{id}/budget` | used / limit / per_point / warn |
 | PATCH | `/runs/{id}/limits` | 覆盖该运行上限并写事件 |
 | GET | `/runs/{id}/trace` | 追溯边 |

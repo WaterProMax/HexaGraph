@@ -10,5 +10,8 @@ describe("control buttons", () => {
     expect(controlEnabled("resume", "running")).toBe(true);
     expect(controlEnabled("resume", "verifying")).toBe(true);
     expect(controlEnabled("pause", "running")).toBe(true);
+    expect(controlEnabled("takeover", "running")).toBe(true);
+    expect(controlEnabled("submit-takeover", "needs_human")).toBe(true);
+    expect(controlEnabled("takeover", "done")).toBe(false);
   });
 });

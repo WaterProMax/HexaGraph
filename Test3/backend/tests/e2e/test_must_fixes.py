@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -155,15 +156,20 @@ async def test_accept_runs_tests_and_requires_reason(tmp_path: Path) -> None:
     report = run.artifacts["acceptance"]
     assert report["features"][0]["result"] == "未通过"
     assert report["features"][0]["reason"]
+    assert run.crs
+    assert run.crs[0]["kind"] == "小变更"
+    assert run.crs[0].get("source") == "acceptance" or "验收未通过" in run.crs[0]["description"]
     run.engine.current = "8"
     with pytest.raises(ValidationFailed):
         await bench.resolve_gate(run, result["gate"]["id"], "approve", {})
     done = await bench.resolve_gate(run, result["gate"]["id"], "approve", {"reason": "人工确认剩余项"})
     assert done["status"] == "done"
+    assert run.artifacts.get("build_tag") == "build-1.0"
+    assert (Path(run.artifacts["release_dir"]) / "acceptance.json").exists()
 
 
 @pytest.mark.asyncio
-async def test_decide_cr_does_not_mark_applied(tmp_path: Path) -> None:
+async def test_decide_cr_marks_applied_and_bumps_1_1(tmp_path: Path) -> None:
     bench, provider = _bench(
         tmp_path,
         [
@@ -175,12 +181,31 @@ async def test_decide_cr_does_not_mark_applied(tmp_path: Path) -> None:
     run = _ready_run(bench, _card())
     run.tasks["T-01"]["state"] = "done"
     run.trace.link("F1", "T-01", "spec_item → task")
+    run.artifacts["spec"]["features"].append(
+        {
+            "code": "F2",
+            "kind": "功能",
+            "title": "untouched",
+            "scenario": "S1",
+            "priority": "P1",
+            "impact": "x",
+            "acceptance": ["a"],
+            "manual": [False],
+            "sources": ["初步做法"],
+        }
+    )
+    f2_before = copy.deepcopy(next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F2"))
     gate = await bench.submit_cr(run, "改查询页", ["F1"], kind="小变更")
     cr = gate["gate"]["payload"]["cr"]
     assert cr["eval_flags"]["red_line"] is True
     assert cr["kind"] == "小变更"
     decided = await bench.decide_cr(run, {"code": cr["code"], "decision": "批准"})
-    assert decided["status"] != "applied"
+    assert decided["status"] == "applied"
+    assert decided["applied_version"] == "1.1"
+    assert run.artifacts["baseline_SPEC"] == "1.1"
+    assert run.artifacts.get("spec_1.0")
+    f2_after = next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F2")
+    assert f2_after == f2_before
     assert run.tasks["T-01"]["state"] == "ready"
     assert any(e["kind"] == "task.state_changed" and e["payload"].get("event") == "change_impact" for e in run.events)
 

@@ -93,13 +93,26 @@ def merge(repo: Path, branch: str) -> dict[str, object]:
         code, out = _git_sync(repo, "merge", "--no-ff", "-m", f"merge {branch}", branch)
         if code != 0:
             _git_sync(repo, "merge", "--abort")
-            conflicts = [line for line in out.splitlines() if line.endswith("FAILED")]
+            conflicts = []
+            for line in out.splitlines():
+                if "Merge conflict in " in line:
+                    conflicts.append(line.split("Merge conflict in ", 1)[1].strip())
+                elif line.endswith("FAILED"):
+                    conflicts.append(line)
             return {"ok": False, "conflicts": conflicts or ["conflict"], "before": before.strip(), "output": out}
         return {"ok": True, "conflicts": [], "before": before.strip(), "output": out}
 
 
 def rollback_merge(repo: Path, before_sha: str) -> None:
     _git_sync(repo, "reset", "--hard", before_sha)
+
+
+def tag_build(repo: Path, version: str) -> str:
+    name = f"build-{version}"
+    code, out = _git_sync(repo, "tag", "-f", name)
+    if code != 0:
+        raise RuntimeError(out)
+    return name
 
 
 def is_merged(repo: Path, branch: str, into: str = "HEAD") -> bool:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,7 +54,16 @@ from app.stage.engine import StageEngine
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
 from app.trace.service import TraceGraph
-from app.workspace.gitops import changed_files, commit, create_worktree, dirty_files, init_repo_sync, merge, rollback_merge
+from app.workspace.gitops import (
+    changed_files,
+    commit,
+    create_worktree,
+    dirty_files,
+    init_repo_sync,
+    merge,
+    rollback_merge,
+    tag_build,
+)
 
 
 @dataclass
@@ -91,6 +102,43 @@ class Workbench:
         self.roles = load_roles()
         self.profile = load_profile()
         self._token_mark = 0
+        self._loop_task: asyncio.Task[None] | None = None
+        self._loop_stop: asyncio.Event | None = None
+        self.schedule_interval = 5.0
+
+    def start_loop(self) -> None:
+        if self._loop_task and not self._loop_task.done():
+            return
+        self._loop_stop = asyncio.Event()
+        self._loop_task = asyncio.create_task(self._schedule_loop())
+
+    async def stop_loop(self) -> None:
+        if self._loop_stop:
+            self._loop_stop.set()
+        if self._loop_task:
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except (asyncio.CancelledError, RuntimeError):
+                pass
+            self._loop_task = None
+
+    async def _schedule_loop(self) -> None:
+        stop = self._loop_stop
+        while stop and not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self.schedule_interval)
+                break
+            except TimeoutError:
+                pass
+            for run in list(self.runs.values()):
+                if run.paused or run.status in {"done", "terminated"}:
+                    continue
+                if run.artifacts.get("plan") and run.tasks:
+                    try:
+                        await self.schedule_once(run)
+                    except Exception:  # noqa: BLE001
+                        continue
 
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
         run.events.append(
@@ -282,8 +330,36 @@ class Workbench:
             raise ValidationFailed("验收未通过，人工确认必须写理由")
         run.engine.apply("acceptance_confirmed")
         self._freeze(run, "BUILD")
+        self._export_release(run)
         run.status = "done"
-        return {"status": "done", "pass": passed, "manual": (not passed), "reason": reason}
+        return {
+            "status": "done",
+            "pass": passed,
+            "manual": (not passed),
+            "reason": reason,
+            "release": run.artifacts.get("release_dir"),
+            "tag": run.artifacts.get("build_tag"),
+        }
+
+    def _export_release(self, run: RunState) -> Path:
+        repo = self.data_dir / "runs" / run.id / "repo"
+        dest = self.data_dir / "runs" / run.id / "release"
+        dest.mkdir(parents=True, exist_ok=True)
+        version = str(run.artifacts.get("baseline_BUILD") or "1.0")
+        if (repo / ".git").exists():
+            try:
+                run.artifacts["build_tag"] = tag_build(repo, version)
+            except RuntimeError:
+                run.artifacts["build_tag"] = f"build-{version}"
+            code_dir = dest / "code"
+            if code_dir.exists():
+                shutil.rmtree(code_dir)
+            shutil.copytree(repo, code_dir, ignore=shutil.ignore_patterns(".git"))
+        for name, key in (("SPEC.json", "spec"), ("DESIGN.json", "design"), ("PLAN.json", "plan"), ("acceptance.json", "acceptance")):
+            (dest / name).write_text(json.dumps(run.artifacts.get(key) or {}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (dest / "trace.json").write_text(json.dumps(run.trace.matrix(), ensure_ascii=False, indent=2), encoding="utf-8")
+        run.artifacts["release_dir"] = str(dest)
+        return dest
 
     async def run_discussion_step(
         self,
@@ -468,6 +544,7 @@ class Workbench:
             }
             for src in task.sources:
                 run.trace.link(src, task.code, "spec_item → task")
+        self._sync_task_ids(run)
         self._refresh_ready(run)
 
     def _refresh_ready(self, run: RunState) -> None:
@@ -489,6 +566,16 @@ class Workbench:
             return []
         started: list[str] = []
         while not run.paused:
+            conflict_ready = [
+                TaskCard.model_validate(t["card"])
+                for t in run.tasks.values()
+                if t.get("conflict_resolve") and t["state"] == "ready" and not t["paused"] and not t["locked_by"]
+            ]
+            if conflict_ready:
+                await asyncio.gather(*(self.execute_task(run, card.code) for card in conflict_ready))
+                started.extend(card.code for card in conflict_ready)
+                self._refresh_ready(run)
+                continue
             graph = TaskGraph.model_validate(run.artifacts["plan"])
             states = {c: t["state"] for c, t in run.tasks.items()}
             running = [TaskCard.model_validate(t["card"]) for t in run.tasks.values() if t["state"] == "running"]
@@ -513,6 +600,8 @@ class Workbench:
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
+        if task.get("locked_by") and not task.get("takeover_submit"):
+            return {"state": task["state"], "kind": "locked"}
         task["revision"] = int(task.get("revision") or 1) + 1
         if task["state"] == "ready":
             task["state"] = next_task_state(task["state"], "scheduled")
@@ -572,7 +661,18 @@ class Workbench:
         self._charge_task(run, task, mark)
         if isinstance(result, dict) and result.get("done") is False:
             return await self._finish_failure(run, task, card, "代码缺陷", result.get("summary") or "max tool steps", {"exit_code": 1})
+        return await self._accept_review_merge(run, code, wt, list(tools.written))
 
+    async def _accept_review_merge(
+        self,
+        run: RunState,
+        code: str,
+        wt: Path,
+        written: list[str] | None,
+    ) -> dict[str, Any]:
+        task = run.tasks[code]
+        card = TaskCard.model_validate(task["card"])
+        repo = self.data_dir / "runs" / run.id / "repo"
         if not card.acceptance:
             return await self._finish_failure(run, task, card, "任务描述问题", "验收命令为空", {"exit_code": 1})
 
@@ -611,11 +711,12 @@ class Workbench:
         judged = judge_output(exit_code, output, self._judge_patterns())
 
         pending = [rel for rel in dirty_files(wt) if not _ignore_write_noise(rel)]
-        if not pending and not tools.written:
+        produced = list(written or [])
+        if not pending and not produced:
             return await self._finish_failure(run, task, card, "任务描述问题", "没有真实文件产出", {"exit_code": 1, "zero_tests": True})
         sha = commit(wt, f"{code} attempt")
         extras = []
-        names = [rel for rel in (changed_files(wt, "HEAD~1") if pending else list(tools.written)) if not _ignore_write_noise(rel)]
+        names = [rel for rel in (changed_files(wt, "HEAD~1") if pending else produced) if not _ignore_write_noise(rel)]
         for rel in names:
             try:
                 if not in_write_set((wt / rel).resolve() if (wt / rel).exists() else wt / rel, wt, list(card.write_set)):
@@ -647,16 +748,16 @@ class Workbench:
                     rollback_merge(repo, str(merged["before"]))
                     return await self._finish_failure(run, task, card, "代码缺陷", regression["reason"], {"exit_code": 1})
                 task["state"] = "done"
+                task["locked_by"] = ""
+                task["takeover_submit"] = False
                 task["evidence"].append({"kind": "command", "summary": output, "path": str(wt)})
                 task["evidence"].append({"kind": "review", "summary": "pass", "path": ""})
                 task["evidence"].append({"kind": "merge", "summary": sha, "path": ""})
                 self.emit(run, "task.state_changed", code, {"code": code, "to": "done", "event": "accepted"})
+                self._unlock_origin_after_conflict(run, task)
                 self._refresh_ready(run)
                 return {"state": "done"}
-            task["state"] = "needs_human"
-            task["last_error"] = "合并冲突"
-            self.emit(run, "task.state_changed", code, {"code": code, "to": "needs_human", "kind": "合并冲突"})
-            return {"state": "needs_human", "kind": "合并冲突"}
+            return self._spawn_conflict_task(run, code, merged)
         fields = {
             "exit_code": judged["exit_code"],
             "review_blocking": blocking,
@@ -666,6 +767,74 @@ class Workbench:
         }
         kind = classify(fields)
         return await self._finish_failure(run, task, card, kind, output, fields)
+
+    def _sync_task_ids(self, run: RunState) -> None:
+        for code in run.tasks:
+            try:
+                kind, n = IdAllocator.parse(code)
+            except ValueError:
+                continue
+            if kind == "T":
+                run.ids.set_at_least("T", n)
+
+    def _spawn_conflict_task(self, run: RunState, origin_code: str, merged: dict[str, Any]) -> dict[str, Any]:
+        origin = run.tasks[origin_code]
+        origin["state"] = "blocked"
+        origin["last_error"] = "合并冲突"
+        self.emit(run, "task.state_changed", origin_code, {"code": origin_code, "to": "blocked", "kind": "合并冲突"})
+        conflicts = [str(item) for item in (merged.get("conflicts") or [])]
+        write_set = [path for path in conflicts if path not in {"conflict", ""}]
+        if not write_set:
+            write_set = list(origin["card"].get("write_set") or [])
+        self._sync_task_ids(run)
+        code = run.ids.next("T")
+        card = TaskCard(
+            code=code,
+            title=f"冲突解决 {origin_code}",
+            kind="impl",
+            module=str(origin["card"].get("module") or "M1"),
+            sources=list(origin["card"].get("sources") or []),
+            description=f"冲突解决\n冲突文件: {conflicts}\n{merged.get('output') or ''}",
+            write_set=write_set,
+            outputs=write_set,
+            acceptance=list(origin["card"].get("acceptance") or []),
+            depends_on=[],
+            points=int(origin["card"].get("points") or 1),
+            priority="P0",
+            role=origin["card"].get("role") or "coder",
+        )
+        run.tasks[code] = {
+            "id": f"{run.id}:{code}",
+            "code": code,
+            "state": "ready",
+            "revision": 1,
+            "card": card.model_dump(),
+            "repair_rounds": 0,
+            "signatures": [],
+            "evidence": [],
+            "paused": False,
+            "locked_by": "",
+            "tokens_used": 0,
+            "prev_output": str(merged.get("output") or ""),
+            "review_issues": [],
+            "conflict_resolve": True,
+            "conflict_of": origin_code,
+        }
+        self.emit(run, "task.spawned", code, {"kind": "冲突解决", "of": origin_code, "write_set": write_set})
+        return {"state": "blocked", "kind": "合并冲突", "conflict_task": code}
+
+    def _unlock_origin_after_conflict(self, run: RunState, task: dict[str, Any]) -> None:
+        if not task.get("conflict_resolve"):
+            return
+        origin = run.tasks.get(str(task.get("conflict_of") or ""))
+        if not origin:
+            return
+        wt = self.data_dir / "runs" / run.id / "wt" / origin["code"]
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+        origin["state"] = "ready"
+        origin["last_error"] = ""
+        self.emit(run, "task.state_changed", origin["code"], {"code": origin["code"], "to": "ready", "event": "conflict_resolved"})
 
     async def _finish_failure(
         self,
@@ -700,6 +869,12 @@ class Workbench:
             task["state"] = "failed"
         else:
             task["state"] = "needs_human"
+        if task.get("conflict_resolve"):
+            origin = run.tasks.get(str(task.get("conflict_of") or ""))
+            if origin:
+                origin["state"] = "needs_human"
+                origin["last_error"] = "冲突解决失败"
+                self.emit(run, "task.state_changed", origin["code"], {"code": origin["code"], "to": "needs_human", "kind": "合并冲突"})
         self.emit(run, "task.state_changed", card.code, {"code": card.code, "to": task["state"], "kind": kind})
         return {"state": task["state"], "kind": kind}
 
@@ -792,6 +967,19 @@ class Workbench:
                 run.skip_continue.add(code)
         elif action == "takeover":
             task["locked_by"] = actor
+            repo = self.data_dir / "runs" / run.id / "repo"
+            if not (repo / ".git").exists():
+                init_repo_sync(repo, self.profile.get("initial_files"))
+            wt = self.data_dir / "runs" / run.id / "wt" / code
+            if not wt.exists():
+                create_worktree(repo, wt, f"task/{code}")
+            task["takeover_workspace"] = str(wt)
+        elif action == "submit-takeover":
+            task["takeover_submit"] = True
+            task["revision"] += 1
+            run.revision += 1
+            self.emit(run, f"control.{action}", code, {"from": prev, "to": task["state"], "reason": reason, "rev": task["revision"]}, actor)
+            return await self._submit_takeover(run, code)
         elif action == "force-pass":
             repo = self.data_dir / "runs" / run.id / "repo"
             if repo.exists():
@@ -808,7 +996,9 @@ class Workbench:
         self._refresh_ready(run)
         return task
 
-    def set_run_control(self, run: RunState, action: str, actor: str = "owner") -> RunState:
+    def set_run_control(self, run: RunState, action: str, actor: str = "owner", *, confirm: bool = False) -> RunState:
+        if action == "terminate" and not confirm:
+            raise ValidationFailed("终止运行需二次确认")
         if action == "pause":
             run.paused = True
         elif action == "resume":
@@ -816,9 +1006,25 @@ class Workbench:
         elif action == "terminate":
             run.status = "terminated"
             run.paused = True
+            for task in run.tasks.values():
+                if task["state"] not in {"done", "skipped", "cancelled"}:
+                    task["state"] = "cancelled"
         run.revision += 1
         self.emit(run, f"control.{action}", "", {"status": run.status, "paused": run.paused}, actor)
         return run
+
+    async def _submit_takeover(self, run: RunState, code: str) -> dict[str, Any]:
+        task = run.tasks[code]
+        repo = self.data_dir / "runs" / run.id / "repo"
+        if not (repo / ".git").exists():
+            init_repo_sync(repo, self.profile.get("initial_files"))
+        wt = Path(task.get("takeover_workspace") or (self.data_dir / "runs" / run.id / "wt" / code))
+        if not wt.exists():
+            create_worktree(repo, wt, f"task/{code}")
+            task["takeover_workspace"] = str(wt)
+        if task["state"] == "ready":
+            task["state"] = next_task_state(task["state"], "scheduled")
+        return await self._accept_review_merge(run, code, wt, None)
 
     def todos(self, run: RunState) -> list[dict[str, Any]]:
         items = [g for g in run.gates if g["status"] == "pending"]
@@ -873,7 +1079,30 @@ class Workbench:
         )
         run.artifacts["acceptance"] = report.model_dump()
         passed = acceptance_pass(report, {"p1_pass_ratio": float((run.limits.get("acceptance") or {})["p1_pass_ratio"])})
-        return self._gate(run, "验收确认", {"pass": passed, "report": report.model_dump()})
+        gate = self._gate(run, "验收确认", {"pass": passed, "report": report.model_dump()})
+        if not passed:
+            await self._spawn_acceptance_defects(run, items)
+        return gate
+
+    async def _spawn_acceptance_defects(self, run: RunState, items: list[AcceptanceItem]) -> None:
+        cycles = int(run.artifacts.get("accept_fix_cycles") or 0)
+        max_cycles = int((run.limits.get("acceptance") or {}).get("max_fix_cycles") or 2)
+        if cycles >= max_cycles:
+            return
+        run.artifacts["accept_fix_cycles"] = cycles + 1
+        for item in items:
+            if item.result != "未通过":
+                continue
+            try:
+                await self.submit_cr(
+                    run,
+                    f"验收未通过 {item.code}: {item.reason or item.code}",
+                    [item.code],
+                    kind="小变更",
+                    source="acceptance",
+                )
+            except Exception:  # noqa: BLE001
+                continue
 
     async def _verify_spec_item(self, repo: Path, related: list[dict[str, Any]]) -> tuple[bool, str, str]:
         outputs: list[str] = []
@@ -943,6 +1172,7 @@ class Workbench:
             "impact": impact,
             "level": level,
             "kind": kind,
+            "source": str(flags.get("source") or ""),
             "status": "analyzed",
             "eval_ok": ok,
             "eval_flags": ev_flags,
@@ -973,9 +1203,62 @@ class Workbench:
                 elif task["state"] == "running":
                     task["paused"] = True
                     self.emit(run, "task.state_changed", code, {"code": code, "to": task["state"], "event": "change_pause"})
-            # incremental SPEC/DESIGN/PLAN 1.1 is not done this round
-            cr["status"] = "approved"
+            self._apply_incremental_docs(run, cr)
+            cr["status"] = "applied"
         return cr
+
+    def _affected_codes(self, cr: dict[str, Any]) -> set[str]:
+        impact = cr.get("impact") or {}
+        codes: set[str] = set()
+        for key in ("codes", "downstream", "upstream", "features", "modules", "tasks"):
+            for item in impact.get(key) or []:
+                codes.add(str(item))
+        return codes
+
+    def _apply_incremental_docs(self, run: RunState, cr: dict[str, Any]) -> None:
+        version = "1.1"
+        affected = self._affected_codes(cr)
+        note = {"code": cr["code"], "description": cr.get("description"), "version": version}
+        groups = (
+            ("SPEC", "spec", ("features", "nonfunc")),
+            ("DESIGN", "design", ("modules", "interfaces")),
+            ("PLAN", "plan", ("tasks",)),
+        )
+        for kind, key, fields in groups:
+            doc = run.artifacts.get(key)
+            if not isinstance(doc, dict):
+                continue
+            prev = str(run.artifacts.get(f"baseline_{kind}") or "1.0")
+            if f"{key}_{prev}" not in run.artifacts:
+                run.artifacts[f"{key}_{prev}"] = copy.deepcopy(doc)
+            before = copy.deepcopy(doc)
+            for section in fields:
+                for item in doc.get(section) or []:
+                    if isinstance(item, dict) and item.get("code") in affected:
+                        item.setdefault("change_notes", []).append(note)
+            self._assert_unaffected(before, doc, affected, fields)
+            run.artifacts[key] = doc
+            run.artifacts[f"{key}_{version}"] = copy.deepcopy(doc)
+            run.artifacts[f"baseline_{kind}"] = version
+            self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
+        cr["applied_version"] = version
+
+    def _assert_unaffected(
+        self,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        affected: set[str],
+        fields: tuple[str, ...],
+    ) -> None:
+        for section in fields:
+            old_items = {item.get("code"): item for item in (before.get(section) or []) if isinstance(item, dict)}
+            new_items = {item.get("code"): item for item in (after.get(section) or []) if isinstance(item, dict)}
+            for code, old in old_items.items():
+                if code in affected:
+                    continue
+                new = new_items.get(code)
+                if json.dumps(old, sort_keys=True, ensure_ascii=False) != json.dumps(new, sort_keys=True, ensure_ascii=False):
+                    raise ValidationFailed(f"未受影响条目被改写: {code}")
 
     async def import_feedback(self, run: RunState, rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
         imported = []
@@ -990,11 +1273,16 @@ class Workbench:
             }
             run.raw_feedback.append(item)
             imported.append(item)
+        texts = [r["text_masked"] for r in imported]
         try:
-            vectors = await self.gateway.embed([r["text_masked"] for r in imported])
+            vectors = await self.gateway.embed(texts)
+            if not vectors or len(vectors) != len(texts) or any(not vec for vec in vectors):
+                raise RuntimeError("embedding unavailable")
+            groups = cluster(vectors, threshold=float((run.limits.get("listening") or {}).get("cluster_threshold") or 0.78))
         except Exception:  # noqa: BLE001
-            vectors = [[float(sum(ord(c) for c in r["text_masked"]) % 17), 1.0] for r in imported]
-        groups = cluster(vectors, threshold=float((run.limits.get("listening") or {}).get("cluster_threshold") or 0.78))
+            groups = await self._cluster_fast(texts)
+        if not groups:
+            groups = [[idx] for idx in range(len(imported))]
         known_texts = []
         for issue in run.artifacts.get("issues") or []:
             if issue.get("destination") == "本版不做" or issue.get("status") in {"待定", "未讨论"}:
@@ -1058,6 +1346,28 @@ class Workbench:
             run.feedback.append(item)
         self._charge(run)
         return imported
+
+    async def _cluster_fast(self, texts: list[str]) -> list[list[int]]:
+        try:
+            batch = await call_agent(
+                "cluster_fast",
+                {"feedback_group": [{"index": idx, "text": text} for idx, text in enumerate(texts)]},
+                registry=self.registry,
+                gateway=self.gateway,
+            )
+            groups: list[list[int]] = []
+            seen: set[int] = set()
+            for raw in getattr(batch, "groups", None) or []:
+                cleaned = [int(idx) for idx in raw if 0 <= int(idx) < len(texts) and int(idx) not in seen]
+                seen.update(cleaned)
+                if cleaned:
+                    groups.append(cleaned)
+            for idx in range(len(texts)):
+                if idx not in seen:
+                    groups.append([idx])
+            return groups
+        except Exception:  # noqa: BLE001
+            return [[idx] for idx in range(len(texts))]
 
     def _gate(self, run: RunState, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         gate = {"id": str(uuid.uuid4()), "kind": kind, "status": "pending", "payload": payload}

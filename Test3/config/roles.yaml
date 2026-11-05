@@ -257,6 +257,13 @@ roles:
     output_schema: CRScore
     visible: [change_request, impact, baseline]
     tools: []
+  cluster_fast:
+    slot: fast
+    temperature: 0
+    prompt: prompts/listening/cluster_fast.md
+    output_schema: ClusterBatch
+    visible: [feedback_group]
+    tools: []
   distiller:
     slot: flagship
     temperature: 0.2

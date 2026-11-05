@@ -10,7 +10,7 @@ All checks passed!
 
 $ cd Test3/backend && uv run pytest -q -m "not live"
 ................................................................          [100%]
-# 64 passed（含本轮必须项：拒绝假通过、修复带上下文、退回再讨论、监听不硬编码）
+# 72 passed（含六处缺口：冲突任务、交付包、缺陷变更单 2 轮、5 秒调度、接管/二次确认、1.1 applied、embedding 失败走 fast）
 
 $ cd Test3 && make e2e
 # 等同 pytest tests/e2e：6 passed
@@ -54,12 +54,12 @@ $ curl -sS http://127.0.0.1:8765/api/health
 | P08 任务分解 | 检查有，全流程薄 | `check_task_graph`、`run_plan`；无 scripted 分解队列 |
 | P09 工作区与沙箱 | 落地 | `test_git_smoke`、`command_allowed`、工作树 |
 | P10 编排 | 部分 | 调度/分类/修复轮/控制有单测；执行会跑验收命令；任务状态未统一走 `transition()` |
-| P11 验收 | 函数有 | `acceptance_pass`；无完整执行后验收 e2e |
-| P12 控制/待办/预算 | API+函数有 | 乐观锁、待办、预算；`tokens_used` 从网关统计累加（scripted 多为 0） |
+| P11 验收 | 函数有 | `acceptance_pass`；未通过生成缺陷变更单（最多 2 轮）；通过确认后打 `build-<版本>` 并导出 `release/` |
+| P12 控制/待办/预算 | API+函数有 | 乐观锁、待办、预算；takeover/submit-takeover；终止需 `confirm=true`；5 秒调度兜底 |
 | P13 前端基础页 | 页面有 | `App.tsx` 路由；未跑 Playwright |
 | P14 任务图/时间线 | 页面有 | `@xyflow/react` 依赖在 `package.json`；无浏览器 e2e |
-| P15 变更 | 分级函数+API | `classify_cr`、提交 CR；「扫码进教室」端到端未做 |
-| P16 监听 | 导入流水线有 | `test_import_study_room_feedback`；聚类用字符和向量，不是 embedding 槽 |
+| P15 变更 | 分级函数+API | `classify_cr`、提交 CR；批准后 1.1 增量；「扫码进教室」端到端未做 |
+| P16 监听 | 导入流水线有 | `test_import_study_room_feedback`；embedding 失败走 `cluster_fast` |
 | P17 综合/文档 | 文档补齐，E1–E10/真联调未做 | 本文件与 README / API / Acceptance / Handoff / Demo |
 
 ## M1

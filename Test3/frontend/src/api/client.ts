@@ -32,6 +32,7 @@ export const api = {
     req(`/gates/${gateId}/resolve`, { method: "POST", body: JSON.stringify({ decision, payload }) }),
   control: (taskId: string, action: string, expected_revision: number, reason: string) =>
     req(`/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify({ expected_revision, reason }) }),
+  terminate: (id: string) => req(`/runs/${id}/terminate`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
   models: () => req("/config/models"),
   testModels: () => req("/config/models/test", { method: "POST" }),
 };
@@ -42,6 +43,8 @@ export const CONTROL_ENABLED: Record<string, string[]> = {
   "force-pass": ["needs_human", "failed"],
   pause: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
   resume: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
+  takeover: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
+  "submit-takeover": ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
 };
 
 export function controlEnabled(action: string, state: string): boolean {

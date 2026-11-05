@@ -280,6 +280,10 @@ class AcceptanceItem(BaseModel):
     reason: str = ""
 
 
+class ClusterBatch(BaseModel):
+    groups: list[list[int]] = Field(default_factory=list)
+
+
 class AcceptanceReport(BaseModel):
     features: list[AcceptanceItem] = Field(default_factory=list)
     nonfunc: list[AcceptanceItem] = Field(default_factory=list)
