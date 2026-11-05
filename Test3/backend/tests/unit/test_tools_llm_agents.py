@@ -38,10 +38,17 @@ def test_path_safety(tmp_path: Path) -> None:
 
 
 def test_command_whitelist() -> None:
-    assert command_allowed(["pytest", "-q"], ["pytest", "python"])
-    assert command_allowed(["python", "-m", "pytest"], ["python"])
-    assert not command_allowed(["pip", "install"], ["pytest", "python"])
-    assert not command_allowed(["pytest; rm -rf /"], ["pytest"])
+    from app.settings import load_profile
+
+    wl = list(load_profile()["whitelist_prefixes"])
+    assert command_allowed(["pytest", "-q"], wl)
+    assert command_allowed(["python", "-m", "pytest"], wl)
+    assert command_allowed(["python", "-m", "compileall", "src"], wl)
+    assert command_allowed(["ruff", "check", "app"], wl)
+    assert not command_allowed(["python", "-c", "print(1)"], wl)
+    assert not command_allowed(["python", "x.py"], wl)
+    assert not command_allowed(["pip", "install"], wl)
+    assert not command_allowed(["pytest; rm -rf /"], wl)
 
 
 def test_validator_outputs() -> None:

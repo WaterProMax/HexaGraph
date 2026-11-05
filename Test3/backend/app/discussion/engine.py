@@ -10,6 +10,7 @@ from app.discussion.rules import (
     finalize_issue,
     forced_end_status,
     must_finish,
+    reopen_issue,
     select_speaker,
     validate_merge,
     validate_round1,
@@ -17,7 +18,7 @@ from app.discussion.rules import (
 )
 from app.ids import IdAllocator
 from app.llm.gateway import Gateway
-from app.schemas.docs import IdeaCard, Issue, Question, RoundOutput, Utterance
+from app.schemas.docs import IdeaCard, Issue, Question, ReviewOpinion, RoundOutput, Utterance
 
 DISCUSSION_AGENT_ROLES = ("产品经理", "用户代表", "付费方代表", "开发", "测试")
 
@@ -33,12 +34,13 @@ async def run_discussion(
     prev_issues: list[Issue] | None = None,
     max_utterances: int = 20,
 ) -> dict[str, Any]:
+    opinions = _as_opinions(review_opinions)
     questions: list[Question] = []
     by_role: dict[str, list[Question]] = {}
     for role in DISCUSSION_AGENT_ROLES:
-        visible = {"idea_card": idea.model_dump()}
+        visible: dict[str, Any] = {"idea_card": idea.model_dump()}
         if reopen:
-            visible["review_opinions"] = [op.model_dump() if hasattr(op, "model_dump") else op for op in (review_opinions or [])]
+            visible["review_opinions"] = [op.model_dump() for op in opinions]
         output = await call_agent(role, visible, registry=registry, gateway=gateway)
         assert isinstance(output, RoundOutput)
         role_qs = []
@@ -96,66 +98,79 @@ async def run_discussion(
             category=row.category if row.category in {"价值", "范围", "可行性", "可测性", "竞争", "其他"} else "其他",
             text=row.text,
             deferred=row.deferred,
-            assumption_critical=_assumption_flag(row.issue),
         )
         for row in rows
     ]
-    state = DiscussionState(issues=tuple(issues), reopen=reopen, max_utterances=max_utterances)
+    if reopen and prev_issues:
+        issues = _merge_reopened(prev_issues, opinions, issues)
+
+    review_codes = tuple({issue.code for issue in issues if any(issue.code in (op.text + (op.code or "")) for op in opinions)})
+    state = DiscussionState(
+        issues=tuple(issues),
+        reopen=reopen,
+        max_utterances=max_utterances,
+        review_issue_codes=review_codes,
+    )
     utterances: list[Utterance] = []
     invalid = 0
-    while not must_finish(state) and not (can_finish(state) and utterances and utterances[-1].role == "主持人" and utterances[-1].position == "小结"):
+    while not must_finish(state):
         if can_finish(state):
-            speaker, rule = "主持人", "finish"
-        else:
-            speaker, rule = select_speaker(state)
-        if speaker == "主持人":
-            turn = await call_agent(
-                "moderator_turn",
-                {"idea_card": idea.model_dump(), "issue_list": [i.model_dump() for i in state.issues], "transcript": [u.model_dump() for u in utterances]},
-                registry=registry,
-                gateway=gateway,
-            )
-            utterance = Utterance(
-                seq=len(utterances) + 1,
-                role="主持人",
-                targets=getattr(turn, "targets", []) or _default_targets(state),
-                position="小结" if getattr(turn, "announce_finish", False) or can_finish(state) else "追问",
-                body=getattr(turn, "body", ""),
-                reasons="主持推进",
-                mention=list(getattr(turn, "mention", []) or []),
-            )
-        else:
-            out = await call_agent(
-                speaker,
-                {
-                    "idea_card": idea.model_dump(),
-                    "merge_table": [r.model_dump() for r in rows],
-                    "transcript": [u.model_dump() for u in utterances],
-                    "issue_list": [i.model_dump() for i in state.issues],
-                },
-                registry=registry,
-                gateway=gateway,
-            )
-            utterance = out.utterance if isinstance(out, RoundOutput) and out.utterance else Utterance(
-                role=speaker,  # type: ignore[arg-type]
-                body=str(out),
-                reasons="scripted",
-                targets=_default_targets(state),
-            )
-            utterance.role = speaker  # type: ignore[assignment]
-            utterance.seq = len(utterances) + 1
+            break
+        speaker, rule = select_speaker(state)
+        utterance = await _speak(speaker, rule, idea, state, rows, utterances, registry, gateway)
         errors = validate_utterance(utterance, state)
         if errors:
-            invalid += 1
-            # still counts toward the 20-cap
+            rewritten = await _speak(
+                speaker,
+                rule,
+                idea,
+                state,
+                rows,
+                utterances,
+                registry,
+                gateway,
+                rewrite=errors,
+            )
+            rewritten.seq = utterance.seq
+            rewrite_errors = validate_utterance(rewritten, state)
+            if rewrite_errors:
+                invalid += 1
+                utterances.append(rewritten)
+                state = state.with_utterance(rewritten)
+                ask = Utterance(
+                    seq=len(utterances) + 1,
+                    role="主持人",
+                    targets=rewritten.targets or _default_targets(state),
+                    position="追问",
+                    body="上一条发言不合规，请该角色用完整观点和理由重述。",
+                    reasons="无效发言追问",
+                    mention=[speaker] if speaker != "主持人" else [],
+                    rule="1",
+                )
+                utterances.append(ask)
+                state = state.with_utterance(ask)
+                continue
+            utterance = rewritten
         utterances.append(utterance)
         state = state.with_utterance(utterance)
         if must_finish(state):
             break
-        if can_finish(state) and utterance.role == "主持人" and utterance.position == "小结":
-            break
         if len(utterances) >= max_utterances:
             break
+
+    if can_finish(state) or utterances:
+        try:
+            await call_agent(
+                "moderator_final",
+                {
+                    "issue_list": [i.model_dump() for i in state.issues],
+                    "transcript": [u.model_dump() for u in utterances],
+                },
+                registry=registry,
+                gateway=gateway,
+            )
+        except Exception:
+            pass
 
     final_issues = []
     overrides = []
@@ -178,6 +193,87 @@ async def run_discussion(
     }
 
 
+async def _speak(
+    speaker: str,
+    rule: str,
+    idea: IdeaCard,
+    state: DiscussionState,
+    rows: list[Any],
+    utterances: list[Utterance],
+    registry: RoleRegistry,
+    gateway: Gateway,
+    rewrite: list[str] | None = None,
+) -> Utterance:
+    extra = {"rewrite": rewrite} if rewrite else {}
+    if speaker == "主持人":
+        turn = await call_agent(
+            "moderator_turn",
+            {
+                "idea_card": idea.model_dump(),
+                "issue_list": [i.model_dump() for i in state.issues],
+                "transcript": [u.model_dump() for u in utterances],
+                **extra,
+            },
+            registry=registry,
+            gateway=gateway,
+        )
+        return Utterance(
+            seq=len(utterances) + 1,
+            role="主持人",
+            targets=getattr(turn, "targets", []) or _default_targets(state),
+            position="小结" if getattr(turn, "announce_finish", False) or can_finish(state) else "追问",
+            body=getattr(turn, "body", ""),
+            reasons="主持推进",
+            mention=list(getattr(turn, "mention", []) or []),
+            rule=rule,
+        )
+    out = await call_agent(
+        speaker,
+        {
+            "idea_card": idea.model_dump(),
+            "merge_table": [r.model_dump() for r in rows],
+            "transcript": [u.model_dump() for u in utterances],
+            "issue_list": [i.model_dump() for i in state.issues],
+            **extra,
+        },
+        registry=registry,
+        gateway=gateway,
+    )
+    utterance = out.utterance if isinstance(out, RoundOutput) and out.utterance else Utterance(
+        role=speaker,  # type: ignore[arg-type]
+        body=str(out),
+        reasons="scripted",
+        targets=_default_targets(state),
+    )
+    utterance.role = speaker  # type: ignore[assignment]
+    utterance.seq = len(utterances) + 1
+    utterance.rule = rule
+    return utterance
+
+
+def _as_opinions(raw: list[Any] | None) -> list[ReviewOpinion]:
+    items: list[ReviewOpinion] = []
+    for item in raw or []:
+        if isinstance(item, ReviewOpinion):
+            items.append(item)
+        elif isinstance(item, dict):
+            items.append(ReviewOpinion.model_validate(item))
+    return items
+
+
+def _merge_reopened(prev_issues: list[Issue], opinions: list[ReviewOpinion], fresh: list[Issue]) -> list[Issue]:
+    hits: list[Issue] = []
+    for prev in prev_issues:
+        op = next((o for o in opinions if prev.code in ((o.text or "") + (o.code or ""))), None)
+        if op:
+            hits.append(reopen_issue(prev, op))
+    if not hits and opinions:
+        hits = [reopen_issue(prev, opinions[0]) for prev in prev_issues if prev.status == "待定"]
+    taken = {i.code for i in hits}
+    kept = hits + [i for i in fresh if i.code not in taken]
+    return kept or list(fresh)
+
+
 def _default_targets(state: DiscussionState):
     from app.schemas.common import Target
 
@@ -185,11 +281,3 @@ def _default_targets(state: DiscussionState):
         if not issue.deferred:
             return [Target(issue=issue.code)]
     return []
-
-
-def _assumption_flag(code: str) -> bool | None:
-    if code in {"I-03", "I-04"}:
-        return True
-    if code in {"I-05", "I-06"}:
-        return False
-    return None

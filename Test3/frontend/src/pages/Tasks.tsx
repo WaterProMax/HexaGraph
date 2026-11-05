@@ -49,7 +49,7 @@ export default function Tasks() {
         <Space>
           <Tag>{selected.state}</Tag>
           <Input placeholder="理由" value={reason} onChange={(e) => setReason(e.target.value)} />
-          {["pause", "retry", "skip", "force-pass"].map((a) => (
+          {["pause", "resume", "retry", "skip", "force-pass"].map((a) => (
             <Button key={a} disabled={!controlEnabled(a, selected.state)} onClick={() => act.mutate(a)}>
               {a}
             </Button>

@@ -46,6 +46,10 @@ change:
 listening:
   watch_threshold: 3
   cluster_threshold: 0.78
+  known_keywords:
+    - 别的楼
+    - 灰色
+    - 学号
 
 proposal:
   max_features: 12

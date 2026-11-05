@@ -233,3 +233,7 @@ def test_control_table() -> None:
     assert not control_allowed("force-pass", "running")
     assert control_allowed("patch", "pending")
     assert not control_allowed("patch", "running")
+    assert control_allowed("resume", "running")
+    assert control_allowed("pause", "running")
+    for state in ("pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"):
+        assert control_allowed("resume", state) == control_allowed("pause", state)

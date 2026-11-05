@@ -106,8 +106,10 @@ async def resolve_gate(gate_id: str, body: GateResolve, request: Request) -> dic
     if not run:
         raise HTTPException(404, "gate not found")
     try:
-        return await bench.resolve_gate(run, gate_id, body.decision, body.payload)
-    except (AgentOutputError, RuntimeError) as exc:
+        return await bench.resolve_gate(run, gate_id, body.decision, body.payload, expected_revision=body.expected_revision)
+    except RevisionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (AgentOutputError, RuntimeError, ValidationFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
@@ -132,7 +134,9 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
         for code, task in run.tasks.items():
             if task["id"] == task_id or code == task_id:
                 try:
-                    return bench.control_task(run, code, action, body.expected_revision, body.reason)
+                    return await bench.control_task(
+                        run, code, action, body.expected_revision, body.reason, payload=body.payload
+                    )
                 except RevisionConflict as exc:
                     raise HTTPException(409, str(exc)) from exc
                 except (IllegalTransition, ValidationFailed) as exc:
@@ -142,25 +146,17 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
 
 @router.post("/runs/{run_id}/pause")
 async def pause_run(run_id: str, request: Request) -> dict[str, Any]:
-    run = _run(request, run_id)
-    run.paused = True
-    run.revision += 1
-    return _run_view(run)
+    return _run_view(wb(request).set_run_control(_run(request, run_id), "pause"))
 
 
 @router.post("/runs/{run_id}/resume")
 async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
-    run = _run(request, run_id)
-    run.paused = False
-    run.revision += 1
-    return _run_view(run)
+    return _run_view(wb(request).set_run_control(_run(request, run_id), "resume"))
 
 
 @router.post("/runs/{run_id}/terminate")
 async def terminate_run(run_id: str, request: Request) -> dict[str, Any]:
-    run = _run(request, run_id)
-    run.status = "terminated"
-    return _run_view(run)
+    return _run_view(wb(request).set_run_control(_run(request, run_id), "terminate"))
 
 
 @router.get("/runs/{run_id}/budget")
@@ -170,10 +166,10 @@ async def budget(run_id: str, request: Request) -> dict[str, Any]:
 
 @router.patch("/runs/{run_id}/limits")
 async def patch_limits(run_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    run = _run(request, run_id)
-    run.limits.update(body)
-    wb(request).emit(run, "system.limit_changed", "", body, "owner")
-    return run.limits
+    try:
+        return wb(request).patch_limits(_run(request, run_id), body)
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/runs/{run_id}/trace")
@@ -188,7 +184,13 @@ async def trace_impact(run_id: str, codes: str, request: Request) -> dict[str, A
 
 @router.post("/runs/{run_id}/crs")
 async def submit_cr(run_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
-    return await wb(request).submit_cr(_run(request, run_id), body.get("description", ""), body.get("codes") or [])
+    flags = {k: v for k, v in body.items() if k not in {"description", "codes"}}
+    return await wb(request).submit_cr(
+        _run(request, run_id),
+        body.get("description", ""),
+        body.get("codes") or [],
+        **flags,
+    )
 
 
 @router.get("/runs/{run_id}/crs")
@@ -211,7 +213,7 @@ async def import_feedback(run_id: str, body: dict[str, Any], request: Request) -
     key = get_settings().feedback_hash_key
     if not key:
         raise HTTPException(400, "FEEDBACK_HASH_KEY required")
-    return wb(request).import_feedback(_run(request, run_id), body.get("rows") or [], key)
+    return await wb(request).import_feedback(_run(request, run_id), body.get("rows") or [], key)
 
 
 @router.get("/runs/{run_id}/feedback")
@@ -266,6 +268,11 @@ async def test_models() -> dict[str, Any]:
 async def schedule(run_id: str, request: Request) -> dict[str, Any]:
     started = await wb(request).schedule_once(_run(request, run_id))
     return {"started": started}
+
+
+@router.post("/runs/{run_id}/accept")
+async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
+    return await wb(request).accept(_run(request, run_id))
 
 
 def _run(request: Request, run_id: str):

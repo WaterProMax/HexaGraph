@@ -21,6 +21,9 @@ visible_types:
   - baseline
   - feedback_group
   - review_sheet
+  - rewrite
+  - prev_output
+  - review_issues
 
 roles:
   moderator_merge:
@@ -35,7 +38,7 @@ roles:
     temperature: 0.2
     prompt: prompts/discussion/moderator_turn.md
     output_schema: ModeratorTurn
-    visible: [idea_card, issue_list, transcript]
+    visible: [idea_card, issue_list, transcript, rewrite]
     tools: []
   moderator_final:
     slot: flagship
@@ -63,35 +66,35 @@ roles:
     temperature: 0.4
     prompt: prompts/discussion/pm.md
     output_schema: RoundOutput
-    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona, rewrite]
     tools: []
   用户代表:
     slot: flagship_alt
     temperature: 0.7
     prompt: prompts/discussion/user_rep.md
     output_schema: RoundOutput
-    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona, rewrite]
     tools: []
   付费方代表:
     slot: flagship_alt
     temperature: 0.7
     prompt: prompts/discussion/payer_rep.md
     output_schema: RoundOutput
-    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona, rewrite]
     tools: []
   开发:
     slot: coder
     temperature: 0.3
     prompt: prompts/discussion/dev.md
     output_schema: RoundOutput
-    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona, rewrite]
     tools: []
   测试:
     slot: flagship
     temperature: 0.3
     prompt: prompts/discussion/qa.md
     output_schema: RoundOutput
-    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona, rewrite]
     tools: []
   proposal_writer:
     slot: flagship
@@ -203,14 +206,14 @@ roles:
     temperature: 0.2
     prompt: prompts/execute/coder.md
     output_schema: CoderDone
-    visible: [task_card, interfaces, dependency_outputs]
+    visible: [task_card, interfaces, dependency_outputs, prev_output, review_issues]
     tools: [read_file, write_file, list_dir, search, run_command]
   tester:
     slot: flagship_alt
     temperature: 0.2
     prompt: prompts/execute/tester.md
     output_schema: CoderDone
-    visible: [task_card, interfaces, dependency_outputs]
+    visible: [task_card, interfaces, dependency_outputs, prev_output, review_issues]
     tools: [read_file, write_file, list_dir, search, run_command]
   code_reviewer:
     slot: flagship_alt

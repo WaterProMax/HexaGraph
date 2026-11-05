@@ -1,19 +1,32 @@
 # Test3 交接
 
-## 已知限制
+## 本轮已改（审核必须项）
 
-1. **HTTP 运行态在内存。** `Workbench` 持有 projects/runs。SQLAlchemy 模型、Alembic `0001_init`、`EventBus` 有测试，但 `create_app` 不把关卡/任务写入 SQLite。重启丢失。
-2. **任务状态有两处写入。** 计划要求只经 `orchestrator.transition.transition()`。内存路径用 `next_task_state` / 直接赋值；`transition()` 只服务 `TaskRow`。
-3. **P07–P11 全链路薄。** `run_design` / `run_plan` / `execute_task` / `accept` 是真函数，不是打印假结果；缺 scripted/replay 队列，因此没有想法→验收的一条自动化长跑。设计评审未接两位架构评审。
-4. **执行。** `execute_task` 会建 git worktree、按写集落文件、commit、对验收命令走 `run_command`（白名单，拒 `;|&\`$<>`）。scripted coder 若不写真实测试，依赖仓库初始 `tests/test_smoke.py`。修复轮、失败签名、重排关卡已接；杀进程恢复只在 `recover_tasks` 辅助函数，未挂到启动。
-5. **令牌配额。** `limits.yaml` 为并发 6 / 修复 6 / 每点 150 万 / P1 0.9。`Gateway` 记 `tokens_in/out`；`Workbench._charge` 累加到 `run.tokens_used`。scripted 提供者为 0，预算页看不到消耗。没有按任务点数截断生成。
-6. **监听聚类。** 导入后用文本字符和做 2 维向量，不是 `text-embedding-v4`。红线靠「学号」「隐私」扫描整簇。
-7. **变更。** `classify_cr` 与影响追溯有单测；没有 Design 21.3「扫码进入教室页」版本升到 1.1 的端到端。
-8. **前端。** 页面能打 API，没有 Playwright，没有录屏。控制按钮单测在 `frontend/src/control.test.ts`。
-9. **E1–E10 replay。** `examples/study-room/replay/` 只有 README。`ReplayProvider` 代码在，无编号 JSON。
-10. **真实百炼。** 未跑 `make check-models` / `make test-live` / 自习室真模型长跑。不要把 scripted M1 说成联调通过。
-11. **SSE。** 15 秒轮询内存事件，不是跨进程 EventBus。
-12. **`POST /config/models/test`。** 固定返回提示，不是探测。
+- **执行不再假通过。** `execute_task` 走 `run_tool_agent` + `TaskToolset.write_file/run_command`，跑完全部验收命令，按 profile 的 empty/skip 模式调用 `judge_output`。命令被拒、超时、空验收、无真实产出、写集越界都不能 `done`。合并后在集成分支跑已完成任务验收和 profile `test_command`，失败则回滚。
+- **修复带上下文。** 下一轮编码输入包含 `prev_output` / `review_issues`。LLM/超时/解析失败按 `classify` 的环境故障字段做最多 3 次退避。合并冲突转 `needs_human`。重排关卡会再调分解员并 `check_task_graph`，旧未完成任务标 `cancelled`。
+- **白名单与杀进程。** `python-pytest` 只放行 `pytest` / `python -m pytest` / `python -m` / `ruff check`；超时 `killpg`。
+- **验收。** `accept()` 在集成分支实跑 F/N 对应验收命令并写 `reason`。`验收确认` 在 `pass=False` 时必须带理由，否则拒绝。前端未通过时禁用空理由批准。
+- **限制与调度。** 每个 run `deepcopy` 一份 limits；PATCH 深合并并校验键。`schedule_once` 用 `asyncio.gather` 并发所选任务，传入 `budget_exhausted`，按任务累计令牌，超限 `budget.warn` / `needs_human`。
+- **控制。** `resume` 与 `pause` 状态集一致；`skip`/`force-pass` 必须写理由；`retry` 会再走执行器；关卡只能 pending 裁决一次，带乐观锁；运行级 pause/resume/terminate 发 `control.*`。
+- **讨论。** `Utterance.rule` 写入规则号，事件和讨论页可见。评审争议类退回会 `reopen_issue` 并续 I 编号；`moderator_final` 会调用；无效发言重写一次。
+- **监听。** 提炼/评估走 `call_agent`；红线和类别来自 Agent。关键词只作已决策去重辅助。空 scripted 夹具时不会再因「学号/别的楼」推出 I-03/I-04。
+- **变更。** `evaluation_pass` 返回 `(ok, flags)`，红线单独标出。路由传递 `kind`。批准发 `task.state_changed(change_impact)` 且 stale→ready。**不**把 CR 标成 `applied`（增量 1.1 未做）。
+- **网关。** 角色温度和 schema 传给提供者；备用模型同样累加令牌，并把 `llm.fallback` 写入 run 事件。
+
+## 已知限制（本轮仍未做）
+
+1. **HTTP 运行态在内存。** `Workbench` 持有 projects/runs。SQLAlchemy / Alembic / `EventBus` 有测试，但主路径不写 SQLite。重启丢失。
+2. **任务状态有两处写入。** 计划要求只经 `transition()`。内存路径用 `next_task_state` / 直接赋值。
+3. **P07–P11 全链路仍薄。** 没有想法→验收的一条 scripted 长跑。设计评审未接两位架构评审。没有 build 标签、交付包、未通过项缺陷变更单（最多 2 轮）。
+4. **控制未完成项。** `takeover` 只加锁，无 `submit-takeover` 工作区；`patch` 明确拒绝；运行级操作无二次确认弹窗；没有 5 秒调度兜底后台任务。
+5. **令牌。** scripted 提供者为 0，预算页在 scripted 下看不到消耗。
+6. **监听聚类。** 优先走 embedding 槽；scripted/失败时仍是字符向量。没有 40 条 E8 全案。
+7. **变更 1.1。** 无 SPEC/DESIGN/PLAN 增量更新和「未受影响条目逐字相同」校验，因此批准状态停在 `approved` 而不是 `applied`。
+8. **前端。** 无 Playwright、无录屏。
+9. **E1–E10 replay。** 只有 README，无编号 JSON。
+10. **真实百炼。** 未跑 `make check-models` / `make test-live`。
+11. **SSE。** 15 秒轮询内存事件。
+12. **`POST /config/models/test`。** 固定返回。
 
 ## 与设计的偏差
 
@@ -24,13 +37,14 @@
 | 设计两位背靠背评审 | 未接线 |
 | replay E1–E10 | 未录 |
 | 反馈 HMAC 必填 | API 缺密钥 400；单测直接传 key |
-| embedding 聚类 | 字符和向量 |
+| embedding 聚类 | 有槽位调用，失败回退字符向量 |
 | 默认 LLM 为 dashscope | 进程默认 `scripted`，避免空密钥外呼 |
+| 变更批准即应用 1.1 | 批准后为 `approved`，增量更新未做 |
 
 ## 建议下一步
 
-1. 把 `Workbench` 每次 `emit` / 关卡 / 任务改写落到同一 SQLite 事务，启动时按事件回放。
-2. 内存任务改走 `transition()`，或抽一个不依赖 Session 的同一函数给两边用。
+1. 把 `Workbench` 每次 `emit` / 关卡 / 任务改写落到同一 SQLite 事务。
+2. 内存任务改走 `transition()`。
 3. 录 E1–E10 replay，补想法→验收 e2e。
-4. 有密钥后跑 `make check-models`，把槽位结果写入 `docs/RealModelTest-<日期>.md`。
-5. 设计评审、探索任务、变更 1.1、Playwright 控制台演示。
+4. 有密钥后跑 `make check-models`。
+5. 变更 1.1、接管工作区、Playwright 控制台演示。

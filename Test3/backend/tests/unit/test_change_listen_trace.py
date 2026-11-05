@@ -14,8 +14,12 @@ def test_classify_cr_levels() -> None:
     assert classify_cr({"modules": ["M1", "M2", "M3"]}, "") == "大变更"
     assert classify_cr({"modules": ["M1"], "changes_p0": True}, "") == "大变更"
     assert classify_cr({"modules": ["M1"], "overturns_issue": True}, "") == "大变更"
-    assert evaluation_pass([4, 4, 3])
-    assert evaluation_pass([5, 5, 5], any_red_line=True)  # red line does not flip pass flag here; UI must highlight
+    ok, flags = evaluation_pass([4, 4, 3])
+    assert ok and not flags["red_line"]
+    ok_red, flags_red = evaluation_pass([5, 5, 5], any_red_line=True)
+    assert ok_red and flags_red["red_line"]
+    blocked, flags_block = evaluation_pass([5, 5, 5], any_blocking=True)
+    assert not blocked and flags_block["blocking"]
 
 
 def test_mask_and_hash() -> None:

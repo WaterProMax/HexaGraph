@@ -26,6 +26,9 @@ ALL_INPUTS = {
     "feedback_group": "FB_TOKEN",
     "review_sheet": "SHEET_TOKEN",
     "estimates": "EST_TOKEN",
+    "rewrite": "REWRITE_TOKEN",
+    "prev_output": "PREVOUT_TOKEN",
+    "review_issues": "REV_ISSUES_TOKEN",
 }
 
 

@@ -26,9 +26,11 @@ def classify_cr(impact: dict[str, Any], kind: str = "") -> Level:
     return "小变更"
 
 
-def evaluation_pass(scores: list[int], *, any_red_line: bool = False, any_blocking: bool = False) -> bool:
+def evaluation_pass(scores: list[int], *, any_red_line: bool = False, any_blocking: bool = False) -> tuple[bool, dict[str, bool]]:
+    flags = {"red_line": any_red_line, "blocking": any_blocking}
     if not scores:
-        return False
+        return False, flags
     if any_blocking:
-        return False
-    return sum(scores) / len(scores) >= 3.5
+        return False, flags
+    ok = sum(scores) / len(scores) >= 3.5
+    return ok, flags

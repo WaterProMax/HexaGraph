@@ -41,6 +41,7 @@ export const CONTROL_ENABLED: Record<string, string[]> = {
   skip: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
   "force-pass": ["needs_human", "failed"],
   pause: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
+  resume: ["pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"],
 };
 
 export function controlEnabled(action: string, state: string): boolean {

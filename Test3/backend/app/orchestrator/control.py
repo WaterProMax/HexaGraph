@@ -5,7 +5,7 @@ from app.errors import IllegalTransition, ValidationFailed
 # Design.md 16.3 availability
 CONTROL_TABLE = {
     "pause": {"pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"},
-    "resume": {"pending", "ready"},
+    "resume": {"pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"},
     "retry": {"needs_human", "failed"},
     "skip": {"pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"},
     "takeover": {"pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"},
@@ -26,5 +26,4 @@ def require_control(action: str, state: str, *, reason: str | None = None) -> No
     if not control_allowed(action, state):
         raise IllegalTransition(f"{action} not allowed in {state}")
     if action in {"force-pass", "skip"} and not (reason or "").strip():
-        if action == "force-pass":
-            raise ValidationFailed("强制通过必须写理由")
+        raise ValidationFailed("强制通过/跳过必须写理由")

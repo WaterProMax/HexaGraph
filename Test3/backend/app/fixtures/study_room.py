@@ -115,6 +115,7 @@ def scripted_m1_queue() -> list[dict[str, Any]]:
             queue.append({"body": u.body, "mention": u.mention, "announce_finish": u.position == "小结"})
         else:
             queue.append({"questions": [], "utterance": u.model_dump()})
+    queue.append({"issues": [i.model_dump() for i in issues()], "notes": "讨论结束，七条争议已回应"})
     queue.append(
         {
             "elevator": "给期末找不到座位的本科生看各层剩余座位",

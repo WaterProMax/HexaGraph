@@ -93,6 +93,7 @@ def test_task_graph_stub_before_impl() -> None:
 
 def test_fake_done_rejected() -> None:
     assert classify({"exit_code": 1}) == "代码缺陷"
+    assert classify({"denied": True, "exit_code": 1}) == "代码缺陷"
 
 
 def test_force_pass_requires_reason() -> None:

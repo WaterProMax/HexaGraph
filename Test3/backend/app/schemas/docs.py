@@ -51,6 +51,7 @@ class Utterance(BaseModel):
     reasons: str = ""
     claims: list[Claim] = Field(default_factory=list)
     mention: list[Role] = Field(default_factory=list)
+    rule: str = ""
 
 
 class Issue(BaseModel):

@@ -41,9 +41,17 @@ async def test_m1_study_room_scripted(tmp_path: Path) -> None:
     sources = [s for f in spec["features"] for s in f["sources"]]
     assert "I-02" in sources
     assert r3["gate"]["kind"] == "SPEC基线确认"
-    # first-round independence: each role call messages must not include other roles' questions
-    # recorded on ScriptedProvider
+    from app.fixtures.study_room import QUESTIONS
+
     first_round = provider.calls[2:7]
-    for call in first_round:
+    roles = ("产品经理", "用户代表", "付费方代表", "开发", "测试")
+    texts = {role: [q.text for q in QUESTIONS if q.role == role] for role in roles}
+    assert len(first_round) == 5
+    for call, role in zip(first_round, roles, strict=True):
         blob = str(call["messages"])
-        assert "Q-01" not in blob or "questions" not in blob
+        for other, qs in texts.items():
+            if other == role:
+                continue
+            for text in qs:
+                assert text not in blob, f"{role} saw {other} question: {text}"
+    assert any(e.get("payload", {}).get("rule") for e in run.events if e["kind"] == "discussion.message")

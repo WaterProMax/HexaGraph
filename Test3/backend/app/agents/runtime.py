@@ -67,7 +67,14 @@ async def call_agent(
     schema_cls = SCHEMA_MAP.get(schema_name or role.output_schema)
     last_error = ""
     for attempt in range(2):
-        result = await gateway.complete(role.slot, messages, role=name)
+        schema = schema_cls.model_json_schema() if schema_cls else None
+        result = await gateway.complete(
+            role.slot,
+            messages,
+            role=name,
+            temperature=role.temperature,
+            schema=schema,
+        )
         payload = result.parsed
         if payload is None:
             try:
@@ -106,7 +113,13 @@ async def run_tool_agent(
     role = registry.get(name)
     messages = render_prompt(role, inputs)
     for _ in range(max_steps):
-        result = await gateway.complete(role.slot, messages, role=name, tools=getattr(toolset, "specs", None))
+        result = await gateway.complete(
+            role.slot,
+            messages,
+            role=name,
+            temperature=role.temperature,
+            tools=getattr(toolset, "specs", None),
+        )
         if result.tool_calls:
             for call in result.tool_calls:
                 output = await toolset.execute(call["name"], call.get("arguments") or {})

@@ -1,4 +1,4 @@
-import { Card, Form, Input, List, Table, Tag, Button } from "antd";
+import { Card, Form, Input, Table, Tag, Button } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { api } from "../api/client";
@@ -25,7 +25,17 @@ export default function Discussion() {
         <Table rowKey="issue" dataSource={data?.merge || []} columns={[{ title: "I", dataIndex: "issue" }, { title: "来自", dataIndex: "from_questions", render: (v) => (v || []).join(",") }, { title: "问题", dataIndex: "text" }]} size="small" />
       </Card>
       <Card title="发言">
-        <List dataSource={data?.utterances || []} renderItem={(u: any) => <List.Item>[{u.seq}] {u.role} {u.body}</List.Item>} />
+        <Table
+          rowKey="seq"
+          dataSource={data?.utterances || []}
+          columns={[
+            { title: "#", dataIndex: "seq", width: 56 },
+            { title: "角色", dataIndex: "role", width: 100 },
+            { title: "规则", dataIndex: "rule", width: 72 },
+            { title: "发言", dataIndex: "body" },
+          ]}
+          size="small"
+        />
       </Card>
       <Card title="争议清单">
         <Table

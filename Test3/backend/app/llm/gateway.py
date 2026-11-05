@@ -78,6 +78,9 @@ class Gateway:
             self.events.append({"kind": "llm.fallback", "slot": slot, "fallback": cfg.fallback})
             try:
                 result = await self.provider.complete(slot, messages, model=cfg.fallback, **kwargs)
+                self.stats["tokens_in"] += result.tokens_in
+                self.stats["tokens_out"] += result.tokens_out
+                self.stats["calls"] += 1
                 self._persist(slot, messages, result)
                 return result
             except Exception as exc:  # noqa: BLE001

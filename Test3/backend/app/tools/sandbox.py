@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -71,11 +72,16 @@ async def run_command(
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
     try:
         raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        if proc.pid:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                proc.kill()
         await proc.wait()
         return {"exit_code": -1, "output": "timeout", "timeout": True, "truncated": False}
     text = raw.decode("utf-8", errors="replace")

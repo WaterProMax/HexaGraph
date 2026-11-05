@@ -4,10 +4,17 @@ from typing import Any
 
 
 def judge_output(exit_code: int, output: str, patterns: dict[str, list[str]] | None = None) -> dict[str, Any]:
-    patterns = patterns or {
+    defaults = {
         "empty": ["no tests ran", "collected 0 items", "no tests collected"],
         "skip": ["skipped", "Skip"],
     }
+    if patterns is None:
+        patterns = defaults
+    else:
+        patterns = {
+            "empty": patterns["empty"] if "empty" in patterns else defaults["empty"],
+            "skip": patterns["skip"] if "skip" in patterns else defaults["skip"],
+        }
     low = output.lower()
     empty = any(p.lower() in low for p in patterns["empty"])
     skip_all = any(p.lower() in low for p in patterns["skip"]) and ("passed" not in low)

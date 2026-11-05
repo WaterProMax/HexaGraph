@@ -73,6 +73,20 @@ def changed_files(ws: Path, base: str = "HEAD~1") -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def dirty_files(ws: Path) -> list[str]:
+    _, out = _git_sync(ws, "status", "--porcelain")
+    names: list[str] = []
+    for line in out.splitlines():
+        if len(line) >= 4:
+            names.append(line[3:].strip())
+    return names
+
+
+def head_sha(ws: Path) -> str:
+    _, sha = _git_sync(ws, "rev-parse", "HEAD")
+    return sha.strip()
+
+
 def merge(repo: Path, branch: str) -> dict[str, object]:
     with _merge_lock:
         _, before = _git_sync(repo, "rev-parse", "HEAD")

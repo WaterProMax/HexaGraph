@@ -11,8 +11,9 @@ initial_files:
         assert True
 whitelist_prefixes:
   - pytest
-  - python
-  - ruff
+  - python -m pytest
+  - python -m
+  - ruff check
 forbidden_prefixes:
   - pip
   - curl

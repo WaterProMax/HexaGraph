@@ -9,8 +9,8 @@ $ cd Test3/backend && uv run ruff check app tests
 All checks passed!
 
 $ cd Test3/backend && uv run pytest -q -m "not live"
-.......................................................                  [100%]
-# 55 passed（collect-only 分文件：unit 44 + integration 4 + e2e 6 + prototype 1）
+................................................................          [100%]
+# 64 passed（含本轮必须项：拒绝假通过、修复带上下文、退回再讨论、监听不硬编码）
 
 $ cd Test3 && make e2e
 # 等同 pytest tests/e2e：6 passed
