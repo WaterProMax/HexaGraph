@@ -1,0 +1,39 @@
+digraph full {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.5, ranksep=0.34, dpi=200, pad=0.2, newrank=true];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.16,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+
+    idea [label="输入：一两句话的想法", fillcolor="#FFFFFF"];
+
+    subgraph cluster_req {
+        label="需求阶段（第 0–4 步）"; fontname="PingFang SC"; fontsize=11; style="rounded,dashed"; color="#4C7BD4";
+        s0 [label="0  想法检查 + 初步做法"];
+        s1 [label="1  多体讨论 → 争议清单", fillcolor="#E6F0FF", color="#4C7BD4", penwidth=1.6];
+        s2 [label="2  建设方案"];
+        s3 [label="3  多方评价"];
+        s4 [label="4  需求规格　SPEC 基线", fillcolor="#FFFFFF", color="#D4A04C", penwidth=1.8];
+    }
+    subgraph cluster_impl {
+        label="实现阶段（第 5–8 步）"; fontname="PingFang SC"; fontsize=11; style="rounded,dashed"; color="#3D9A6A";
+        s5 [label="5  设计规格　DESIGN 基线", fillcolor="#FFFFFF", color="#D4A04C", penwidth=1.8];
+        s6 [label="6  开发任务分解　PLAN 基线", fillcolor="#FFFFFF", color="#D4A04C", penwidth=1.8];
+        s7 [label="7  任务编排与执行\n编排器调度，编码 / 评审 Agent 执行", fillcolor="#E3F4EA", color="#3D9A6A", penwidth=1.6];
+        s8 [label="8  集成验收与交付　BUILD 基线", fillcolor="#FFFFFF", color="#D4A04C", penwidth=1.8];
+    }
+
+    console [label="执行可视化与控制台\n看进度 · 暂停 · 重试 · 跳过 · 接管", fillcolor="#FFF4E0", color="#D4A04C"];
+    cr  [label="需求变更流程\n影响分析 → 评价 → 我决定\n→ 增量更新各基线", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+    env [label="环境监听\n导入反馈 → 提炼 → 评价 → 分流", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+
+    idea -> s0 -> s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8;
+    s3 -> s1 [label="争议类意见", style=dashed, constraint=false];
+    s8 -> env [label="发布后收集反馈", style=dashed];
+
+    console -> s7 [dir=both, style=dashed, constraint=false];
+    {rank=same; s7; console;}
+    {rank=same; s4; cr;}
+    env -> cr [label="需要修改基线"];
+    s7 -> cr [label="任务描述不清\n发现需求问题", style=dashed, constraint=false];
+    cr -> s4 [label="更新 SPEC，再依次\n更新 DESIGN / PLAN", style=dashed, constraint=false];
+    env -> idea [label="全新想法\n重新从第 0 步开始", style=dashed, constraint=false];
+}

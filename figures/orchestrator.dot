@@ -1,0 +1,33 @@
+digraph orch {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.35, ranksep=0.36, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.16,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+    pick  [label="调度器选出就绪任务\n依赖完成 · 写集不冲突 · 预算和并发允许", fillcolor="#FFFFFF"];
+    prep  [label="准备\n从集成分支建任务工作区，打包上下文"];
+    code  [label="编码\n编码 Agent 在写集范围内修改", fillcolor="#E3F4EA", color="#3D9A6A", penwidth=1.6];
+    check [label="自动校验（程序）\n运行任务卡里的验收命令"];
+    rev   [label="独立评审\n另一个模型对照任务卡和接口约定看改动", fillcolor="#E3F4EA", color="#3D9A6A", penwidth=1.6];
+    merge [label="合并与回归\n并入集成分支，跑回归测试"];
+    done  [label="done\n留下证据：命令输出 + 评审结论 + 合并记录", fillcolor="#DFF3E3", color="#3D9A6A"];
+    cls   [label="失败分类（规则）", shape=diamond, style="filled", fillcolor="#FFFFFF"];
+    fixr  [label="代码缺陷\n带失败证据回到编码\n每任务最多 3 轮", fillcolor="#FFFFFF"];
+    envf  [label="环境故障\n退避重试 / 换备用模型\n不计修复轮", fillcolor="#FFFFFF"];
+    spec  [label="任务描述有问题\n局部重排，需我确认", fillcolor="#FFFFFF"];
+    conf  [label="合并冲突\n生成冲突解决任务", fillcolor="#FFFFFF"];
+    human [label="needs_human\n我在控制台处理：\n重试 · 改任务 · 跳过 · 接管 · 转变更", fillcolor="#FFF4E0", color="#D4A04C"];
+
+    pick -> prep -> code -> check;
+    check -> rev [label="通过"];
+    rev -> merge [label="通过"];
+    merge -> done [label="成功"];
+    check -> cls [label="失败"];
+    rev -> cls [label="不通过"];
+    merge -> cls [label="失败"];
+    cls -> fixr; cls -> envf; cls -> spec; cls -> conf;
+    fixr -> code [label="未超 3 轮", constraint=false];
+    envf -> prep [label="未超重试上限", constraint=false];
+    fixr -> human [label="超限"];
+    envf -> human [label="超限"];
+    spec -> human;
+    conf -> human [label="冲突解决任务也失败"];
+}

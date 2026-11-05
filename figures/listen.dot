@@ -1,0 +1,25 @@
+digraph listen {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.35, ranksep=0.36, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.16,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+    src  [label="反馈来源\n粘贴文本 · 上传 txt / csv / json\n预留采集器接口", fillcolor="#FFFFFF"];
+    imp  [label="导入与脱敏\n去掉姓名、手机号、邮箱等"];
+    dedup[label="去重与聚类\n相似反馈归为一组"];
+    dist [label="提炼（Agent）\n每组形成一条反馈 FB-xx\n必须引用原文编号，区分原话（事实）与归纳（假设）", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+    known[label="已决策去重（程序）\n对照「本版不做」「还没定的问题」\n和已关闭 CR"];
+    eval [label="评价\n三位评估者背靠背打分\n规则合成优先级；红线类单条也升级", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+    route[label="分流（规则）", shape=diamond, style="filled", fillcolor="#FFFFFF"];
+    hum  [label="我确认分流结果", fillcolor="#FFF4E0", color="#D4A04C"];
+    a1   [label="忽略并记录原因", fillcolor="#FFFFFF"];
+    a2   [label="继续观察\n积累到阈值再评", fillcolor="#FFFFFF"];
+    a3   [label="缺陷或小改动\n→ 变更流程", fillcolor="#FFFFFF"];
+    a4   [label="新功能或推翻结论\n→ 变更流程（大变更）", fillcolor="#FFFFFF"];
+    a5   [label="全新想法\n→ 第 0 步", fillcolor="#FFFFFF"];
+
+    src -> imp -> dedup -> dist -> known;
+    known -> eval [label="新问题"];
+    known -> a1 [label="已有结论\n挂到原条目", style=dashed];
+    eval -> route -> hum;
+    hum -> a1; hum -> a2; hum -> a3; hum -> a4; hum -> a5;
+    a2 -> dedup [label="新反馈到达时", style=dashed, constraint=false];
+}

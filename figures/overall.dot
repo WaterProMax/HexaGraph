@@ -1,0 +1,41 @@
+digraph overall {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.35, ranksep=0.32, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.16,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+
+    idea    [label="输入：一两句话的想法", fillcolor="#FFFFFF"];
+    check   [label="0  想法检查\n主持人：用户是谁、要解决什么问题"];
+    human0  [label="我补充说明", fillcolor="#FFF4E0", color="#D4A04C"];
+    target  [label="0  起草初步做法\n产品经理起草、我确认：一句话做法 + 不超过 3 个核心功能设想"];
+    disc    [label="1  多体讨论\n背靠背挑刺 → 合并编号 → 交叉反驳 → 汇总", fillcolor="#E6F0FF", color="#4C7BD4", penwidth=1.6];
+    human1  [label="我查看争议清单\n可裁决待定条目、追加意见、核实假设", fillcolor="#FFF4E0", color="#D4A04C"];
+    prop    [label="2  建设方案\n方案撰写人 + 开发、测试估算"];
+    review  [label="3  多方评价\n四位独立评审打分，意见分类"];
+    human3  [label="我确认或推翻\n推翻须写理由", fillcolor="#FFF4E0", color="#D4A04C"];
+    route   [label="不通过：按意见类型分流\n（退回合计不超过 2 次）", shape=box, style="rounded,filled,dashed", fillcolor="#FFFFFF"];
+    hv      [label="我决定：接受风险\n或先做真人验证", fillcolor="#FFF4E0", color="#D4A04C"];
+    stop    [label="停止\n先验证或重新考虑想法", fillcolor="#FBE9E9", color="#C65A5A"];
+    spec    [label="4  需求规格\n规格撰写人"];
+    sc      [label="规格检查\n形式 · 追溯 · 一致性"];
+    hfix    [label="我人工修改", fillcolor="#FFF4E0", color="#D4A04C"];
+    out     [label="需求规格说明（SPEC 基线）\n进入第 5 步设计规格", fillcolor="#FFFFFF"];
+
+    idea -> check;
+    check -> human0 [label="没说清"];
+    human0 -> check;
+    check -> target [label="说清了"];
+    target -> disc -> human1 -> prop -> review -> human3;
+    human3 -> spec [label="通过"];
+    human3 -> route [label="不通过"];
+    route -> disc [label="有争议类意见", constraint=false];
+    route -> prop [label="只有方案类意见", constraint=false];
+    route -> hv [label="只有验证类意见"];
+    route -> stop [label="已退回 2 次"];
+    hv -> spec [label="接受风险"];
+    hv -> stop [label="先验证"];
+    spec -> sc;
+    sc -> spec [label="未通过\n最多重写 2 次", constraint=false];
+    sc -> out [label="通过"];
+    sc -> hfix [label="重写 2 次仍未通过"];
+    hfix -> out;
+}

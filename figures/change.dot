@@ -1,0 +1,26 @@
+digraph change {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.35, ranksep=0.36, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.16,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+    sub   [label="提出变更 CR-xx\n来源：我 · 评审 · 编排器 · 用户反馈 FB-xx", fillcolor="#FFFFFF"];
+    tri   [label="分级（规则）\n澄清 · 小变更 · 大变更"];
+    imp   [label="影响分析\n程序沿追溯链找出受影响的 F / M / C / T\n已完成任务标为 stale，估算工作量差值", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+    ev    [label="独立评价\n价值 · 开发影响 · 测试与风险\n三位评估者背靠背打分", fillcolor="#F3E8FF", color="#8A5CC4", penwidth=1.6];
+    dec   [label="我决定", fillcolor="#FFF4E0", color="#D4A04C"];
+    rej   [label="拒绝 / 暂缓\n记入「还没定的问题」", fillcolor="#FBE9E9", color="#C65A5A"];
+    disc  [label="需要讨论\n作为争议类意见回到第 1 步", fillcolor="#E6F0FF", color="#4C7BD4"];
+    freeze[label="冻结受影响范围\n暂停相关任务，其余继续"];
+    upd   [label="增量更新基线\nSPEC → DESIGN → PLAN\n只改受影响部分，版本号加一"];
+    re    [label="编排器按新任务图继续\nstale 任务重做，新任务入队"];
+    ver   [label="验证\n追溯检查 + 受影响验收项重跑"];
+    close [label="关闭 CR", fillcolor="#FFFFFF"];
+
+    sub -> tri;
+    tri -> close [label="澄清：不改变行为\n只补充说明", style=dashed];
+    tri -> imp [label="小变更 / 大变更"];
+    imp -> ev -> dec;
+    dec -> rej [label="拒绝或暂缓"];
+    dec -> disc [label="大变更且推翻已有争议结论"];
+    dec -> freeze [label="批准"];
+    freeze -> upd -> re -> ver -> close;
+}

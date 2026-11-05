@@ -1,0 +1,23 @@
+digraph trace {
+    graph [rankdir=LR, fontname="PingFang SC", nodesep=0.35, ranksep=0.5, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=10, margin="0.12,0.06"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+
+    rec  [label="讨论记录\n（完整原文）"];
+    iss  [label="争议清单\nI-01 … I-n\n每条带状态和去向", fillcolor="#E6F0FF", color="#4C7BD4", penwidth=1.6];
+    prop [label="建设方案\n采纳 → 做什么 / 不做什么\n待定、未讨论 → 风险与待定\n（附验证办法和预案）"];
+    rev  [label="评审表\n意见分为：争议类\n方案类 / 验证类"];
+    spec [label="需求规格\n功能「来源」列引用 I-xx\n本版不做 · 还没定的问题\n评审意见落实表"];
+    chk  [label="规格检查\n形式 · 追溯 · 一致性", fillcolor="#FFFFFF"];
+
+    rec -> iss [label="主持人汇总"];
+    iss -> prop;
+    prop -> rev;
+    rev -> iss [label="争议类意见\n回到讨论", style=dashed];
+    rev -> prop [label="方案类意见\n回到方案", style=dashed];
+    iss -> spec [label="按去向逐条落到规格"];
+    prop -> spec;
+    rev -> spec [label="非阻断意见\n进入落实表"];
+    spec -> chk;
+    iss -> chk [label="对照", style=dotted];
+}

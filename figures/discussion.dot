@@ -1,0 +1,45 @@
+digraph discussion {
+    graph [rankdir=TB, fontname="PingFang SC", nodesep=0.25, ranksep=0.38, dpi=200, pad=0.2];
+    node  [shape=box, style="rounded,filled", fillcolor="#F5F7FA", color="#8A94A6", fontname="PingFang SC", fontsize=11, margin="0.15,0.07"];
+    edge  [color="#5B6576", fontname="PingFang SC", fontsize=9, arrowsize=0.7];
+
+    card [label="想法卡片（含初步做法）\n退回时另附争议类评审意见", fillcolor="#FFFFFF"];
+
+    subgraph cluster_r1 {
+        label="第一轮：背靠背挑刺（互相看不到）"; labelloc=t; fontname="PingFang SC"; fontsize=12;
+        style="rounded,dashed"; color="#4C7BD4";
+        p1 [label="产品经理\n2–3 个问题"];
+        u1 [label="用户代表\n2–3 个问题"];
+        s1 [label="付费方代表\n（按需）"];
+        d1 [label="开发\n2–3 个问题"];
+        t1 [label="测试\n2–3 个问题"];
+    }
+
+    merge [label="主持人合并编号\nQ-xx → I-xx，最多 8 条\n超出部分直接标为「未讨论」", fillcolor="#E6F0FF", color="#4C7BD4"];
+
+    subgraph cluster_r2 {
+        label="第二轮：交叉反驳（最多 20 条发言）"; labelloc=t; fontname="PingFang SC"; fontsize=12;
+        style="rounded,dashed"; color="#4C7BD4";
+        pick [label="主持人按选人规则\n决定下一位发言人", fillcolor="#E6F0FF", color="#4C7BD4"];
+        speak [label="被选中的角色发言\n回应编号 + 观点 + 理由\n标注事实或假设"];
+        endq [label="可以结束吗？", shape=diamond, style="filled", fillcolor="#FFFFFF", margin="0.05,0.03"];
+        pick -> speak -> endq;
+        endq -> pick [label="否"];
+    }
+
+    subgraph cluster_r3 {
+        label="第三轮：主持人汇总"; labelloc=t; fontname="PingFang SC"; fontsize=12;
+        style="rounded,dashed"; color="#4C7BD4";
+        sum [label="只依据讨论记录\n逐条判定状态和去向", fillcolor="#E6F0FF", color="#4C7BD4"];
+        list [label="采纳：写结论和去向\n撤回：提出者本人放弃\n待定：写双方说法\n未讨论：没来得及回应", fillcolor="#FFFFFF"];
+        sum -> list;
+    }
+
+    out [label="讨论记录 + 合并表 + 争议清单\n→ 我查看、裁决、核实", fillcolor="#FFF4E0", color="#D4A04C"];
+
+    card -> {p1 u1 s1 d1 t1};
+    {p1 u1 s1 d1 t1} -> merge;
+    merge -> pick;
+    endq -> sum [label="正常结束：前提全部满足\n强制结束：达到 20 条"];
+    list -> out;
+}
