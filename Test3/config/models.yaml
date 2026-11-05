@@ -1,0 +1,69 @@
+provider: dashscope
+base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+api_key_env: DASHSCOPE_API_KEY
+limits:
+  max_concurrency: 6
+  requests_per_minute: 120
+slots:
+  flagship:
+    model: qwen3-max
+    temperature: 0.3
+    max_tokens: 8192
+    fallback: qwen-plus
+    json_mode: true
+    tool_calls: true
+    context_window: 32768
+    price_per_1k_in: 0.0
+    price_per_1k_out: 0.0
+    extra_body: {}
+  flagship_alt:
+    model: deepseek-v3.2
+    temperature: 0.3
+    max_tokens: 8192
+    fallback: qwen3-max
+    json_mode: true
+    tool_calls: true
+    context_window: 65536
+    price_per_1k_in: 0.0
+    price_per_1k_out: 0.0
+    extra_body: {}
+  coder:
+    model: qwen3-coder-plus
+    temperature: 0.2
+    max_tokens: 8192
+    fallback: qwen3-max
+    json_mode: true
+    tool_calls: true
+    context_window: 131072
+    price_per_1k_in: 0.0
+    price_per_1k_out: 0.0
+    extra_body: {}
+  balanced:
+    model: qwen-plus
+    temperature: 0.3
+    max_tokens: 4096
+    fallback: qwen-flash
+    json_mode: true
+    tool_calls: false
+    context_window: 32768
+    price_per_1k_in: 0.0
+    price_per_1k_out: 0.0
+    extra_body: {}
+  fast:
+    model: qwen-flash
+    temperature: 0.1
+    max_tokens: 4096
+    fallback: qwen-plus
+    json_mode: true
+    tool_calls: false
+    context_window: 32768
+    price_per_1k_in: 0.0
+    price_per_1k_out: 0.0
+    extra_body: {}
+  embedding:
+    model: text-embedding-v4
+    dimensions: 1024
+    fallback: ""
+    json_mode: false
+    tool_calls: false
+    extra_body: {}

@@ -1,0 +1,284 @@
+visible_types:
+  - idea_card
+  - questions
+  - merge_table
+  - issue_list
+  - transcript
+  - review_opinions
+  - proposal
+  - spec
+  - design
+  - task_graph
+  - persona
+  - estimates
+  - task_card
+  - interfaces
+  - dependency_outputs
+  - diff
+  - command_output
+  - change_request
+  - impact
+  - baseline
+  - feedback_group
+  - review_sheet
+
+roles:
+  moderator_merge:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/discussion/moderator_merge.md
+    output_schema: MergeOutput
+    visible: [idea_card, questions]
+    tools: []
+  moderator_turn:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/discussion/moderator_turn.md
+    output_schema: ModeratorTurn
+    visible: [idea_card, issue_list, transcript]
+    tools: []
+  moderator_final:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/discussion/moderator_final.md
+    output_schema: FinalSummary
+    visible: [issue_list, transcript]
+    tools: []
+  idea_checker:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/discussion/idea_checker.md
+    output_schema: IdeaCheck
+    visible: [idea_card]
+    tools: []
+  pm_draft:
+    slot: flagship
+    temperature: 0.4
+    prompt: prompts/discussion/pm_draft.md
+    output_schema: IdeaDraft
+    visible: [idea_card]
+    tools: []
+  产品经理:
+    slot: flagship
+    temperature: 0.4
+    prompt: prompts/discussion/pm.md
+    output_schema: RoundOutput
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    tools: []
+  用户代表:
+    slot: flagship_alt
+    temperature: 0.7
+    prompt: prompts/discussion/user_rep.md
+    output_schema: RoundOutput
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    tools: []
+  付费方代表:
+    slot: flagship_alt
+    temperature: 0.7
+    prompt: prompts/discussion/payer_rep.md
+    output_schema: RoundOutput
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    tools: []
+  开发:
+    slot: coder
+    temperature: 0.3
+    prompt: prompts/discussion/dev.md
+    output_schema: RoundOutput
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    tools: []
+  测试:
+    slot: flagship
+    temperature: 0.3
+    prompt: prompts/discussion/qa.md
+    output_schema: RoundOutput
+    visible: [idea_card, questions, merge_table, transcript, review_opinions, persona]
+    tools: []
+  proposal_writer:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/docs/proposal_writer.md
+    output_schema: ProposalDoc
+    visible: [idea_card, issue_list]
+    tools: []
+  review_user:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/docs/review_user.md
+    output_schema: ReviewSheet
+    visible: [idea_card, proposal]
+    tools: []
+  review_dev:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/docs/review_dev.md
+    output_schema: ReviewSheet
+    visible: [idea_card, proposal]
+    tools: []
+  review_qa:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/docs/review_qa.md
+    output_schema: ReviewSheet
+    visible: [idea_card, proposal]
+    tools: []
+  review_expert:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/docs/review_expert.md
+    output_schema: ReviewSheet
+    visible: [idea_card, proposal]
+    tools: []
+  spec_writer:
+    slot: flagship
+    temperature: 0.1
+    prompt: prompts/docs/spec_writer.md
+    output_schema: SpecDoc
+    visible: [idea_card, proposal, issue_list, review_sheet]
+    tools: []
+  spec_checker:
+    slot: flagship_alt
+    temperature: 0.1
+    prompt: prompts/docs/spec_checker.md
+    output_schema: CheckOpinion
+    visible: [spec, proposal, issue_list, review_sheet]
+    tools: []
+  architect:
+    slot: flagship
+    temperature: 0.3
+    prompt: prompts/design/architect.md
+    output_schema: DesignDoc
+    visible: [spec]
+    tools: []
+  review_arch:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/design/review_arch.md
+    output_schema: ReviewSheet
+    visible: [spec, design]
+    tools: []
+  review_quality:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/design/review_quality.md
+    output_schema: ReviewSheet
+    visible: [spec, design]
+    tools: []
+  design_checker:
+    slot: flagship_alt
+    temperature: 0.1
+    prompt: prompts/design/design_checker.md
+    output_schema: CheckOpinion
+    visible: [spec, design]
+    tools: []
+  decomposer:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/tasks/decomposer.md
+    output_schema: TaskGraph
+    visible: [spec, design]
+    tools: []
+  estimate_dev:
+    slot: coder
+    temperature: 0.2
+    prompt: prompts/tasks/estimate_dev.md
+    output_schema: Estimate
+    visible: [task_graph]
+    tools: []
+  estimate_qa:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/tasks/estimate_qa.md
+    output_schema: Estimate
+    visible: [task_graph]
+    tools: []
+  graph_checker:
+    slot: flagship_alt
+    temperature: 0.1
+    prompt: prompts/tasks/graph_checker.md
+    output_schema: CheckOpinion
+    visible: [spec, design, task_graph]
+    tools: []
+  coder:
+    slot: coder
+    temperature: 0.2
+    prompt: prompts/execute/coder.md
+    output_schema: CoderDone
+    visible: [task_card, interfaces, dependency_outputs]
+    tools: [read_file, write_file, list_dir, search, run_command]
+  tester:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/execute/tester.md
+    output_schema: CoderDone
+    visible: [task_card, interfaces, dependency_outputs]
+    tools: [read_file, write_file, list_dir, search, run_command]
+  code_reviewer:
+    slot: flagship_alt
+    temperature: 0.1
+    prompt: prompts/execute/reviewer.md
+    output_schema: CodeReview
+    visible: [task_card, interfaces, diff, command_output]
+    tools: []
+  acceptor:
+    slot: flagship
+    temperature: 0.1
+    prompt: prompts/execute/acceptor.md
+    output_schema: AcceptanceReport
+    visible: [spec]
+    tools: []
+  impact_writer:
+    slot: balanced
+    temperature: 0.3
+    prompt: prompts/change/impact_writer.md
+    output_schema: ImpactNarrative
+    visible: [change_request, impact]
+    tools: []
+  eval_value:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/change/eval_value.md
+    output_schema: CRScore
+    visible: [change_request, impact, baseline]
+    tools: []
+  eval_impact:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/change/eval_impact.md
+    output_schema: CRScore
+    visible: [change_request, impact, baseline]
+    tools: []
+  eval_risk:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/change/eval_risk.md
+    output_schema: CRScore
+    visible: [change_request, impact, baseline]
+    tools: []
+  distiller:
+    slot: flagship
+    temperature: 0.2
+    prompt: prompts/listening/distiller.md
+    output_schema: FeedbackBatch
+    visible: [feedback_group]
+    tools: []
+  fb_eval_value:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/listening/eval_value.md
+    output_schema: FBScore
+    visible: [feedback_group, baseline]
+    tools: []
+  fb_eval_cost:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/listening/eval_cost.md
+    output_schema: FBScore
+    visible: [feedback_group, baseline]
+    tools: []
+  fb_eval_risk:
+    slot: flagship_alt
+    temperature: 0.2
+    prompt: prompts/listening/eval_risk.md
+    output_schema: FBScore
+    visible: [feedback_group, baseline]
+    tools: []

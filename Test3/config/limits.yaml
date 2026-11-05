@@ -1,0 +1,52 @@
+discussion:
+  max_utterances: 20
+  max_issues_round2: 8
+  moderator_every: 4
+  questions_per_role_min: 2
+  questions_per_role_max: 3
+  questions_per_role_reopen_min: 1
+  questions_per_role_reopen_max: 2
+
+idea:
+  max_supplements: 3
+
+rework:
+  max_returns: 2
+
+spec:
+  max_rewrites: 2
+
+design:
+  max_modules: 10
+  max_rewrites: 2
+
+plan:
+  max_points_per_task: 8
+  max_write_files: 8
+  capacity_points: 40
+
+orchestrator:
+  concurrency: 6
+  max_repair_rounds: 6
+  max_env_retries: 3
+  max_replans_per_task: 1
+  max_tool_steps: 30
+  attempt_timeout_s: 600
+  tokens_per_point: 1500000
+  run_token_budget: 20000000
+  warn_ratio: 0.8
+
+acceptance:
+  p1_pass_ratio: 0.9
+  max_fix_cycles: 2
+
+change:
+  max_open: 3
+
+listening:
+  watch_threshold: 3
+  cluster_threshold: 0.78
+
+proposal:
+  max_features: 12
+  estimate_ranks: [1, 2, 3, 5, 8, 13, 21]

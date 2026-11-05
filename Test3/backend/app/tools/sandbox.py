@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import asyncio
+import os
+from pathlib import Path
+from typing import Any
+
+from app.errors import CommandDenied, WriteDenied
+
+
+def normalize_under(root: Path, raw: str) -> Path:
+    if raw.startswith("~"):
+        raise WriteDenied("拒绝 home 路径")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        raise WriteDenied("拒绝绝对路径")
+    root = root.resolve()
+    target = (root / raw).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise WriteDenied(f"路径越界: {raw}") from exc
+    if target.is_symlink():
+        real = target.resolve()
+        try:
+            real.relative_to(root)
+        except ValueError as exc:
+            raise WriteDenied(f"符号链接逃逸: {raw}") from exc
+    return target
+
+
+def in_write_set(path: Path, root: Path, write_set: list[str]) -> bool:
+    rel = path.relative_to(root.resolve()).as_posix()
+    for item in write_set:
+        prefix = item.strip().lstrip("./")
+        if rel == prefix or rel.startswith(prefix.rstrip("/") + "/") or prefix == ".":
+            return True
+    return False
+
+
+_SHELL_META = set(";&|`$<>")
+
+
+def command_allowed(cmd: list[str], whitelist: list[str]) -> bool:
+    if not cmd:
+        return False
+    if any(any(ch in arg for ch in _SHELL_META) for arg in cmd):
+        return False
+    for prefix in whitelist:
+        parts = prefix.split()
+        if cmd[: len(parts)] == parts:
+            return True
+    return False
+
+
+async def run_command(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    whitelist: list[str],
+    timeout: int,
+    env_allow: list[str],
+    truncate: int = 8000,
+) -> dict[str, Any]:
+    if not command_allowed(cmd, whitelist):
+        raise CommandDenied(f"命令不在白名单: {cmd}")
+    env = {k: os.environ[k] for k in env_allow if k in os.environ}
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    try:
+        raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return {"exit_code": -1, "output": "timeout", "timeout": True, "truncated": False}
+    text = raw.decode("utf-8", errors="replace")
+    truncated = len(text) > truncate
+    if truncated:
+        text = text[:truncate] + "\n...[truncated]"
+    return {"exit_code": proc.returncode, "output": text, "timeout": False, "truncated": truncated}
