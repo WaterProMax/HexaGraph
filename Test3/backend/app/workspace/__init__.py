@@ -6,6 +6,7 @@ from app.workspace.gitops import (
     init_repo_sync,
     is_merged,
     merge,
+    remove_worktree,
     rollback_merge,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "init_repo_sync",
     "is_merged",
     "merge",
+    "remove_worktree",
     "rollback_merge",
 ]

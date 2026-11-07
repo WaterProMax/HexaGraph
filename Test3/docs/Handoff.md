@@ -13,47 +13,49 @@
 
 - **执行不再假通过。** `execute_task` 走 `run_tool_agent` + `TaskToolset.write_file/run_command`，跑完全部验收命令，按 profile 的 empty/skip 模式调用 `judge_output`。命令被拒、超时、空验收、无真实产出、写集越界都不能 `done`。合并后在集成分支跑已完成任务验收和 profile `test_command`，失败则回滚。
 - **修复带上下文。** 下一轮编码输入包含 `prev_output` / `review_issues`。LLM/超时/解析失败按 `classify` 的环境故障字段做最多 3 次退避。合并冲突转 `needs_human`。重排关卡会再调分解员并 `check_task_graph`，旧未完成任务标 `cancelled`。
-- **白名单与杀进程。** `python-pytest` 只放行 `pytest` / `python -m pytest` / `python -m` / `ruff check`；超时 `killpg`。
+- **白名单与杀进程。** `python-pytest` 只放行 `pytest` / `python -m pytest` / `python -m ruff` / `ruff check`；`forbidden_prefixes` 先于白名单拦截（含 `python -m pip`）；超时 `killpg`。
 - **验收。** `accept()` 在集成分支实跑 F/N 对应验收命令并写 `reason`。`验收确认` 在 `pass=False` 时必须带理由，否则拒绝。前端未通过时禁用空理由批准。
 - **限制与调度。** 每个 run `deepcopy` 一份 limits；PATCH 深合并并校验键。`schedule_once` 用 `asyncio.gather` 并发所选任务，传入 `budget_exhausted`，按任务累计令牌，超限 `budget.warn` / `needs_human`。
 - **控制。** `resume` 与 `pause` 状态集一致；`skip`/`force-pass` 必须写理由；`retry` 会再走执行器；关卡只能 pending 裁决一次，带乐观锁；运行级 pause/resume/terminate 发 `control.*`。
 - **讨论。** `Utterance.rule` 写入规则号，事件和讨论页可见。评审争议类退回会 `reopen_issue` 并续 I 编号；`moderator_final` 会调用；无效发言重写一次。
 - **监听。** 提炼/评估走 `call_agent`；红线和类别来自 Agent。关键词只作已决策去重辅助。空 scripted 夹具时不会再因「学号/别的楼」推出 I-03/I-04。
-- **变更。** `evaluation_pass` 返回 `(ok, flags)`，红线单独标出。路由传递 `kind`。批准发 `task.state_changed(change_impact)` 且 stale→ready。批准后增量升到 1.1，未受影响条目逐字保留，状态标 `applied`。
-- **网关。** 角色温度和 schema 传给提供者；备用模型同样累加令牌，并把 `llm.fallback` 写入 run 事件。
+- **变更。** `evaluation_pass` 返回 `(ok, flags)`，红线单独标出。路由传递 `kind`。批准走 `spec_writer`/`architect`/`decomposer` 增量重写，只 splice 受影响条目，版本按已冻结基线递增（1.1→1.2）；驳回标 `rejected`。`stale` 保持到调度器发 `change_approved`。
+- **网关。** 角色温度和 schema 传给提供者；备用模型同样累加令牌，并把 `llm.fallback` 写入 run 事件。工具消息带 assistant `tool_calls.id` 与 `tool_call_id`；scripted 提供者校验协议。
+- **关卡驳回。** SPEC/DESIGN/PLAN 驳回重写；争议清单驳回重新开同一类关卡；重排/变更驳回只记录不执行。
+- **并发合并。** 每个 run 一把 `asyncio.Lock` 包住 merge + 回归 + 回滚，失败 `reset --hard` 不会抹掉其他已合并任务。
+- **运行态。** `emit` 写 JSONL + snapshot + EventBus；启动时恢复并 `recover_tasks`。任务状态只经 `_set_state` → `apply_transition`。
+- **设计评审。** `run_design` 调 `review_arch`/`review_quality`，不通过走 `route_design_review`。
+- **文档重写循环。** `_write_checked` 把检查错误回给撰写人，最多 N 次。
+- **冲突 worktree。** `_unlock_origin_after_conflict` 用 `git worktree remove --force` + prune；`create_worktree` 遇残留会清登记后重试。
+- **令牌。** 网关按调用记到 ContextVar 累加器，并发任务不再用全局差值重复计。
 
 ## 已知限制（本轮仍未做）
 
-1. **HTTP 运行态在内存。** `Workbench` 持有 projects/runs。SQLAlchemy / Alembic / `EventBus` 有测试，但主路径不写 SQLite。重启丢失。
-2. **任务状态有两处写入。** 计划要求只经 `transition()`。内存路径用 `next_task_state` / 直接赋值。
-3. **P07–P11 全链路仍薄。** 没有想法→验收的一条 scripted 长跑。设计评审未接两位架构评审。
-4. **控制未完成项。** `patch` 明确拒绝。takeover / submit-takeover、终止二次确认、5 秒调度兜底已补。
-5. **令牌。** scripted 提供者为 0，预算页在 scripted 下看不到消耗。
-6. **监听聚类。** embedding 失败走 `cluster_fast`（fast 槽），不再回退字符向量。没有 40 条 E8 全案。
-7. **变更 1.1。** 批准后 SPEC/DESIGN/PLAN 升 1.1，未受影响条目保持逐字相同，CR 标 `applied`。
-8. **前端。** 无 Playwright、无录屏。
-9. **E1–E10 replay。** 只有 README，无编号 JSON。
-10. **真实百炼。** 未跑 `make check-models` / `make test-live`。
-11. **SSE。** 15 秒轮询内存事件。
-12. **`POST /config/models/test`。** 固定返回。
+1. **主路径仍不是 SQLite 双写。** 运行态落 JSONL/snapshot，可重启恢复；SQLAlchemy 事务路径仍主要给测试。
+2. **控制未完成项。** `patch` 明确拒绝。takeover / submit-takeover、终止二次确认、5 秒调度兜底已补。
+3. **监听聚类。** embedding 失败走 `cluster_fast`（fast 槽），不再回退字符向量。没有 40 条 E8 全案。
+4. **前端。** 无 Playwright、无录屏。
+5. **E1–E10 replay。** 只有 README，无编号 JSON。
+6. **真实百炼。** 未跑 `make check-models` / `make test-live`。工具协议已在 scripted 侧校验。
+7. **SSE。** 15 秒轮询内存事件。
+8. **`POST /config/models/test`。** 固定返回。
 
 ## 与设计的偏差
 
 | 设计 | 实现 |
 |---|---|
-| 阶段/任务/事件持久化 | 内存为主，DB 测试旁路 |
-| 任务状态只经 `transition()` | 内存路径直接改 |
-| 设计两位背靠背评审 | 未接线 |
+| 阶段/任务/事件持久化 | JSONL + snapshot + EventBus；尚未与 SQLite 同一事务 |
+| 任务状态只经 `transition()` | 内存路径走 `apply_transition`（与 DB `transition()` 同一写入函数） |
+| 设计两位背靠背评审 | 已接线 `review_arch` / `review_quality` |
 | replay E1–E10 | 未录 |
 | 反馈 HMAC 必填 | API 缺密钥 400；单测直接传 key |
 | embedding 聚类 | 失败走 fast 槽分批归类，不再用字符向量 |
 | 默认 LLM 为 dashscope | 进程默认 `scripted`，避免空密钥外呼 |
-| 变更批准即应用 1.1 | 批准后升 1.1 并标 `applied` |
+| 变更批准即应用 1.1 | 增量重写后升小版本（1.1、1.2…），标 `applied` |
 
 ## 建议下一步
 
 1. 把 `Workbench` 每次 `emit` / 关卡 / 任务改写落到同一 SQLite 事务。
-2. 内存任务改走 `transition()`。
-3. 录 E1–E10 replay，补想法→验收 e2e。
-4. 有密钥后跑 `make check-models`。
-5. Playwright 控制台演示；录 E1–E10 replay。
+2. 录 E1–E10 replay。
+3. 有密钥后跑 `make check-models` / `make test-live`。
+4. Playwright 控制台演示。

@@ -5,9 +5,10 @@ import copy
 import json
 import shutil
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.agents.runtime import RoleRegistry, call_agent, run_tool_agent
 from app.change.classify import classify_cr, evaluation_pass
@@ -19,22 +20,26 @@ from app.docs.checks import (
     check_spec,
     check_task_graph,
     review_pass,
+    route_design_review,
     route_review,
 )
-from app.errors import AgentOutputError, CommandDenied, RevisionConflict, ValidationFailed
+from app.errors import AgentOutputError, CommandDenied, IllegalTransition, RevisionConflict, ValidationFailed
+from app.events.bus import BUS, rebuild_task_states
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
 from app.listening.distill import validate_distill
 from app.listening.known import match_known
 from app.listening.mask import hash_author, mask_text
 from app.listening.route import route as route_feedback
-from app.llm.gateway import Gateway
+from app.llm.gateway import USAGE_ACCUMULATOR, Gateway
 from app.orchestrator.budget import check_budget, tokens_budget
 from app.orchestrator.classify import classify, failure_signature
 from app.orchestrator.control import require_control
+from app.orchestrator.recovery import recover_tasks
 from app.orchestrator.replan import propose_replan
 from app.orchestrator.scheduler import select_tasks
-from app.orchestrator.states import next_task_state
+from app.orchestrator.states import can_transition
+from app.orchestrator.transition import apply_transition, restore_task_state
 from app.orchestrator.validator import judge_output
 from app.schemas.common import IdeaCheck, IdeaDraft
 from app.schemas.docs import (
@@ -51,6 +56,7 @@ from app.schemas.docs import (
 )
 from app.settings import load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
+from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
 from app.trace.service import TraceGraph
@@ -61,6 +67,7 @@ from app.workspace.gitops import (
     dirty_files,
     init_repo_sync,
     merge,
+    remove_worktree,
     rollback_merge,
     tag_build,
 )
@@ -101,10 +108,11 @@ class Workbench:
         self.models = load_models()
         self.roles = load_roles()
         self.profile = load_profile()
-        self._token_mark = 0
         self._loop_task: asyncio.Task[None] | None = None
         self._loop_stop: asyncio.Event | None = None
         self.schedule_interval = 5.0
+        self._merge_locks: dict[str, asyncio.Lock] = {}
+        self.restore_runs()
 
     def start_loop(self) -> None:
         if self._loop_task and not self._loop_task.done():
@@ -141,15 +149,194 @@ class Workbench:
                         continue
 
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
-        run.events.append(
-            {
-                "seq": len(run.events) + 1,
-                "kind": kind,
-                "subject": subject,
-                "payload": payload or {},
-                "actor": actor,
-            }
+        event = {
+            "seq": len(run.events) + 1,
+            "kind": kind,
+            "subject": subject,
+            "payload": payload or {},
+            "actor": actor,
+        }
+        run.events.append(event)
+        BUS.emit_sync(run.id, kind, subject, event["payload"], actor, seq=event["seq"])
+        self._persist_event(run, event)
+
+    def _persist_event(self, run: RunState, event: dict[str, Any]) -> None:
+        folder = self.data_dir / "runs" / run.id
+        folder.mkdir(parents=True, exist_ok=True)
+        with (folder / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._persist_snapshot(run)
+
+    def _persist_snapshot(self, run: RunState) -> None:
+        folder = self.data_dir / "runs" / run.id
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "snapshot.json").write_text(json.dumps(self._serialize_run(run), ensure_ascii=False), encoding="utf-8")
+        projects_path = self.data_dir / "projects.json"
+        projects_path.write_text(json.dumps(self.projects, ensure_ascii=False), encoding="utf-8")
+
+    def _serialize_run(self, run: RunState) -> dict[str, Any]:
+        return {
+            "id": run.id,
+            "project_id": run.project_id,
+            "idea": run.idea,
+            "status": run.status,
+            "revision": run.revision,
+            "paused": run.paused,
+            "pending_human": run.pending_human,
+            "tokens_used": run.tokens_used,
+            "engine": {
+                "current": run.engine.current,
+                "returns": run.engine.returns,
+                "supplements": run.engine.supplements,
+                "fix_cycles": run.engine.fix_cycles,
+                "history": run.engine.history,
+            },
+            "ids": run.ids.snapshot(),
+            "artifacts": run.artifacts,
+            "gates": run.gates,
+            "events": run.events,
+            "tasks": run.tasks,
+            "crs": run.crs,
+            "feedback": run.feedback,
+            "raw_feedback": run.raw_feedback,
+            "trace": run.trace.links,
+            "limits": run.limits,
+            "skip_continue": sorted(run.skip_continue),
+        }
+
+    def _deserialize_run(self, data: dict[str, Any]) -> RunState:
+        run = RunState(
+            id=data["id"],
+            project_id=data["project_id"],
+            idea=data.get("idea") or "",
+            status=data.get("status") or "active",
+            revision=int(data.get("revision") or 1),
+            paused=bool(data.get("paused")),
+            pending_human=bool(data.get("pending_human")),
+            tokens_used=int(data.get("tokens_used") or 0),
+            artifacts=data.get("artifacts") or {},
+            gates=data.get("gates") or [],
+            events=data.get("events") or [],
+            tasks=data.get("tasks") or {},
+            crs=data.get("crs") or [],
+            feedback=data.get("feedback") or [],
+            raw_feedback=data.get("raw_feedback") or [],
+            limits=data.get("limits") or copy.deepcopy(self.limits),
+            skip_continue=set(data.get("skip_continue") or []),
         )
+        engine = data.get("engine") or {}
+        run.engine.current = engine.get("current") or "0"
+        run.engine.returns = int(engine.get("returns") or 0)
+        run.engine.supplements = int(engine.get("supplements") or 0)
+        run.engine.fix_cycles = int(engine.get("fix_cycles") or 0)
+        run.engine.history = list(engine.get("history") or [])
+        run.ids = IdAllocator(data.get("ids") or {})
+        run.trace.links = list(data.get("trace") or [])
+        return run
+
+    def restore_runs(self) -> None:
+        projects_path = self.data_dir / "projects.json"
+        if projects_path.exists():
+            try:
+                loaded = json.loads(projects_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    self.projects.update(loaded)
+            except json.JSONDecodeError:
+                pass
+        root = self.data_dir / "runs"
+        if not root.exists():
+            return
+        for snap in root.glob("*/snapshot.json"):
+            try:
+                data = json.loads(snap.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            run = self._deserialize_run(data)
+            events_path = snap.parent / "events.jsonl"
+            if events_path.exists():
+                loaded_events = []
+                for line in events_path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        loaded_events.append(json.loads(line))
+                if loaded_events:
+                    run.events = loaded_events
+            self._rebuild_task_states(run)
+            repo = snap.parent / "repo"
+            if (repo / ".git").exists() and run.tasks:
+                recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
+            self.runs[run.id] = run
+            self._persist_snapshot(run)
+
+    def _rebuild_task_states(self, run: RunState) -> None:
+        if not run.tasks:
+            return
+        rows = [
+            EventRow(
+                run_id=run.id,
+                seq=int(event.get("seq") or index + 1),
+                kind=str(event.get("kind") or ""),
+                subject=str(event.get("subject") or ""),
+                actor=str(event.get("actor") or "system"),
+                payload_json=json.dumps(event.get("payload") or {}, ensure_ascii=False),
+            )
+            for index, event in enumerate(run.events)
+        ]
+        rebuilt = rebuild_task_states(rows, {code: "pending" for code in run.tasks})
+        for code, state in rebuilt.items():
+            if code in run.tasks:
+                restore_task_state(run.tasks[code], state)
+
+    def _set_state(
+        self,
+        run: RunState,
+        task: dict[str, Any],
+        event: str,
+        *,
+        reason: str = "",
+        extra: dict[str, Any] | None = None,
+        actor: str = "system",
+    ) -> str:
+        prev = task["state"]
+        try:
+            nxt = apply_transition(task, event, reason=reason, extra=extra)
+        except IllegalTransition:
+            self.emit(
+                run,
+                "orchestrator.illegal_transition",
+                str(task.get("code") or ""),
+                {"from": prev, "event": event, "reason": reason},
+                actor,
+            )
+            raise
+        payload = {"code": task["code"], "from": prev, "to": nxt, "event": event, "reason": reason, **(extra or {})}
+        self.emit(run, "task.state_changed", task["code"], payload, actor)
+        return nxt
+
+    def _merge_lock_for(self, run: RunState) -> asyncio.Lock:
+        lock = self._merge_locks.get(run.id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._merge_locks[run.id] = lock
+        return lock
+
+    @contextmanager
+    def _usage_scope(self, run: RunState, task: dict[str, Any] | None = None):
+        acc = {"tokens_in": 0, "tokens_out": 0}
+        token = USAGE_ACCUMULATOR.set(acc)
+        try:
+            yield acc
+        finally:
+            USAGE_ACCUMULATOR.reset(token)
+            self._apply_usage(run, task, acc)
+
+    def _apply_usage(self, run: RunState, task: dict[str, Any] | None, acc: dict[str, int]) -> None:
+        delta = int(acc.get("tokens_in") or 0) + int(acc.get("tokens_out") or 0)
+        if delta:
+            run.tokens_used += delta
+            if task is not None:
+                task["tokens_used"] = int(task.get("tokens_used") or 0) + delta
+        self._drain_gateway(run)
+        self._emit_budget(run, task)
 
     def create_project(self, name: str, profile: str = "python-pytest") -> dict[str, Any]:
         pid = str(uuid.uuid4())
@@ -186,27 +373,6 @@ class Workbench:
 
         provider.queue = list(scripted_m1_queue())
 
-    def _token_snapshot(self) -> int:
-        return int(self.gateway.stats.get("tokens_in", 0)) + int(self.gateway.stats.get("tokens_out", 0))
-
-    def _charge(self, run: RunState) -> None:
-        used = self._token_snapshot()
-        delta = used - self._token_mark
-        self._token_mark = used
-        if delta > 0:
-            run.tokens_used += delta
-        self._drain_gateway(run)
-        self._emit_budget(run)
-
-    def _charge_task(self, run: RunState, task: dict[str, Any], mark: int) -> None:
-        used = self._token_snapshot()
-        delta = max(0, used - mark)
-        if delta:
-            run.tokens_used += delta
-            task["tokens_used"] = int(task.get("tokens_used") or 0) + delta
-        self._drain_gateway(run)
-        self._emit_budget(run, task)
-
     def _drain_gateway(self, run: RunState) -> None:
         while self.gateway.events:
             ev = self.gateway.events.pop(0)
@@ -231,8 +397,9 @@ class Workbench:
         limit = tokens_budget(int(card.points), int(orch.get("tokens_per_point") or 1_500_000))
         tinfo = check_budget(int(task.get("tokens_used") or 0), limit, warn_ratio=float(orch.get("warn_ratio") or 0.8))
         if tinfo["exceeded"]:
-            task["state"] = "needs_human"
             task["last_error"] = "token_budget"
+            if can_transition(task["state"], "budget_or_stuck"):
+                self._set_state(run, task, "budget_or_stuck", extra=tinfo)
             self.emit(run, "budget.exceeded", task["code"], tinfo)
 
     def _judge_patterns(self) -> dict[str, list[str]]:
@@ -242,23 +409,56 @@ class Workbench:
         }
 
     def _whitelist(self) -> list[str]:
-        return list(self.profile.get("whitelist_prefixes") or ["pytest", "python -m pytest", "python -m", "ruff check"])
+        return list(self.profile.get("whitelist_prefixes") or ["pytest", "python -m pytest", "python -m ruff", "ruff check"])
+
+    def _forbidden(self) -> list[str]:
+        return list(self.profile.get("forbidden_prefixes") or [])
+
+    def _require_model(self, value: Any, expected: type, role: str) -> Any:
+        if not isinstance(value, expected):
+            raise AgentOutputError(f"{role} output type {type(value).__name__}, expected {expected.__name__}")
+        return value
+
+    async def _write_checked(
+        self,
+        run: RunState,
+        role: str,
+        inputs: dict[str, Any],
+        check: Callable[[Any], list[str]],
+        expected: type,
+        *,
+        max_rewrites: int = 2,
+    ) -> tuple[Any, list[str]]:
+        payload = dict(inputs)
+        last_doc: Any = None
+        errors: list[str] = []
+        for attempt in range(max_rewrites + 1):
+            doc = await call_agent(role, payload, registry=self.registry, gateway=self.gateway)
+            self._require_model(doc, expected, role)
+            last_doc = doc
+            errors = check(doc)
+            if not errors:
+                return doc, []
+            payload = {**inputs, "rewrite": {"errors": errors, "attempt": attempt + 1}}
+        return last_doc, errors
+
+    def _max_rewrites(self, run: RunState, section: str) -> int:
+        return int((run.limits.get(section) or {}).get("max_rewrites") or 2)
 
     async def start_idea(self, run: RunState) -> dict[str, Any]:
-        card = IdeaCard(raw=run.idea)
-        check = await call_agent("idea_checker", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
-        assert isinstance(check, IdeaCheck)
-        card.user, card.problem, card.needs_payer, card.payer = check.user, check.problem, check.needs_payer, check.payer
-        if check.missing and not check.ok:
-            self._charge(run)
-            return self._gate(run, "想法补充", {"missing": check.missing, "card": card.model_dump()})
-        draft = await call_agent("pm_draft", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
-        assert isinstance(draft, IdeaDraft)
-        card.approach = draft.approach
-        card.features = draft.features
-        run.artifacts["idea_card"] = card.model_dump()
-        self._charge(run)
-        return self._gate(run, "初步做法确认", {"card": card.model_dump()})
+        with self._usage_scope(run):
+            card = IdeaCard(raw=run.idea)
+            check = await call_agent("idea_checker", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
+            self._require_model(check, IdeaCheck, "idea_checker")
+            card.user, card.problem, card.needs_payer, card.payer = check.user, check.problem, check.needs_payer, check.payer
+            if check.missing and not check.ok:
+                return self._gate(run, "想法补充", {"missing": check.missing, "card": card.model_dump()})
+            draft = await call_agent("pm_draft", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
+            self._require_model(draft, IdeaDraft, "pm_draft")
+            card.approach = draft.approach
+            card.features = draft.features
+            run.artifacts["idea_card"] = card.model_dump()
+            return self._gate(run, "初步做法确认", {"card": card.model_dump()})
 
     async def resolve_gate(
         self,
@@ -291,20 +491,39 @@ class Workbench:
             run.engine.apply("idea_confirmed")
             return await self.run_discussion_step(run)
         if kind == "争议清单查看与裁决":
+            if decision != "approve":
+                return self._gate(
+                    run,
+                    "争议清单查看与裁决",
+                    {
+                        "issues": run.artifacts.get("issues") or [],
+                        "reopen": True,
+                        "reason": payload.get("reason") or "驳回",
+                    },
+                )
             self._apply_verdicts(run, payload.get("verdicts") or [])
             run.engine.apply("discussion_viewed")
             return await self.run_proposal(run)
         if kind == "评审确认":
             return await self.after_review_gate(run, decision, payload)
         if kind == "SPEC基线确认":
+            if decision != "approve":
+                run.artifacts["spec_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
+                return await self.run_spec(run)
             self._freeze(run, "SPEC")
             run.engine.apply("spec_confirmed")
             return await self.run_design(run)
         if kind == "DESIGN基线确认":
+            if decision != "approve":
+                run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
+                return await self.run_design(run)
             self._freeze(run, "DESIGN")
             run.engine.apply("design_confirmed")
             return await self.run_plan(run)
         if kind == "PLAN基线确认":
+            if decision != "approve":
+                run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
+                return await self.run_plan(run)
             self._freeze(run, "PLAN")
             run.engine.apply("plan_confirmed")
             self._materialize_tasks(run)
@@ -312,11 +531,18 @@ class Workbench:
         if kind == "验收确认":
             return self._resolve_acceptance(run, decision, payload, gate)
         if kind == "重排提案":
+            if decision != "approve":
+                return {"status": "rejected", "kind": kind}
             return await self._apply_replan(run, payload)
         if kind == "反馈分流确认":
             return {"status": "routed"}
         if kind == "变更决定":
-            return await self.decide_cr(run, payload)
+            body = dict(payload)
+            if decision != "approve":
+                body["decision"] = "驳回"
+            elif not body.get("decision"):
+                body["decision"] = "批准"
+            return await self.decide_cr(run, body)
         return {"status": gate["status"]}
 
     def _resolve_acceptance(self, run: RunState, decision: str, payload: dict[str, Any], gate: dict[str, Any]) -> dict[str, Any]:
@@ -370,16 +596,17 @@ class Workbench:
         prev_issues: list[Issue] | None = None,
     ) -> dict[str, Any]:
         card = IdeaCard.model_validate(run.artifacts["idea_card"])
-        result = await run_discussion(
-            card,
-            registry=self.registry,
-            gateway=self.gateway,
-            ids=run.ids,
-            reopen=reopen,
-            review_opinions=review_opinions,
-            prev_issues=prev_issues,
-            max_utterances=int((run.limits.get("discussion") or self.limits["discussion"])["max_utterances"]),
-        )
+        with self._usage_scope(run):
+            result = await run_discussion(
+                card,
+                registry=self.registry,
+                gateway=self.gateway,
+                ids=run.ids,
+                reopen=reopen,
+                review_opinions=review_opinions,
+                prev_issues=prev_issues,
+                max_utterances=int((run.limits.get("discussion") or self.limits["discussion"])["max_utterances"]),
+            )
         run.artifacts["questions"] = [q.model_dump() for q in result["questions"]]
         run.artifacts["merge_rows"] = [r.model_dump() for r in result["merge_rows"]]
         run.artifacts["utterances"] = [u.model_dump() for u in result["utterances"]]
@@ -388,47 +615,45 @@ class Workbench:
             self.emit(run, "discussion.message", str(u.seq), {"role": u.role, "rule": u.rule})
         if result["status_overrides"]:
             self.emit(run, "discussion.status_overridden", "", {"items": result["status_overrides"]})
-        self._charge(run)
         return self._gate(run, "争议清单查看与裁决", {"issues": run.artifacts["issues"], "reopen": reopen})
 
     async def run_proposal(self, run: RunState) -> dict[str, Any]:
-        issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
-        idea = run.artifacts["idea_card"]
-        doc = await call_agent(
-            "proposal_writer",
-            {"idea_card": idea, "issue_list": [i.model_dump() for i in issues]},
-            registry=self.registry,
-            gateway=self.gateway,
-        )
-        assert isinstance(doc, ProposalDoc)
-        errors = check_proposal(doc, issues, capacity=int((run.limits.get("plan") or {})["capacity_points"]))
-        run.artifacts["proposal"] = doc.model_dump()
-        run.artifacts["proposal_errors"] = errors
-        if errors:
-            self._charge(run)
-            return {"status": "failed", "errors": errors, "stage": "2"}
-        run.engine.apply("proposal_checked")
-        self._charge(run)
-        return await self.run_review(run)
+        with self._usage_scope(run):
+            issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
+            idea = run.artifacts["idea_card"]
+            doc, errors = await self._write_checked(
+                run,
+                "proposal_writer",
+                {"idea_card": idea, "issue_list": [i.model_dump() for i in issues]},
+                lambda item: check_proposal(item, issues, capacity=int((run.limits.get("plan") or {})["capacity_points"])),
+                ProposalDoc,
+                max_rewrites=self._max_rewrites(run, "spec"),
+            )
+            run.artifacts["proposal"] = doc.model_dump()
+            run.artifacts["proposal_errors"] = errors
+            if errors:
+                return {"status": "need_human", "errors": errors, "stage": "2"}
+            run.engine.apply("proposal_checked")
+            return await self.run_review(run)
 
     async def run_review(self, run: RunState) -> dict[str, Any]:
-        sheets: list[ReviewSheet] = []
-        for role in ("review_user", "review_dev", "review_qa", "review_expert"):
-            sheet = await call_agent(
-                role,
-                {"idea_card": run.artifacts["idea_card"], "proposal": run.artifacts["proposal"]},
-                registry=self.registry,
-                gateway=self.gateway,
-            )
-            assert isinstance(sheet, ReviewSheet)
-            for op in sheet.opinions:
-                if not op.code:
-                    op.code = run.ids.next("R")
-            sheets.append(sheet)
-        run.artifacts["reviews"] = [s.model_dump() for s in sheets]
-        run.artifacts["review_pass"] = review_pass(sheets)
-        self._charge(run)
-        return self._gate(run, "评审确认", {"pass": run.artifacts["review_pass"], "reviews": run.artifacts["reviews"]})
+        with self._usage_scope(run):
+            sheets: list[ReviewSheet] = []
+            for role in ("review_user", "review_dev", "review_qa", "review_expert"):
+                sheet = await call_agent(
+                    role,
+                    {"idea_card": run.artifacts["idea_card"], "proposal": run.artifacts["proposal"]},
+                    registry=self.registry,
+                    gateway=self.gateway,
+                )
+                self._require_model(sheet, ReviewSheet, role)
+                for op in sheet.opinions:
+                    if not op.code:
+                        op.code = run.ids.next("R")
+                sheets.append(sheet)
+            run.artifacts["reviews"] = [s.model_dump() for s in sheets]
+            run.artifacts["review_pass"] = review_pass(sheets)
+            return self._gate(run, "评审确认", {"pass": run.artifacts["review_pass"], "reviews": run.artifacts["reviews"]})
 
     async def after_review_gate(self, run: RunState, decision: str, payload: dict[str, Any]) -> dict[str, Any]:
         sheets = [ReviewSheet.model_validate(s) for s in run.artifacts["reviews"]]
@@ -460,66 +685,136 @@ class Workbench:
         return {"status": "stopped", "reason": "只有验证类意见，先做真人验证"}
 
     async def run_spec(self, run: RunState) -> dict[str, Any]:
-        issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
-        spec = await call_agent(
-            "spec_writer",
-            {
+        with self._usage_scope(run):
+            issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
+            inputs: dict[str, Any] = {
                 "idea_card": run.artifacts["idea_card"],
                 "proposal": run.artifacts["proposal"],
                 "issue_list": [i.model_dump() for i in issues],
                 "review_sheet": run.artifacts["reviews"],
-            },
-            registry=self.registry,
-            gateway=self.gateway,
-        )
-        assert isinstance(spec, SpecDoc)
-        errors = check_spec(spec, issues, [ReviewSheet.model_validate(s) for s in run.artifacts["reviews"]])
-        run.artifacts["spec"] = spec.model_dump()
-        run.artifacts["spec_errors"] = errors
-        if errors:
-            self._charge(run)
-            return {"status": "need_human", "errors": errors}
-        for item in spec.features + spec.nonfunc:
-            for src in item.sources:
-                run.trace.link(src, item.code, "issue → spec_item")
-        self._charge(run)
-        return self._gate(run, "SPEC基线确认", {"spec": spec.model_dump()})
+            }
+            if run.artifacts.get("spec_rewrite"):
+                inputs["rewrite"] = run.artifacts.pop("spec_rewrite")
+            spec, errors = await self._write_checked(
+                run,
+                "spec_writer",
+                inputs,
+                lambda item: check_spec(item, issues, [ReviewSheet.model_validate(s) for s in run.artifacts["reviews"]]),
+                SpecDoc,
+                max_rewrites=self._max_rewrites(run, "spec"),
+            )
+            run.artifacts["spec"] = spec.model_dump()
+            run.artifacts["spec_errors"] = errors
+            if errors:
+                return {"status": "need_human", "errors": errors}
+            for item in spec.features + spec.nonfunc:
+                for src in item.sources:
+                    run.trace.link(src, item.code, "issue → spec_item")
+            return self._gate(run, "SPEC基线确认", {"spec": spec.model_dump()})
 
     async def run_design(self, run: RunState) -> dict[str, Any]:
-        spec = SpecDoc.model_validate(run.artifacts["spec"])
+        with self._usage_scope(run):
+            spec = SpecDoc.model_validate(run.artifacts["spec"])
+            issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
+            inputs: dict[str, Any] = {"spec": spec.model_dump()}
+            if run.artifacts.get("design_rewrite"):
+                inputs["rewrite"] = run.artifacts.pop("design_rewrite")
+            design, errors = await self._write_checked(
+                run,
+                "architect",
+                inputs,
+                lambda item: check_design(item, spec, issues, max_modules=int((run.limits.get("design") or {})["max_modules"])),
+                DesignDoc,
+                max_rewrites=self._max_rewrites(run, "design"),
+            )
+            run.artifacts["design"] = design.model_dump()
+            run.artifacts["design_errors"] = errors
+            if errors:
+                return {"status": "need_human", "errors": errors}
+            max_rewrites = self._max_rewrites(run, "design")
+            sheets, design, review_status = await self._design_reviews(run, spec, design, max_rewrites)
+            if review_status:
+                return review_status
+            run.artifacts["design"] = design.model_dump()
+            run.artifacts["design_reviews"] = [sheet.model_dump() for sheet in sheets]
+            run.artifacts["design_review_pass"] = review_pass(sheets)
+            for module in design.modules:
+                for src in module.sources:
+                    run.trace.link(src, module.code, "spec_item → module")
+            return self._gate(run, "DESIGN基线确认", {"design": design.model_dump(), "reviews": run.artifacts["design_reviews"]})
+
+    async def _design_reviews(
+        self,
+        run: RunState,
+        spec: SpecDoc,
+        design: DesignDoc,
+        max_rewrites: int,
+    ) -> tuple[list[ReviewSheet], DesignDoc, dict[str, Any] | None]:
         issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
-        design = await call_agent("architect", {"spec": spec.model_dump()}, registry=self.registry, gateway=self.gateway)
-        assert isinstance(design, DesignDoc)
-        errors = check_design(design, spec, issues, max_modules=int((run.limits.get("design") or {})["max_modules"]))
-        run.artifacts["design"] = design.model_dump()
-        run.artifacts["design_errors"] = errors
-        if errors:
-            self._charge(run)
-            return {"status": "failed", "errors": errors}
-        for module in design.modules:
-            for src in module.sources:
-                run.trace.link(src, module.code, "spec_item → module")
-        self._charge(run)
-        return self._gate(run, "DESIGN基线确认", {"design": design.model_dump()})
+        rewrites = 0
+        sheets = await self._call_design_reviewers(run, spec, design)
+        while not review_pass(sheets):
+            opinions = [op for sheet in sheets for op in sheet.opinions]
+            route = route_design_review(opinions, rewrites=rewrites, max_rewrites=max_rewrites)
+            if route == "重写" and rewrites < max_rewrites:
+                rewrites += 1
+                design, errors = await self._write_checked(
+                    run,
+                    "architect",
+                    {"spec": spec.model_dump(), "rewrite": {"errors": [op.text for op in opinions], "attempt": rewrites}},
+                    lambda item: check_design(item, spec, issues, max_modules=int((run.limits.get("design") or {})["max_modules"])),
+                    DesignDoc,
+                    max_rewrites=0,
+                )
+                if errors:
+                    return sheets, design, {"status": "need_human", "errors": errors, "route": route}
+                sheets = await self._call_design_reviewers(run, spec, design)
+                continue
+            if route == "停止":
+                return sheets, design, {"status": "stopped", "reason": "设计评审未通过", "route": route}
+            if route == "变更单":
+                return sheets, design, await self.submit_cr(run, "设计评审：需求类意见", [item.code for item in spec.features[:1]], kind="小变更")
+            if route == "探索任务":
+                return sheets, design, {"status": "need_human", "route": route, "reason": "设计评审要求探索任务"}
+            break
+        return sheets, design, None
+
+    async def _call_design_reviewers(self, run: RunState, spec: SpecDoc, design: DesignDoc) -> list[ReviewSheet]:
+        sheets: list[ReviewSheet] = []
+        for role in ("review_arch", "review_quality"):
+            sheet = await call_agent(
+                role,
+                {"spec": spec.model_dump(), "design": design.model_dump()},
+                registry=self.registry,
+                gateway=self.gateway,
+            )
+            self._require_model(sheet, ReviewSheet, role)
+            for op in sheet.opinions:
+                if not op.code:
+                    op.code = run.ids.next("R")
+            sheets.append(sheet)
+        return sheets
 
     async def run_plan(self, run: RunState) -> dict[str, Any]:
-        spec = SpecDoc.model_validate(run.artifacts["spec"])
-        design = DesignDoc.model_validate(run.artifacts["design"])
-        graph = await call_agent(
-            "decomposer",
-            {"spec": spec.model_dump(), "design": design.model_dump()},
-            registry=self.registry,
-            gateway=self.gateway,
-        )
-        assert isinstance(graph, TaskGraph)
-        errors = check_task_graph(graph, spec, design, int((run.limits.get("plan") or {})["capacity_points"]))
-        run.artifacts["plan"] = graph.model_dump()
-        run.artifacts["plan_errors"] = errors
-        if errors:
-            self._charge(run)
-            return {"status": "failed", "errors": errors}
-        self._charge(run)
-        return self._gate(run, "PLAN基线确认", {"plan": graph.model_dump()})
+        with self._usage_scope(run):
+            spec = SpecDoc.model_validate(run.artifacts["spec"])
+            design = DesignDoc.model_validate(run.artifacts["design"])
+            inputs: dict[str, Any] = {"spec": spec.model_dump(), "design": design.model_dump()}
+            if run.artifacts.get("plan_rewrite"):
+                inputs["rewrite"] = run.artifacts.pop("plan_rewrite")
+            graph, errors = await self._write_checked(
+                run,
+                "decomposer",
+                inputs,
+                lambda item: check_task_graph(item, spec, design, int((run.limits.get("plan") or {})["capacity_points"])),
+                TaskGraph,
+                max_rewrites=self._max_rewrites(run, "spec"),
+            )
+            run.artifacts["plan"] = graph.model_dump()
+            run.artifacts["plan_errors"] = errors
+            if errors:
+                return {"status": "need_human", "errors": errors}
+            return self._gate(run, "PLAN基线确认", {"plan": graph.model_dump()})
 
     def _materialize_tasks(self, run: RunState) -> None:
         graph = TaskGraph.model_validate(run.artifacts["plan"])
@@ -554,7 +849,7 @@ class Workbench:
                 continue
             deps = task["card"]["depends_on"]
             if all(states.get(d) == "done" or (states.get(d) == "skipped" and d in run.skip_continue) for d in deps):
-                task["state"] = "ready"
+                self._set_state(run, task, "deps_met")
 
     def _task_over_budget(self, run: RunState, task: dict[str, Any]) -> bool:
         card = TaskCard.model_validate(task["card"])
@@ -564,12 +859,19 @@ class Workbench:
     async def schedule_once(self, run: RunState) -> list[str]:
         if run.paused:
             return []
+        for task in run.tasks.values():
+            if task["state"] == "stale" and not task.get("paused"):
+                self._set_state(run, task, "change_approved")
         started: list[str] = []
         while not run.paused:
             conflict_ready = [
                 TaskCard.model_validate(t["card"])
                 for t in run.tasks.values()
-                if t.get("conflict_resolve") and t["state"] == "ready" and not t["paused"] and not t["locked_by"]
+                if t.get("conflict_resolve")
+                and t["state"] == "ready"
+                and not t["paused"]
+                and not t["locked_by"]
+                and t["code"] not in started
             ]
             if conflict_ready:
                 await asyncio.gather(*(self.execute_task(run, card.code) for card in conflict_ready))
@@ -579,17 +881,21 @@ class Workbench:
             graph = TaskGraph.model_validate(run.artifacts["plan"])
             states = {c: t["state"] for c, t in run.tasks.items()}
             running = [TaskCard.model_validate(t["card"]) for t in run.tasks.values() if t["state"] == "running"]
-            picked = select_tasks(
-                graph,
-                states,
-                run_paused=run.paused,
-                paused={c for c, t in run.tasks.items() if t["paused"]},
-                locked={c for c, t in run.tasks.items() if t["locked_by"]},
-                running=running,
-                concurrency=int((run.limits.get("orchestrator") or {})["concurrency"]),
-                budget_exhausted={c for c, t in run.tasks.items() if self._task_over_budget(run, t)},
-                skip_continue=run.skip_continue,
-            )
+            picked = [
+                card
+                for card in select_tasks(
+                    graph,
+                    states,
+                    run_paused=run.paused,
+                    paused={c for c, t in run.tasks.items() if t["paused"]},
+                    locked={c for c, t in run.tasks.items() if t["locked_by"]},
+                    running=running,
+                    concurrency=int((run.limits.get("orchestrator") or {})["concurrency"]),
+                    budget_exhausted={c for c, t in run.tasks.items() if self._task_over_budget(run, t)},
+                    skip_continue=run.skip_continue,
+                )
+                if card.code not in started
+            ]
             if not picked:
                 break
             await asyncio.gather(*(self.execute_task(run, card.code) for card in picked))
@@ -604,19 +910,22 @@ class Workbench:
             return {"state": task["state"], "kind": "locked"}
         task["revision"] = int(task.get("revision") or 1) + 1
         if task["state"] == "ready":
-            task["state"] = next_task_state(task["state"], "scheduled")
-        self.emit(run, "task.state_changed", code, {"code": code, "event": "scheduled", "to": task["state"], "rev": task["revision"]})
+            self._set_state(run, task, "scheduled")
         if self._task_over_budget(run, task):
-            task["state"] = "needs_human"
             task["last_error"] = "token_budget"
+            if can_transition(task["state"], "budget_or_stuck"):
+                self._set_state(run, task, "budget_or_stuck")
             self.emit(run, "budget.exceeded", code, {"used": task.get("tokens_used")})
             return {"state": task["state"], "kind": "预算耗尽"}
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
         wt = self.data_dir / "runs" / run.id / "wt" / code
-        if not wt.exists():
-            create_worktree(repo, wt, f"task/{code}")
+        try:
+            if not wt.exists():
+                create_worktree(repo, wt, f"task/{code}")
+        except Exception as exc:  # noqa: BLE001
+            return await self._finish_failure(run, task, card, "环境故障", str(exc), _exc_fields(exc))
         visible: dict[str, Any] = {
             "task_card": card.model_dump(),
             "interfaces": task.get("interfaces") or [],
@@ -633,35 +942,34 @@ class Workbench:
             env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
             truncate=int(self.profile.get("output_truncate") or 8000),
             on_denied=lambda _kind, rel: self.emit(run, "task.write_denied", code, {"path": rel}),
+            forbidden=self._forbidden(),
         )
         env_retries = 0
         max_env = int((run.limits.get("orchestrator") or {}).get("max_env_retries") or 3)
         result: Any = None
-        while True:
-            mark = self._token_snapshot()
-            try:
-                result = await run_tool_agent(
-                    "coder" if card.role == "coder" else "tester",
-                    visible,
-                    tools,
-                    registry=self.registry,
-                    gateway=self.gateway,
-                    max_steps=int(card.budget.max_tool_steps or (run.limits.get("orchestrator") or {}).get("max_tool_steps") or 30),
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                self._charge_task(run, task, mark)
-                fields = _exc_fields(exc)
-                kind = classify(fields)
-                if kind == "环境故障" and env_retries < max_env:
-                    env_retries += 1
-                    await asyncio.sleep(0.01 * (2**env_retries))
-                    continue
-                return await self._finish_failure(run, task, card, kind, str(exc), fields)
-        self._charge_task(run, task, mark)
-        if isinstance(result, dict) and result.get("done") is False:
-            return await self._finish_failure(run, task, card, "代码缺陷", result.get("summary") or "max tool steps", {"exit_code": 1})
-        return await self._accept_review_merge(run, code, wt, list(tools.written))
+        with self._usage_scope(run, task):
+            while True:
+                try:
+                    result = await run_tool_agent(
+                        "coder" if card.role == "coder" else "tester",
+                        visible,
+                        tools,
+                        registry=self.registry,
+                        gateway=self.gateway,
+                        max_steps=int(card.budget.max_tool_steps or (run.limits.get("orchestrator") or {}).get("max_tool_steps") or 30),
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    fields = _exc_fields(exc)
+                    kind = classify(fields)
+                    if kind == "环境故障" and env_retries < max_env:
+                        env_retries += 1
+                        await asyncio.sleep(0.01 * (2**env_retries))
+                        continue
+                    return await self._finish_failure(run, task, card, kind, str(exc), fields)
+            if isinstance(result, dict) and result.get("done") is False:
+                return await self._finish_failure(run, task, card, "代码缺陷", result.get("summary") or "max tool steps", {"exit_code": 1})
+            return await self._accept_review_merge(run, code, wt, list(tools.written))
 
     async def _accept_review_merge(
         self,
@@ -688,6 +996,7 @@ class Workbench:
                     timeout=int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600),
                     env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
                     truncate=int(self.profile.get("output_truncate") or 8000),
+                    forbidden=self._forbidden(),
                 )
             except CommandDenied as exc:
                 denied = True
@@ -728,35 +1037,38 @@ class Workbench:
             return await self._finish_failure(run, task, card, "任务描述问题", f"写集外: {extras}", {"exit_code": 1})
 
         if task["state"] == "running":
-            task["state"] = next_task_state(task["state"], "code_finished")
+            self._set_state(run, task, "code_finished")
         review = await call_agent(
             "code_reviewer",
             {"task_card": card.model_dump(), "interfaces": [], "diff": "", "command_output": output},
             registry=self.registry,
             gateway=self.gateway,
         )
-        self._charge(run)
         issues = list(getattr(review, "issues", []) or [])
         task["review_issues"] = [i.model_dump() if hasattr(i, "model_dump") else i for i in issues]
         blocking = any(getattr(i, "blocking", False) for i in issues)
         verdict = getattr(review, "verdict", "fail")
         if judged["passed"] and verdict == "pass" and not blocking:
-            merged = merge(repo, f"task/{code}")
-            if merged["ok"]:
-                regression = await self._run_regression(run, repo)
-                if not regression["ok"]:
-                    rollback_merge(repo, str(merged["before"]))
-                    return await self._finish_failure(run, task, card, "代码缺陷", regression["reason"], {"exit_code": 1})
-                task["state"] = "done"
-                task["locked_by"] = ""
-                task["takeover_submit"] = False
-                task["evidence"].append({"kind": "command", "summary": output, "path": str(wt)})
-                task["evidence"].append({"kind": "review", "summary": "pass", "path": ""})
-                task["evidence"].append({"kind": "merge", "summary": sha, "path": ""})
-                self.emit(run, "task.state_changed", code, {"code": code, "to": "done", "event": "accepted"})
-                self._unlock_origin_after_conflict(run, task)
-                self._refresh_ready(run)
-                return {"state": "done"}
+            regression_fail = ""
+            async with self._merge_lock_for(run):
+                merged = merge(repo, f"task/{code}")
+                if merged["ok"]:
+                    regression = await self._run_regression(run, repo)
+                    if not regression["ok"]:
+                        rollback_merge(repo, str(merged["before"]))
+                        regression_fail = str(regression["reason"] or "regression failed")
+                    else:
+                        self._set_state(run, task, "accepted")
+                        task["locked_by"] = ""
+                        task["takeover_submit"] = False
+                        task["evidence"].append({"kind": "command", "summary": output, "path": str(wt)})
+                        task["evidence"].append({"kind": "review", "summary": "pass", "path": ""})
+                        task["evidence"].append({"kind": "merge", "summary": sha, "path": ""})
+                        self._unlock_origin_after_conflict(run, task)
+                        self._refresh_ready(run)
+                        return {"state": "done"}
+            if regression_fail:
+                return await self._finish_failure(run, task, card, "代码缺陷", regression_fail, {"exit_code": 1})
             return self._spawn_conflict_task(run, code, merged)
         fields = {
             "exit_code": judged["exit_code"],
@@ -779,9 +1091,9 @@ class Workbench:
 
     def _spawn_conflict_task(self, run: RunState, origin_code: str, merged: dict[str, Any]) -> dict[str, Any]:
         origin = run.tasks[origin_code]
-        origin["state"] = "blocked"
         origin["last_error"] = "合并冲突"
-        self.emit(run, "task.state_changed", origin_code, {"code": origin_code, "to": "blocked", "kind": "合并冲突"})
+        if can_transition(origin["state"], "merge_conflict"):
+            self._set_state(run, origin, "merge_conflict", extra={"kind": "合并冲突"})
         conflicts = [str(item) for item in (merged.get("conflicts") or [])]
         write_set = [path for path in conflicts if path not in {"conflict", ""}]
         if not write_set:
@@ -806,7 +1118,7 @@ class Workbench:
         run.tasks[code] = {
             "id": f"{run.id}:{code}",
             "code": code,
-            "state": "ready",
+            "state": "pending",
             "revision": 1,
             "card": card.model_dump(),
             "repair_rounds": 0,
@@ -820,6 +1132,9 @@ class Workbench:
             "conflict_resolve": True,
             "conflict_of": origin_code,
         }
+        spawned = run.tasks[code]
+        if spawned["state"] == "pending":
+            self._set_state(run, spawned, "deps_met", extra={"kind": "冲突解决"})
         self.emit(run, "task.spawned", code, {"kind": "冲突解决", "of": origin_code, "write_set": write_set})
         return {"state": "blocked", "kind": "合并冲突", "conflict_task": code}
 
@@ -829,12 +1144,16 @@ class Workbench:
         origin = run.tasks.get(str(task.get("conflict_of") or ""))
         if not origin:
             return
+        repo = self.data_dir / "runs" / run.id / "repo"
         wt = self.data_dir / "runs" / run.id / "wt" / origin["code"]
-        if wt.exists():
-            shutil.rmtree(wt, ignore_errors=True)
-        origin["state"] = "ready"
+        try:
+            remove_worktree(repo, wt)
+        except Exception:  # noqa: BLE001
+            if wt.exists():
+                shutil.rmtree(wt, ignore_errors=True)
         origin["last_error"] = ""
-        self.emit(run, "task.state_changed", origin["code"], {"code": origin["code"], "to": "ready", "event": "conflict_resolved"})
+        if can_transition(origin["state"], "conflict_resolved"):
+            self._set_state(run, origin, "conflict_resolved")
 
     async def _finish_failure(
         self,
@@ -850,32 +1169,35 @@ class Workbench:
             kind = "任务描述问题"
         task["signatures"].append(sig)
         task["prev_output"] = output
+        extra = {"kind": kind}
         if kind == "代码缺陷":
             task["repair_rounds"] = int(task.get("repair_rounds") or 0) + 1
             limit = int((run.limits.get("orchestrator") or {}).get("max_repair_rounds") or 6)
             if task["repair_rounds"] >= limit:
-                task["state"] = "needs_human"
+                event = "repair_exceeded" if can_transition(task["state"], "repair_exceeded") else "budget_or_stuck"
+                self._set_state(run, task, event, extra=extra)
             else:
                 if task["state"] == "verifying":
-                    task["state"] = next_task_state(task["state"], "defect_repair")
-                else:
-                    task["state"] = "running"
+                    self._set_state(run, task, "defect_repair", extra=extra)
                 return await self.execute_task(run, card.code)
         elif kind == "任务描述问题":
-            task["state"] = "needs_human"
-            self.emit(run, "task.state_changed", card.code, {"code": card.code, "to": task["state"], "kind": kind})
-            return self._gate(run, "重排提案", {"task": card.code, "kind": kind})
+            event = "task_issue" if can_transition(task["state"], "task_issue") else "budget_or_stuck"
+            self._set_state(run, task, event, extra=extra)
+            result = self._gate(run, "重排提案", {"task": card.code, "kind": kind})
+            result["kind"] = kind
+            return result
         elif kind == "环境故障":
-            task["state"] = "failed"
+            event = "env_fail" if can_transition(task["state"], "env_fail") else "env_or_conflict"
+            self._set_state(run, task, event, extra=extra)
         else:
-            task["state"] = "needs_human"
+            event = "task_issue" if can_transition(task["state"], "task_issue") else "budget_or_stuck"
+            self._set_state(run, task, event, extra=extra)
         if task.get("conflict_resolve"):
             origin = run.tasks.get(str(task.get("conflict_of") or ""))
             if origin:
-                origin["state"] = "needs_human"
                 origin["last_error"] = "冲突解决失败"
-                self.emit(run, "task.state_changed", origin["code"], {"code": origin["code"], "to": "needs_human", "kind": "合并冲突"})
-        self.emit(run, "task.state_changed", card.code, {"code": card.code, "to": task["state"], "kind": kind})
+                if can_transition(origin["state"], "conflict_failed"):
+                    self._set_state(run, origin, "conflict_failed", extra={"kind": "合并冲突"})
         return {"state": task["state"], "kind": kind}
 
     def _dep_outputs(self, run: RunState, card: TaskCard) -> list[dict[str, Any]]:
@@ -905,7 +1227,14 @@ class Workbench:
             return {"ok": True, "reason": ""}
         for cmd in commands:
             try:
-                out = await run_command(cmd, cwd=repo, whitelist=whitelist, timeout=timeout, env_allow=env_allow)
+                out = await run_command(
+                    cmd,
+                    cwd=repo,
+                    whitelist=whitelist,
+                    timeout=timeout,
+                    env_allow=env_allow,
+                    forbidden=self._forbidden(),
+                )
             except CommandDenied as exc:
                 return {"ok": False, "reason": str(exc)}
             code_i = 1 if out.get("exit_code") is None else int(out.get("exit_code"))
@@ -917,19 +1246,20 @@ class Workbench:
     async def _apply_replan(self, run: RunState, payload: dict[str, Any]) -> dict[str, Any]:
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         design = DesignDoc.model_validate(run.artifacts["design"])
-        graph = await call_agent(
-            "decomposer",
-            {"spec": spec.model_dump(), "design": design.model_dump(), "rewrite": payload},
-            registry=self.registry,
-            gateway=self.gateway,
-        )
-        assert isinstance(graph, TaskGraph)
+        with self._usage_scope(run):
+            graph = await call_agent(
+                "decomposer",
+                {"spec": spec.model_dump(), "design": design.model_dump(), "rewrite": payload},
+                registry=self.registry,
+                gateway=self.gateway,
+            )
+        self._require_model(graph, TaskGraph, "decomposer")
         result = propose_replan(graph, spec, design, int((run.limits.get("plan") or {})["capacity_points"]))
         if not result["ok"]:
             return {"status": "replan_failed", "errors": result["errors"]}
         for task in run.tasks.values():
-            if task["state"] not in {"done", "skipped"}:
-                task["state"] = "cancelled"
+            if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
+                self._set_state(run, task, "cancel")
         run.artifacts["plan"] = graph.model_dump()
         self._materialize_tasks(run)
         return {"status": "replanned", "tasks": list(run.tasks)}
@@ -956,13 +1286,12 @@ class Workbench:
             task["paused"] = False
         elif action == "retry":
             event = "retry" if task["state"] == "failed" else "human_retry"
-            task["state"] = next_task_state(task["state"], event)
-            task["revision"] += 1
+            self._set_state(run, task, event, reason=reason, actor=actor)
             run.revision += 1
             self.emit(run, f"control.{action}", code, {"from": prev, "to": task["state"], "reason": reason, "rev": task["revision"]}, actor)
             return await self.execute_task(run, code)
         elif action == "skip":
-            task["state"] = "skipped"
+            self._set_state(run, task, "human_skip", reason=reason, actor=actor)
             if extra.get("downstream", "continue") == "continue":
                 run.skip_continue.add(code)
         elif action == "takeover":
@@ -986,7 +1315,7 @@ class Workbench:
                 regression = await self._run_regression(run, repo)
                 if not regression["ok"]:
                     raise ValidationFailed("集成回归失败，不能强制通过")
-            task["state"] = "done"
+            self._set_state(run, task, "force_pass", reason=reason, actor=actor)
             task["evidence"].append({"kind": "manual", "summary": reason, "path": ""})
         elif action == "patch":
             raise ValidationFailed("patch 本轮未实现，见 Handoff")
@@ -1007,8 +1336,8 @@ class Workbench:
             run.status = "terminated"
             run.paused = True
             for task in run.tasks.values():
-                if task["state"] not in {"done", "skipped", "cancelled"}:
-                    task["state"] = "cancelled"
+                if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
+                    self._set_state(run, task, "cancel", actor=actor)
         run.revision += 1
         self.emit(run, f"control.{action}", "", {"status": run.status, "paused": run.paused}, actor)
         return run
@@ -1023,8 +1352,9 @@ class Workbench:
             create_worktree(repo, wt, f"task/{code}")
             task["takeover_workspace"] = str(wt)
         if task["state"] == "ready":
-            task["state"] = next_task_state(task["state"], "scheduled")
-        return await self._accept_review_merge(run, code, wt, None)
+            self._set_state(run, task, "scheduled")
+        with self._usage_scope(run, task):
+            return await self._accept_review_merge(run, code, wt, None)
 
     def todos(self, run: RunState) -> list[dict[str, Any]]:
         items = [g for g in run.gates if g["status"] == "pending"]
@@ -1123,6 +1453,7 @@ class Workbench:
                         whitelist=self._whitelist(),
                         timeout=int(self.limits["orchestrator"]["attempt_timeout_s"]),
                         env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
+                        forbidden=self._forbidden(),
                     )
                 except CommandDenied as exc:
                     ok = False
@@ -1151,19 +1482,20 @@ class Workbench:
         scores: list[int] = []
         any_red = bool(flags.get("red_line"))
         any_block = bool(flags.get("blocking"))
-        for role in ("eval_value", "eval_impact", "eval_risk"):
-            try:
-                score = await call_agent(
-                    role,
-                    {"change_request": {"description": description, "kind": kind}, "impact": impact, "baseline": run.artifacts.get("spec")},
-                    registry=self.registry,
-                    gateway=self.gateway,
-                )
-                scores.append(int(getattr(score, "score", 0)))
-                any_red = any_red or bool(getattr(score, "red_line", False))
-                any_block = any_block or bool(getattr(score, "blocking", False))
-            except Exception:  # noqa: BLE001
-                break
+        with self._usage_scope(run):
+            for role in ("eval_value", "eval_impact", "eval_risk"):
+                try:
+                    score = await call_agent(
+                        role,
+                        {"change_request": {"description": description, "kind": kind}, "impact": impact, "baseline": run.artifacts.get("spec")},
+                        registry=self.registry,
+                        gateway=self.gateway,
+                    )
+                    scores.append(int(getattr(score, "score", 0)))
+                    any_red = any_red or bool(getattr(score, "red_line", False))
+                    any_block = any_block or bool(getattr(score, "blocking", False))
+                except Exception:  # noqa: BLE001
+                    break
         ok, ev_flags = evaluation_pass(scores, any_red_line=any_red, any_blocking=any_block)
         code = run.ids.next("CR")
         cr = {
@@ -1179,7 +1511,6 @@ class Workbench:
             "scores": scores,
         }
         run.crs.append(cr)
-        self._charge(run)
         return self._gate(run, "变更决定", {"cr": cr})
 
     async def decide_cr(self, run: RunState, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1189,21 +1520,20 @@ class Workbench:
         flags = cr.get("eval_flags") or {}
         if flags.get("red_line") or flags.get("blocking"):
             cr["eval_ok"] = False
-        if cr["decision"] == "批准":
-            for code in cr["impact"].get("downstream", []):
-                if code not in run.tasks:
-                    continue
-                task = run.tasks[code]
-                if task["state"] == "done":
-                    task["state"] = next_task_state(task["state"], "change_impact")
-                    self.emit(run, "task.state_changed", code, {"code": code, "to": "stale", "event": "change_impact"})
-                    task["state"] = next_task_state(task["state"], "change_approved")
-                    self.emit(run, "task.state_changed", code, {"code": code, "to": "ready", "event": "change_approved"})
-                    task["revision"] += 1
-                elif task["state"] == "running":
-                    task["paused"] = True
-                    self.emit(run, "task.state_changed", code, {"code": code, "to": task["state"], "event": "change_pause"})
-            self._apply_incremental_docs(run, cr)
+        if cr["decision"] != "批准":
+            cr["status"] = "rejected"
+            return cr
+        for code in cr["impact"].get("downstream", []):
+            if code not in run.tasks:
+                continue
+            task = run.tasks[code]
+            if task["state"] == "done":
+                self._set_state(run, task, "change_impact")
+            elif task["state"] == "running":
+                task["paused"] = True
+                self.emit(run, "task.state_changed", code, {"code": code, "to": task["state"], "event": "change_pause"})
+        await self._apply_incremental_docs(run, cr)
+        if cr.get("status") != "rewrite_failed":
             cr["status"] = "applied"
         return cr
 
@@ -1215,33 +1545,127 @@ class Workbench:
                 codes.add(str(item))
         return codes
 
-    def _apply_incremental_docs(self, run: RunState, cr: dict[str, Any]) -> None:
-        version = "1.1"
+    def _next_doc_version(self, run: RunState) -> str:
+        best = (1, 0)
+        for kind in ("SPEC", "DESIGN", "PLAN"):
+            raw = str(run.artifacts.get(f"baseline_{kind}") or "1.0")
+            parts = raw.split(".")
+            try:
+                major = int(parts[0])
+                minor = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                major, minor = 1, 0
+            if (major, minor) > best:
+                best = (major, minor)
+        return f"{best[0]}.{best[1] + 1}"
+
+    def _splice_affected(self, old: dict[str, Any], new: dict[str, Any], affected: set[str], fields: tuple[str, ...]) -> dict[str, Any]:
+        result = copy.deepcopy(old)
+        new_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for section in fields:
+            for item in new.get(section) or []:
+                if isinstance(item, dict) and item.get("code") in affected:
+                    new_map[(section, str(item["code"]))] = item
+            items = result.get(section) or []
+            for index, item in enumerate(items):
+                key = (section, str(item.get("code") or ""))
+                if key in new_map:
+                    items[index] = new_map[key]
+        return result
+
+    async def _apply_incremental_docs(self, run: RunState, cr: dict[str, Any]) -> None:
+        version = self._next_doc_version(run)
         affected = self._affected_codes(cr)
         note = {"code": cr["code"], "description": cr.get("description"), "version": version}
-        groups = (
-            ("SPEC", "spec", ("features", "nonfunc")),
-            ("DESIGN", "design", ("modules", "interfaces")),
-            ("PLAN", "plan", ("tasks",)),
+        rewrite_payload = {"change_request": cr, "affected": sorted(affected)}
+        writers = (
+            ("SPEC", "spec", ("features", "nonfunc"), "spec_writer", SpecDoc),
+            ("DESIGN", "design", ("modules", "interfaces"), "architect", DesignDoc),
+            ("PLAN", "plan", ("tasks",), "decomposer", TaskGraph),
         )
-        for kind, key, fields in groups:
-            doc = run.artifacts.get(key)
-            if not isinstance(doc, dict):
-                continue
-            prev = str(run.artifacts.get(f"baseline_{kind}") or "1.0")
-            if f"{key}_{prev}" not in run.artifacts:
-                run.artifacts[f"{key}_{prev}"] = copy.deepcopy(doc)
-            before = copy.deepcopy(doc)
-            for section in fields:
-                for item in doc.get(section) or []:
-                    if isinstance(item, dict) and item.get("code") in affected:
-                        item.setdefault("change_notes", []).append(note)
-            self._assert_unaffected(before, doc, affected, fields)
-            run.artifacts[key] = doc
-            run.artifacts[f"{key}_{version}"] = copy.deepcopy(doc)
-            run.artifacts[f"baseline_{kind}"] = version
-            self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
+        with self._usage_scope(run):
+            for kind, key, fields, role, expected in writers:
+                doc = run.artifacts.get(key)
+                if not isinstance(doc, dict):
+                    continue
+                if key == "design" and not isinstance(run.artifacts.get("spec"), dict):
+                    continue
+                if key == "plan" and not isinstance(run.artifacts.get("design"), dict):
+                    continue
+                prev = str(run.artifacts.get(f"baseline_{kind}") or "1.0")
+                if f"{key}_{prev}" not in run.artifacts:
+                    run.artifacts[f"{key}_{prev}"] = copy.deepcopy(doc)
+                before = copy.deepcopy(doc)
+                rewritten, errors = await self._write_checked(
+                    run,
+                    role,
+                    self._incremental_inputs(run, cr, rewrite_payload, role),
+                    lambda item, _old=before, _kind=kind: self._incremental_check(
+                        {
+                            "SPEC": lambda doc: self._check_spec_doc(run, doc),
+                            "DESIGN": lambda doc: self._check_design_doc(run, doc),
+                            "PLAN": lambda doc: self._check_plan_doc(run, doc),
+                        }[_kind],
+                        _old,
+                        item,
+                    ),
+                    expected,
+                    max_rewrites=self._max_rewrites(run, "spec"),
+                )
+                if errors or rewritten is None:
+                    cr["status"] = "rewrite_failed"
+                    cr["errors"] = errors
+                    return
+                merged = self._splice_affected(before, rewritten.model_dump(), affected, fields)
+                for section in fields:
+                    for item in merged.get(section) or []:
+                        if isinstance(item, dict) and item.get("code") in affected:
+                            item.setdefault("change_notes", []).append(note)
+                self._assert_unaffected(before, merged, affected, fields)
+                run.artifacts[key] = merged
+                run.artifacts[f"{key}_{version}"] = copy.deepcopy(merged)
+                run.artifacts[f"baseline_{kind}"] = version
+                self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
         cr["applied_version"] = version
+
+    def _incremental_inputs(self, run: RunState, cr: dict[str, Any], rewrite_payload: dict[str, Any], role: str) -> dict[str, Any]:
+        payload = {**rewrite_payload, "change_request": cr}
+        if role == "spec_writer":
+            return {
+                "idea_card": run.artifacts.get("idea_card") or {},
+                "proposal": run.artifacts.get("proposal") or {},
+                "issue_list": run.artifacts.get("issues") or [],
+                "review_sheet": run.artifacts.get("reviews") or [],
+                "rewrite": {**payload, "old": run.artifacts.get("spec")},
+                "change_request": cr,
+                "baseline": run.artifacts.get("spec"),
+            }
+        if role == "architect":
+            return {"spec": run.artifacts.get("spec"), "rewrite": {**payload, "old": run.artifacts.get("design")}, "change_request": cr, "baseline": run.artifacts.get("design")}
+        return {"spec": run.artifacts.get("spec"), "design": run.artifacts.get("design"), "rewrite": {**payload, "old": run.artifacts.get("plan")}, "change_request": cr, "baseline": run.artifacts.get("plan")}
+
+    def _check_spec_doc(self, run: RunState, doc: SpecDoc) -> list[str]:
+        issues = [Issue.model_validate(i) for i in (run.artifacts.get("issues") or [])]
+        sheets = [ReviewSheet.model_validate(s) for s in (run.artifacts.get("reviews") or [])]
+        return check_spec(doc, issues, sheets or None)
+
+    def _check_design_doc(self, run: RunState, doc: DesignDoc) -> list[str]:
+        spec = SpecDoc.model_validate(run.artifacts["spec"])
+        issues = [Issue.model_validate(i) for i in (run.artifacts.get("issues") or [])]
+        return check_design(doc, spec, issues, max_modules=int((run.limits.get("design") or {})["max_modules"]))
+
+    def _check_plan_doc(self, run: RunState, doc: TaskGraph) -> list[str]:
+        spec = SpecDoc.model_validate(run.artifacts["spec"])
+        design = DesignDoc.model_validate(run.artifacts["design"])
+        return check_task_graph(doc, spec, design, int((run.limits.get("plan") or {})["capacity_points"]))
+
+    def _incremental_check(self, checker: Callable[[Any], list[str]], old_dump: dict[str, Any], new_doc: Any) -> list[str]:
+        try:
+            old_model = type(new_doc).model_validate(old_dump)
+            old_errors = set(checker(old_model))
+        except Exception:  # noqa: BLE001
+            return []
+        return [err for err in checker(new_doc) if err not in old_errors]
 
     def _assert_unaffected(
         self,
@@ -1261,6 +1685,10 @@ class Workbench:
                     raise ValidationFailed(f"未受影响条目被改写: {code}")
 
     async def import_feedback(self, run: RunState, rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+        with self._usage_scope(run):
+            return await self._import_feedback_body(run, rows, key)
+
+    async def _import_feedback_body(self, run: RunState, rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
         imported = []
         for row in rows:
             masked = mask_text(row.get("text") or "")
@@ -1344,7 +1772,6 @@ class Workbench:
             item["distill_errors"] = validate_distill(item, raw_by_id)
             item["route"] = route_feedback(item, scores)
             run.feedback.append(item)
-        self._charge(run)
         return imported
 
     async def _cluster_fast(self, texts: list[str]) -> list[list[int]]:
@@ -1392,8 +1819,9 @@ class Workbench:
         run.artifacts["issues"] = [i.model_dump() for i in issues]
 
     def _freeze(self, run: RunState, kind: str) -> None:
-        run.artifacts[f"baseline_{kind}"] = "1.0"
-        self.emit(run, "baseline.frozen", kind, {"version": "1.0"})
+        if f"baseline_{kind}" not in run.artifacts:
+            run.artifacts[f"baseline_{kind}"] = "1.0"
+        self.emit(run, "baseline.frozen", kind, {"version": run.artifacts[f"baseline_{kind}"]})
 
 
 def _deep_merge_limits(dst: dict[str, Any], src: dict[str, Any]) -> None:

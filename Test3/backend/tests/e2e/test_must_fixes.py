@@ -80,8 +80,8 @@ async def test_denied_acceptance_cannot_be_done(tmp_path: Path) -> None:
     result = await bench.execute_task(run, card.code)
     assert run.tasks[card.code]["state"] != "done"
     assert result.get("state") != "done"
-    blob = str(run.tasks[card.code].get("prev_output") or "") + str(result)
-    assert "被拒" in blob or result.get("gate")
+    assert result["kind"] == "任务描述问题"
+    assert result.get("gate", {}).get("kind") == "重排提案"
 
 
 @pytest.mark.asyncio
@@ -168,6 +168,42 @@ async def test_accept_runs_tests_and_requires_reason(tmp_path: Path) -> None:
     assert (Path(run.artifacts["release_dir"]) / "acceptance.json").exists()
 
 
+def _spec_payload(f1_title: str = "按楼层查看剩余座位") -> dict:
+    return {
+        "users": [{"name": "u"}],
+        "scenarios": [{"code": "S1"}],
+        "features": [
+            {
+                "code": "F1",
+                "kind": "功能",
+                "title": f1_title,
+                "scenario": "S1",
+                "priority": "P0",
+                "impact": "x",
+                "acceptance": ["能看到座位数"],
+                "manual": [False],
+                "sources": ["初步做法"],
+            },
+            {
+                "code": "F2",
+                "kind": "功能",
+                "title": "untouched",
+                "scenario": "S1",
+                "priority": "P1",
+                "impact": "x",
+                "acceptance": ["a"],
+                "manual": [False],
+                "sources": ["初步做法"],
+            },
+        ],
+        "nonfunc": [],
+        "out_of_scope": [],
+        "open_questions": [],
+        "review_followup": [],
+        "chapters": ["用户与场景", "功能", "非功能需求", "还没定的问题", "附录"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_decide_cr_marks_applied_and_bumps_1_1(tmp_path: Path) -> None:
     bench, provider = _bench(
@@ -176,6 +212,14 @@ async def test_decide_cr_marks_applied_and_bumps_1_1(tmp_path: Path) -> None:
             {"dimension": "价值", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
             {"dimension": "影响", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
             {"dimension": "风险", "score": 4, "red_line": True, "blocking": False, "reason": "红线"},
+            {"dimension": "价值", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            {"dimension": "影响", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            {"dimension": "风险", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            _spec_payload("改过的查询页"),
+            {"dimension": "价值", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            {"dimension": "影响", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            {"dimension": "风险", "score": 4, "red_line": False, "blocking": False, "reason": "ok"},
+            _spec_payload("第二次变更"),
         ],
     )
     run = _ready_run(bench, _card())
@@ -194,20 +238,40 @@ async def test_decide_cr_marks_applied_and_bumps_1_1(tmp_path: Path) -> None:
             "sources": ["初步做法"],
         }
     )
+    f1_before = copy.deepcopy(next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F1"))
     f2_before = copy.deepcopy(next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F2"))
     gate = await bench.submit_cr(run, "改查询页", ["F1"], kind="小变更")
     cr = gate["gate"]["payload"]["cr"]
     assert cr["eval_flags"]["red_line"] is True
     assert cr["kind"] == "小变更"
+    rejected = await bench.decide_cr(run, {"code": cr["code"], "decision": "驳回"})
+    assert rejected["status"] == "rejected"
+    gate = await bench.submit_cr(run, "改查询页", ["F1"], kind="小变更")
+    cr = gate["gate"]["payload"]["cr"]
     decided = await bench.decide_cr(run, {"code": cr["code"], "decision": "批准"})
     assert decided["status"] == "applied"
     assert decided["applied_version"] == "1.1"
     assert run.artifacts["baseline_SPEC"] == "1.1"
     assert run.artifacts.get("spec_1.0")
+    f1_after = next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F1")
     f2_after = next(f for f in run.artifacts["spec"]["features"] if f["code"] == "F2")
+    assert f1_after != f1_before
+    assert f1_after["title"] == "改过的查询页"
     assert f2_after == f2_before
-    assert run.tasks["T-01"]["state"] == "ready"
+    assert run.tasks["T-01"]["state"] == "stale"
     assert any(e["kind"] == "task.state_changed" and e["payload"].get("event") == "change_impact" for e in run.events)
+
+    async def _noop_execute(_run, _code):
+        return {"state": _run.tasks[_code]["state"]}
+
+    bench.execute_task = _noop_execute  # type: ignore[method-assign]
+    await bench.schedule_once(run)
+    assert run.tasks["T-01"]["state"] == "ready"
+    gate = await bench.submit_cr(run, "再改一次", ["F1"], kind="小变更")
+    cr2 = gate["gate"]["payload"]["cr"]
+    second = await bench.decide_cr(run, {"code": cr2["code"], "decision": "批准"})
+    assert second["applied_version"] == "1.2"
+    assert run.artifacts["baseline_SPEC"] == "1.2"
 
 
 @pytest.mark.asyncio

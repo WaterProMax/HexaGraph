@@ -4,14 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.runtime import RoleRegistry, call_agent, render_prompt
+from app.agents.runtime import RoleRegistry, call_agent, render_prompt, run_tool_agent
 from app.errors import AgentOutputError, ReplayMissing, WriteDenied
 from app.llm.gateway import Gateway, TokenBucket
-from app.llm.providers import ReplayProvider, ScriptedProvider
+from app.llm.providers import ReplayProvider, ScriptedProvider, validate_tool_protocol
 from app.llm.types import LLMResult
 from app.orchestrator.validator import judge_output
 from app.settings import load_models, load_roles
 from app.tools.sandbox import command_allowed, in_write_set, normalize_under
+from app.tools.taskset import TaskToolset
 
 
 def test_path_safety(tmp_path: Path) -> None:
@@ -40,15 +41,19 @@ def test_path_safety(tmp_path: Path) -> None:
 def test_command_whitelist() -> None:
     from app.settings import load_profile
 
-    wl = list(load_profile()["whitelist_prefixes"])
-    assert command_allowed(["pytest", "-q"], wl)
-    assert command_allowed(["python", "-m", "pytest"], wl)
-    assert command_allowed(["python", "-m", "compileall", "src"], wl)
-    assert command_allowed(["ruff", "check", "app"], wl)
-    assert not command_allowed(["python", "-c", "print(1)"], wl)
-    assert not command_allowed(["python", "x.py"], wl)
-    assert not command_allowed(["pip", "install"], wl)
-    assert not command_allowed(["pytest; rm -rf /"], wl)
+    profile = load_profile()
+    wl = list(profile["whitelist_prefixes"])
+    forbidden = list(profile["forbidden_prefixes"])
+    assert command_allowed(["pytest", "-q"], wl, forbidden)
+    assert command_allowed(["python", "-m", "pytest"], wl, forbidden)
+    assert command_allowed(["python", "-m", "ruff", "check"], wl, forbidden)
+    assert command_allowed(["ruff", "check", "app"], wl, forbidden)
+    assert not command_allowed(["python", "-m", "compileall", "src"], wl, forbidden)
+    assert not command_allowed(["python", "-c", "print(1)"], wl, forbidden)
+    assert not command_allowed(["python", "x.py"], wl, forbidden)
+    assert not command_allowed(["pip", "install"], wl, forbidden)
+    assert not command_allowed(["python", "-m", "pip", "install", "x"], wl, forbidden)
+    assert not command_allowed(["pytest; rm -rf /"], wl, forbidden)
 
 
 def test_validator_outputs() -> None:
@@ -120,6 +125,54 @@ async def test_replay_missing(tmp_path: Path) -> None:
     provider = ReplayProvider(tmp_path)
     with pytest.raises(ReplayMissing, match="missing replay"):
         await provider.complete("fast", [], role="pm")
+
+
+def test_tool_protocol_requires_schema_and_ids() -> None:
+    with pytest.raises(ValueError, match="properties"):
+        validate_tool_protocol([], [{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object"}}}])
+    with pytest.raises(ValueError, match="tool_call_id"):
+        validate_tool_protocol(
+            [
+                {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]},
+                {"role": "tool", "content": "ok"},
+            ]
+        )
+    with pytest.raises(ValueError, match="without assistant"):
+        validate_tool_protocol([{"role": "tool", "tool_call_id": "c1", "content": "ok"}])
+    validate_tool_protocol(
+        [
+            {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        ],
+        [{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_scripted_provider_rejects_illegal_tool_messages(tmp_path: Path) -> None:
+    provider = ScriptedProvider([{"done": True}])
+    with pytest.raises(ValueError, match="properties"):
+        await provider.complete(
+            "coder",
+            [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object"}}}],
+        )
+    provider = ScriptedProvider(
+        [
+            {"tool_calls": [{"id": "c1", "name": "write_file", "arguments": {"path": "a.py", "content": "x"}}]},
+            {"done": True, "summary": "ok"},
+        ]
+    )
+    gw = Gateway(load_models(), provider)
+    tools = TaskToolset(tmp_path, ["a.py"], whitelist=["pytest"], timeout=5, env_allow=["PATH"], truncate=100)
+    registry = RoleRegistry(load_roles())
+    await run_tool_agent("coder", {"task_card": {"code": "T-01"}}, tools, registry=registry, gateway=gw, max_steps=4)
+    second = provider.calls[1]["messages"]
+    assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in second)
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") for m in second)
+    for spec in tools.specs:
+        assert "properties" in spec["function"]["parameters"]
+        assert "required" in spec["function"]["parameters"]
 
 
 def test_no_secret_in_logs(tmp_path: Path, monkeypatch) -> None:

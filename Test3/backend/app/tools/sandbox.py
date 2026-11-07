@@ -42,11 +42,19 @@ def in_write_set(path: Path, root: Path, write_set: list[str]) -> bool:
 _SHELL_META = set(";&|`$<>")
 
 
-def command_allowed(cmd: list[str], whitelist: list[str]) -> bool:
+def command_allowed(cmd: list[str], whitelist: list[str], forbidden: list[str] | None = None) -> bool:
     if not cmd:
         return False
     if any(any(ch in arg for ch in _SHELL_META) for arg in cmd):
         return False
+    for prefix in forbidden or []:
+        parts = prefix.split()
+        if not parts:
+            continue
+        if cmd[: len(parts)] == parts:
+            return False
+        if len(cmd) >= 3 and cmd[0] in {"python", "python3"} and cmd[1] == "-m" and cmd[2] == parts[0]:
+            return False
     for prefix in whitelist:
         parts = prefix.split()
         if cmd[: len(parts)] == parts:
@@ -62,8 +70,9 @@ async def run_command(
     timeout: int,
     env_allow: list[str],
     truncate: int = 8000,
+    forbidden: list[str] | None = None,
 ) -> dict[str, Any]:
-    if not command_allowed(cmd, whitelist):
+    if not command_allowed(cmd, whitelist, forbidden):
         raise CommandDenied(f"命令不在白名单: {cmd}")
     env = {k: os.environ[k] for k in env_allow if k in os.environ}
     proc = await asyncio.create_subprocess_exec(
