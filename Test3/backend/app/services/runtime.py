@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import shutil
 import uuid
 from contextlib import contextmanager
@@ -97,6 +98,25 @@ class RunState:
     skip_continue: set[str] = field(default_factory=set)
 
 
+_SNAPSHOT_KINDS = {
+    "task.state_changed",
+    "gate.created",
+    "gate.resolved",
+    "baseline.frozen",
+    "stage.started",
+    "stage.changed",
+    "budget.exceeded",
+    "runtime.recovery_failed",
+}
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 class Workbench:
     def __init__(self, gateway: Gateway, registry: RoleRegistry, data_dir: Path) -> None:
         self.gateway = gateway
@@ -165,14 +185,16 @@ class Workbench:
         folder.mkdir(parents=True, exist_ok=True)
         with (folder / "events.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-        self._persist_snapshot(run)
+        if event["kind"] in _SNAPSHOT_KINDS or int(event["seq"]) % 20 == 0:
+            self._persist_snapshot(run)
 
     def _persist_snapshot(self, run: RunState) -> None:
         folder = self.data_dir / "runs" / run.id
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / "snapshot.json").write_text(json.dumps(self._serialize_run(run), ensure_ascii=False), encoding="utf-8")
-        projects_path = self.data_dir / "projects.json"
-        projects_path.write_text(json.dumps(self.projects, ensure_ascii=False), encoding="utf-8")
+        payload = self._serialize_run(run)
+        payload["events"] = []
+        payload["event_seq"] = len(run.events)
+        _atomic_write(folder / "snapshot.json", json.dumps(payload, ensure_ascii=False))
+        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
 
     def _serialize_run(self, run: RunState) -> dict[str, Any]:
         return {
@@ -236,36 +258,113 @@ class Workbench:
 
     def restore_runs(self) -> None:
         projects_path = self.data_dir / "projects.json"
-        if projects_path.exists():
-            try:
-                loaded = json.loads(projects_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    self.projects.update(loaded)
-            except json.JSONDecodeError:
-                pass
+        loaded_projects = self._read_json_file(projects_path)
+        if isinstance(loaded_projects, dict):
+            self.projects.update(loaded_projects)
+        elif projects_path.exists():
+            self._record_recovery_failure("", "projects_corrupt")
         root = self.data_dir / "runs"
         if not root.exists():
             return
-        for snap in root.glob("*/snapshot.json"):
-            try:
-                data = json.loads(snap.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                continue
+        for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            snap = run_dir / "snapshot.json"
+            events = self._read_jsonl(run_dir / "events.jsonl")
+            data = self._read_json_file(snap)
+            if data is None:
+                self._record_recovery_failure(run_dir.name, "snapshot_corrupt_or_missing")
+                if not events and not snap.exists():
+                    continue
+                data = self._run_skeleton_from_events(run_dir.name, events)
             run = self._deserialize_run(data)
-            events_path = snap.parent / "events.jsonl"
-            if events_path.exists():
-                loaded_events = []
-                for line in events_path.read_text(encoding="utf-8").splitlines():
-                    if line.strip():
-                        loaded_events.append(json.loads(line))
-                if loaded_events:
-                    run.events = loaded_events
+            if events:
+                run.events = events
+            self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
-            repo = snap.parent / "repo"
+            repo = run_dir / "repo"
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
             self._persist_snapshot(run)
+
+    def _read_json_file(self, path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+        return rows
+
+    def _record_recovery_failure(self, run_id: str, reason: str) -> None:
+        event = {"kind": "runtime.recovery_failed", "run_id": run_id, "reason": reason, "actor": "system"}
+        with (self.data_dir / "recovery.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        if run_id:
+            folder = self.data_dir / "runs" / run_id
+            folder.mkdir(parents=True, exist_ok=True)
+            with (folder / "events.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {"seq": 0, "kind": "runtime.recovery_failed", "subject": run_id, "payload": {"reason": reason}, "actor": "system"},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+
+    def _run_skeleton_from_events(self, run_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+        idea = ""
+        for event in events:
+            if event.get("kind") == "stage.started":
+                idea = str((event.get("payload") or {}).get("idea") or "")
+                break
+        return {
+            "id": run_id,
+            "project_id": "",
+            "idea": idea,
+            "events": events,
+            "tasks": {},
+            "artifacts": {},
+            "gates": [],
+        }
+
+    def _ensure_tasks_from_events(self, run: RunState) -> None:
+        for event in run.events:
+            if event.get("kind") != "task.state_changed":
+                continue
+            payload = event.get("payload") or {}
+            code = str(payload.get("code") or event.get("subject") or "")
+            if not code or code in run.tasks:
+                continue
+            run.tasks[code] = {
+                "id": f"{run.id}:{code}",
+                "code": code,
+                "state": "pending",
+                "revision": 1,
+                "card": {"code": code, "depends_on": [], "write_set": [], "outputs": [], "acceptance": [], "sources": [], "role": "coder", "points": 1, "kind": "impl", "title": code, "description": "", "module": "M1", "priority": "P1"},
+                "repair_rounds": 0,
+                "signatures": [],
+                "evidence": [],
+                "paused": False,
+                "locked_by": "",
+                "tokens_used": 0,
+                "prev_output": "",
+                "review_issues": [],
+            }
 
     def _rebuild_task_states(self, run: RunState) -> None:
         if not run.tasks:
@@ -530,6 +629,23 @@ class Workbench:
             return {"status": "executing", "stage": run.engine.current}
         if kind == "验收确认":
             return self._resolve_acceptance(run, decision, payload, gate)
+        if kind == "文档检查失败":
+            if decision != "approve":
+                return {"status": "rejected", "kind": kind}
+            retry = str((gate.get("payload") or {}).get("retry") or "")
+            errors = list((gate.get("payload") or {}).get("errors") or [])
+            if retry == "proposal":
+                return await self.run_proposal(run)
+            if retry == "spec":
+                run.artifacts["spec_rewrite"] = {"reason": payload.get("reason") or "文档检查失败", "errors": errors}
+                return await self.run_spec(run)
+            if retry == "design":
+                run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "文档检查失败", "errors": errors}
+                return await self.run_design(run)
+            if retry == "plan":
+                run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "文档检查失败", "errors": errors}
+                return await self.run_plan(run)
+            return {"status": "rejected", "kind": kind}
         if kind == "重排提案":
             if decision != "approve":
                 return {"status": "rejected", "kind": kind}
@@ -538,6 +654,9 @@ class Workbench:
             return {"status": "routed"}
         if kind == "变更决定":
             body = dict(payload)
+            cr_payload = (gate.get("payload") or {}).get("cr") or {}
+            if not body.get("code"):
+                body["code"] = cr_payload.get("code")
             if decision != "approve":
                 body["decision"] = "驳回"
             elif not body.get("decision"):
@@ -632,7 +751,7 @@ class Workbench:
             run.artifacts["proposal"] = doc.model_dump()
             run.artifacts["proposal_errors"] = errors
             if errors:
-                return {"status": "need_human", "errors": errors, "stage": "2"}
+                return self._doc_check_failed(run, retry="proposal", errors=errors)
             run.engine.apply("proposal_checked")
             return await self.run_review(run)
 
@@ -706,7 +825,7 @@ class Workbench:
             run.artifacts["spec"] = spec.model_dump()
             run.artifacts["spec_errors"] = errors
             if errors:
-                return {"status": "need_human", "errors": errors}
+                return self._doc_check_failed(run, retry="spec", errors=errors)
             for item in spec.features + spec.nonfunc:
                 for src in item.sources:
                     run.trace.link(src, item.code, "issue → spec_item")
@@ -730,7 +849,7 @@ class Workbench:
             run.artifacts["design"] = design.model_dump()
             run.artifacts["design_errors"] = errors
             if errors:
-                return {"status": "need_human", "errors": errors}
+                return self._doc_check_failed(run, retry="design", errors=errors)
             max_rewrites = self._max_rewrites(run, "design")
             sheets, design, review_status = await self._design_reviews(run, spec, design, max_rewrites)
             if review_status:
@@ -767,15 +886,25 @@ class Workbench:
                     max_rewrites=0,
                 )
                 if errors:
-                    return sheets, design, {"status": "need_human", "errors": errors, "route": route}
+                    return sheets, design, self._doc_check_failed(run, retry="design", errors=errors, extra={"route": route})
                 sheets = await self._call_design_reviewers(run, spec, design)
                 continue
             if route == "停止":
-                return sheets, design, {"status": "stopped", "reason": "设计评审未通过", "route": route}
+                return sheets, design, self._doc_check_failed(
+                    run,
+                    retry="design",
+                    errors=["设计评审未通过"],
+                    extra={"route": route, "reason": "设计评审未通过"},
+                )
             if route == "变更单":
                 return sheets, design, await self.submit_cr(run, "设计评审：需求类意见", [item.code for item in spec.features[:1]], kind="小变更")
             if route == "探索任务":
-                return sheets, design, {"status": "need_human", "route": route, "reason": "设计评审要求探索任务"}
+                return sheets, design, self._doc_check_failed(
+                    run,
+                    retry="design",
+                    errors=["设计评审要求探索任务"],
+                    extra={"route": route, "reason": "设计评审要求探索任务"},
+                )
             break
         return sheets, design, None
 
@@ -813,7 +942,7 @@ class Workbench:
             run.artifacts["plan"] = graph.model_dump()
             run.artifacts["plan_errors"] = errors
             if errors:
-                return {"status": "need_human", "errors": errors}
+                return self._doc_check_failed(run, retry="plan", errors=errors)
             return self._gate(run, "PLAN基线确认", {"plan": graph.model_dump()})
 
     def _materialize_tasks(self, run: RunState) -> None:
@@ -901,6 +1030,7 @@ class Workbench:
             await asyncio.gather(*(self.execute_task(run, card.code) for card in picked))
             started.extend(card.code for card in picked)
             self._refresh_ready(run)
+        self._maybe_tasks_complete(run)
         return started
 
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
@@ -1053,7 +1183,7 @@ class Workbench:
             async with self._merge_lock_for(run):
                 merged = merge(repo, f"task/{code}")
                 if merged["ok"]:
-                    regression = await self._run_regression(run, repo)
+                    regression = await self._run_regression(run, repo, code)
                     if not regression["ok"]:
                         rollback_merge(repo, str(merged["before"]))
                         regression_fail = str(regression["reason"] or "regression failed")
@@ -1066,6 +1196,7 @@ class Workbench:
                         task["evidence"].append({"kind": "merge", "summary": sha, "path": ""})
                         self._unlock_origin_after_conflict(run, task)
                         self._refresh_ready(run)
+                        self._maybe_tasks_complete(run)
                         return {"state": "done"}
             if regression_fail:
                 return await self._finish_failure(run, task, card, "代码缺陷", regression_fail, {"exit_code": 1})
@@ -1208,7 +1339,8 @@ class Workbench:
                 outs.append({"code": dep, "state": other["state"], "evidence": other.get("evidence") or []})
         return outs
 
-    async def _run_regression(self, run: RunState, repo: Path) -> dict[str, Any]:
+    async def _run_regression(self, run: RunState, repo: Path, code: str = "") -> dict[str, Any]:
+        _ = code
         patterns = self._judge_patterns()
         timeout = int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600)
         env_allow = list(self.profile.get("env_allowlist") or ["PATH"])
@@ -1375,6 +1507,7 @@ class Workbench:
         return info
 
     async def accept(self, run: RunState) -> dict[str, Any]:
+        self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
@@ -1514,7 +1647,19 @@ class Workbench:
         return self._gate(run, "变更决定", {"cr": cr})
 
     async def decide_cr(self, run: RunState, payload: dict[str, Any]) -> dict[str, Any]:
-        cr = next(c for c in run.crs if c["code"] == payload.get("code"))
+        code = payload.get("code")
+        if not code:
+            for gate in reversed(run.gates):
+                if gate.get("kind") != "变更决定":
+                    continue
+                candidate = ((gate.get("payload") or {}).get("cr") or {}).get("code")
+                match = next((item for item in run.crs if item["code"] == candidate), None)
+                if match and match.get("status") not in {"rejected", "applied", "closed"}:
+                    code = candidate
+                    break
+        cr = next((item for item in run.crs if item["code"] == code), None)
+        if cr is None:
+            raise ValidationFailed("变更单不存在")
         cr["decision"] = payload.get("decision")
         cr["status"] = "decided"
         flags = cr.get("eval_flags") or {}
@@ -1561,16 +1706,28 @@ class Workbench:
 
     def _splice_affected(self, old: dict[str, Any], new: dict[str, Any], affected: set[str], fields: tuple[str, ...]) -> dict[str, Any]:
         result = copy.deepcopy(old)
-        new_map: dict[tuple[str, str], dict[str, Any]] = {}
         for section in fields:
-            for item in new.get(section) or []:
-                if isinstance(item, dict) and item.get("code") in affected:
-                    new_map[(section, str(item["code"]))] = item
-            items = result.get(section) or []
-            for index, item in enumerate(items):
-                key = (section, str(item.get("code") or ""))
-                if key in new_map:
-                    items[index] = new_map[key]
+            old_items = [item for item in (result.get(section) or []) if isinstance(item, dict)]
+            new_items = [item for item in (new.get(section) or []) if isinstance(item, dict)]
+            new_by_code = {str(item.get("code") or ""): item for item in new_items if item.get("code")}
+            spliced: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in old_items:
+                code = str(item.get("code") or "")
+                if code in affected:
+                    if code in new_by_code:
+                        spliced.append(new_by_code[code])
+                        seen.add(code)
+                    continue
+                spliced.append(item)
+                if code:
+                    seen.add(code)
+            for item in new_items:
+                code = str(item.get("code") or "")
+                if code and code not in seen:
+                    spliced.append(item)
+                    seen.add(code)
+            result[section] = spliced
         return result
 
     async def _apply_incremental_docs(self, run: RunState, cr: dict[str, Any]) -> None:
@@ -1616,17 +1773,32 @@ class Workbench:
                     cr["status"] = "rewrite_failed"
                     cr["errors"] = errors
                     return
+                checker = {
+                    "SPEC": lambda doc: self._check_spec_doc(run, doc),
+                    "DESIGN": lambda doc: self._check_design_doc(run, doc),
+                    "PLAN": lambda doc: self._check_plan_doc(run, doc),
+                }[kind]
                 merged = self._splice_affected(before, rewritten.model_dump(), affected, fields)
+                self._assert_unaffected(before, merged, affected, fields)
+                try:
+                    model = expected.model_validate(merged)
+                    merge_errors = self._incremental_check(checker, before, model)
+                except Exception as exc:  # noqa: BLE001
+                    merge_errors = [str(exc)]
+                if merge_errors:
+                    cr["status"] = "rewrite_failed"
+                    cr["errors"] = merge_errors
+                    return
                 for section in fields:
                     for item in merged.get(section) or []:
                         if isinstance(item, dict) and item.get("code") in affected:
                             item.setdefault("change_notes", []).append(note)
-                self._assert_unaffected(before, merged, affected, fields)
                 run.artifacts[key] = merged
                 run.artifacts[f"{key}_{version}"] = copy.deepcopy(merged)
                 run.artifacts[f"baseline_{kind}"] = version
                 self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
         cr["applied_version"] = version
+        self._sync_affected_task_cards(run, affected)
 
     def _incremental_inputs(self, run: RunState, cr: dict[str, Any], rewrite_payload: dict[str, Any], role: str) -> dict[str, Any]:
         payload = {**rewrite_payload, "change_request": cr}
@@ -1795,6 +1967,50 @@ class Workbench:
             return groups
         except Exception:  # noqa: BLE001
             return [[idx] for idx in range(len(texts))]
+
+    def _doc_check_failed(self, run: RunState, *, retry: str, errors: list[str], extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {"retry": retry, "errors": errors, **(extra or {})}
+        return self._gate(run, "文档检查失败", payload)
+
+    def _maybe_tasks_complete(self, run: RunState) -> None:
+        if run.engine.current != "7" or not run.tasks:
+            return
+        if all(task["state"] in {"done", "skipped", "cancelled"} for task in run.tasks.values()):
+            run.engine.apply("tasks_complete")
+            self.emit(run, "stage.changed", "8", {"event": "tasks_complete"})
+
+    def _sync_affected_task_cards(self, run: RunState, affected: set[str]) -> None:
+        plan = run.artifacts.get("plan")
+        if not isinstance(plan, dict):
+            return
+        cards = {str(item.get("code") or ""): item for item in (plan.get("tasks") or []) if isinstance(item, dict) and item.get("code")}
+        for code, task in list(run.tasks.items()):
+            if task["state"] not in {"stale", "done"}:
+                continue
+            if code not in affected and task["state"] != "stale":
+                continue
+            new_card = cards.get(code)
+            if new_card:
+                task["card"] = copy.deepcopy(new_card)
+        for code, card in cards.items():
+            if code in run.tasks:
+                continue
+            run.tasks[code] = {
+                "id": f"{run.id}:{code}",
+                "code": code,
+                "state": "pending",
+                "revision": 1,
+                "card": copy.deepcopy(card),
+                "repair_rounds": 0,
+                "signatures": [],
+                "evidence": [],
+                "paused": False,
+                "locked_by": "",
+                "tokens_used": 0,
+                "prev_output": "",
+                "review_issues": [],
+            }
+        self._sync_task_ids(run)
 
     def _gate(self, run: RunState, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         gate = {"id": str(uuid.uuid4()), "kind": kind, "status": "pending", "payload": payload}

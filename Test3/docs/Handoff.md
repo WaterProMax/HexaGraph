@@ -19,13 +19,13 @@
 - **控制。** `resume` 与 `pause` 状态集一致；`skip`/`force-pass` 必须写理由；`retry` 会再走执行器；关卡只能 pending 裁决一次，带乐观锁；运行级 pause/resume/terminate 发 `control.*`。
 - **讨论。** `Utterance.rule` 写入规则号，事件和讨论页可见。评审争议类退回会 `reopen_issue` 并续 I 编号；`moderator_final` 会调用；无效发言重写一次。
 - **监听。** 提炼/评估走 `call_agent`；红线和类别来自 Agent。关键词只作已决策去重辅助。空 scripted 夹具时不会再因「学号/别的楼」推出 I-03/I-04。
-- **变更。** `evaluation_pass` 返回 `(ok, flags)`，红线单独标出。路由传递 `kind`。批准走 `spec_writer`/`architect`/`decomposer` 增量重写，只 splice 受影响条目，版本按已冻结基线递增（1.1→1.2）；驳回标 `rejected`。`stale` 保持到调度器发 `change_approved`。
+- **变更。** `evaluation_pass` 返回 `(ok, flags)`，红线单独标出。路由传递 `kind`。批准走 `spec_writer`/`architect`/`decomposer` 增量重写，splice 支持受影响条目的新增/删除，合并结果再检查；PLAN 新卡写回 `stale`/`done` 任务（保留 evidence）。版本按已冻结基线递增（1.1→1.2）；驳回标 `rejected`。`stale` 保持到调度器发 `change_approved`。
 - **网关。** 角色温度和 schema 传给提供者；备用模型同样累加令牌，并把 `llm.fallback` 写入 run 事件。工具消息带 assistant `tool_calls.id` 与 `tool_call_id`；scripted 提供者校验协议。
 - **关卡驳回。** SPEC/DESIGN/PLAN 驳回重写；争议清单驳回重新开同一类关卡；重排/变更驳回只记录不执行。
 - **并发合并。** 每个 run 一把 `asyncio.Lock` 包住 merge + 回归 + 回滚，失败 `reset --hard` 不会抹掉其他已合并任务。
-- **运行态。** `emit` 写 JSONL + snapshot + EventBus；启动时恢复并 `recover_tasks`。任务状态只经 `_set_state` → `apply_transition`。
+- **运行态。** `emit` 追加 JSONL；状态变化时原子写 snapshot（临时文件 + `os.replace`）。启动时从 snapshot + JSONL 恢复并 `recover_tasks`。任务状态只经 `_set_state` → `apply_transition`。未进 SQLite 事件表。
 - **设计评审。** `run_design` 调 `review_arch`/`review_quality`，不通过走 `route_design_review`。
-- **文档重写循环。** `_write_checked` 把检查错误回给撰写人，最多 N 次。
+- **文档重写循环。** `_write_checked` 把检查错误回给撰写人，最多 N 次；仍不过开「文档检查失败」关卡。
 - **冲突 worktree。** `_unlock_origin_after_conflict` 用 `git worktree remove --force` + prune；`create_worktree` 遇残留会清登记后重试。
 - **令牌。** 网关按调用记到 ContextVar 累加器，并发任务不再用全局差值重复计。
 
@@ -44,8 +44,8 @@
 
 | 设计 | 实现 |
 |---|---|
-| 阶段/任务/事件持久化 | JSONL + snapshot + EventBus；尚未与 SQLite 同一事务 |
-| 任务状态只经 `transition()` | 内存路径走 `apply_transition`（与 DB `transition()` 同一写入函数） |
+| 阶段/任务/事件持久化 | 仅 JSONL + 原子 snapshot，未进 SQLite 事件表 |
+| 任务状态只经 `transition()` | 内存路径走 `apply_transition`；事件未进事件表，仅 JSON 可恢复 |
 | 设计两位背靠背评审 | 已接线 `review_arch` / `review_quality` |
 | replay E1–E10 | 未录 |
 | 反馈 HMAC 必填 | API 缺密钥 400；单测直接传 key |

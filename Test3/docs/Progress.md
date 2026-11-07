@@ -9,9 +9,9 @@ $ cd Test3/backend && uv run ruff check app tests
 All checks passed!
 
 $ cd Test3/backend && uv run pytest -q -m "not live"
-........................................................................ [ 82%]
-...............                                                          [100%]
-# 87 passed（含 M1–M11：关卡驳回、并发合并回滚、JSONL 恢复、工具协议、白名单、令牌并发、CR 1.2、设计评审、文档重写循环、冲突 worktree 往返、想法→验收长跑）
+........................................................................ [ 76%]
+......................                                                   [100%]
+# 94 passed（M3/M7 补完 + N1–N5：原子 snapshot、文档检查失败关卡、splice 增删、decide_cr 缺 code、并发回滚钉死 T-01、阶段机走到验收）
 
 $ cd Test3 && make e2e
 # 等同 pytest tests/e2e：6 passed
@@ -46,11 +46,11 @@ $ curl -sS http://127.0.0.1:8765/api/health
 |---|---|---|
 | P00 工程与模型配置 | 落地，百炼探测未跑 | `Makefile`、`pyproject.toml`、`config/models.yaml`、`.env.example`；`check-models.py` 无密钥时打印 `no-key` |
 | P01 模式/配置/编号/转换表 | 落地 | `tests/unit/test_core_tables.py`（6） |
-| P02 事件/存储/API/SSE | 部分 | `emit` 写 JSONL + snapshot + EventBus；启动恢复并 `recover_tasks`。SQLite 双写未做 |
+| P02 事件/存储/API/SSE | 部分 | JSONL + 原子 snapshot；坏文件记 recovery.failed 并从 JSONL 回放。未进 SQLite 事件表 |
 | P03 网关与 Agent | 落地（scripted） | `tests/unit/test_tools_llm_agents.py`、`test_info_boundary.py`；工具 schema/`tool_call_id` 已校验 |
 | P04 讨论纯函数 | 落地 | `tests/unit/test_discussion_rules.py`（13），金标准 11.4 |
 | P05 想法+讨论 | 落地 | `test_m1_study_room_scripted` |
-| P06 方案/评审/SPEC/关卡 | 落地 | 同上，走到 `SPEC基线确认` |
+| P06 方案/评审/SPEC/关卡 | 落地 | 同上；文档检查仍不过开「文档检查失败」关卡 |
 | P07 追溯+设计 | 落地（scripted） | `run_design` 调 `review_arch`/`review_quality`，不通过走 `route_design_review` |
 | P08 任务分解 | 落地（scripted） | `check_task_graph`、`run_plan`；`scripted_full_queue` 含分解与两任务 |
 | P09 工作区与沙箱 | 落地 | `test_git_smoke`、`command_allowed`、工作树 |
@@ -59,7 +59,7 @@ $ curl -sS http://127.0.0.1:8765/api/health
 | P12 控制/待办/预算 | API+函数有 | 乐观锁、待办、预算；takeover/submit-takeover；终止需 `confirm=true`；5 秒调度兜底 |
 | P13 前端基础页 | 页面有 | `App.tsx` 路由；未跑 Playwright |
 | P14 任务图/时间线 | 页面有 | `@xyflow/react` 依赖在 `package.json`；无浏览器 e2e |
-| P15 变更 | 落地（scripted） | 批准增量重写受影响条目，版本 1.1→1.2，驳回 `rejected`；stale 等到调度 |
+| P15 变更 | 落地（scripted） | 增量 splice 支持新增/删除；PLAN 新卡写回 stale 任务；缺 code 从关卡取 |
 | P16 监听 | 导入流水线有 | `test_import_study_room_feedback`；embedding 失败走 `cluster_fast` |
 | P17 综合/文档 | 文档补齐，E1–E10/真联调未做 | 本文件与 README / API / Acceptance / Handoff / Demo |
 

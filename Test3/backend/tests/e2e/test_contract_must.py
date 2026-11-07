@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from app.docs.checks import PROPOSAL_CHAPTERS, check_proposal
+from app.errors import ValidationFailed
 from app.fixtures.study_room import IDEA, scripted_full_queue
 from app.llm.providers import ScriptedProvider, validate_tool_protocol
 from app.llm.types import LLMResult
 from app.orchestrator.transition import apply_transition
 from app.schemas.common import AcceptanceCheck
 from app.schemas.docs import ProposalDoc, TaskGraph
-from app.workspace.gitops import commit, create_worktree, init_repo_sync, remove_worktree
+from app.workspace.gitops import commit, create_worktree, init_repo_sync, merge, remove_worktree
 from tests.e2e.test_must_fixes import _bench, _card, _ready_run, _spec_payload
 
 
@@ -161,26 +162,21 @@ async def test_concurrent_merge_rollback_keeps_other_task(tmp_path: Path) -> Non
     calls = {"n": 0}
     original = bench._run_regression
 
-    async def flaky(target, repo):
+    async def flaky(target, repo, code: str = ""):
         calls["n"] += 1
-        if calls["n"] == 1:
+        if code == "T-01":
             return {"ok": False, "reason": "boom"}
-        return await original(target, repo)
+        return await original(target, repo, code)
 
     bench._run_regression = flaky  # type: ignore[method-assign]
     await asyncio.gather(bench.execute_task(run, "T-01"), bench.execute_task(run, "T-02"))
     repo = bench.data_dir / "runs" / run.id / "repo"
-    states = {code: run.tasks[code]["state"] for code in ("T-01", "T-02")}
-    assert "done" in states.values()
-    assert any(state != "done" for state in states.values())
-    assert (repo / "tests" / "test_b.py").exists() or (repo / "tests" / "test_a.py").exists()
-    surviving = "T-02" if run.tasks["T-02"]["state"] == "done" else "T-01"
-    lost = "T-01" if surviving == "T-02" else "T-02"
-    assert run.tasks[lost]["state"] != "done"
-    keep = "tests/test_b.py" if surviving == "T-02" else "tests/test_a.py"
-    drop = "tests/test_a.py" if keep.endswith("b.py") else "tests/test_b.py"
-    assert (repo / keep).exists()
-    assert not (repo / drop).exists() or (repo / drop).read_text(encoding="utf-8") in {"", "\n"}
+    assert run.tasks["T-02"]["state"] == "done"
+    assert run.tasks["T-01"]["state"] != "done"
+    assert (repo / "tests" / "test_b.py").exists()
+    assert "def test_b" in (repo / "tests" / "test_b.py").read_text(encoding="utf-8")
+    a_path = repo / "tests" / "test_a.py"
+    assert not a_path.exists() or "def test_a" not in a_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -195,6 +191,67 @@ async def test_restart_recovers_running_task(tmp_path: Path) -> None:
     bench2, _ = _bench(tmp_path)
     restored = bench2.runs[run_id]
     assert restored.tasks["T-01"]["state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_verifying_merged_and_baseline(tmp_path: Path) -> None:
+    bench, _ = _bench(tmp_path)
+    run = _ready_run(bench, _card())
+    repo = bench.data_dir / "runs" / run.id / "repo"
+    init_repo_sync(repo, {"README.md": "x\n"})
+    wt = bench.data_dir / "runs" / run.id / "wt" / "T-01"
+    create_worktree(repo, wt, "task/T-01")
+    (wt / "ok.txt").write_text("merged\n", encoding="utf-8")
+    commit(wt, "task work")
+    merged = merge(repo, "task/T-01")
+    assert merged["ok"] is True
+    apply_transition(run.tasks["T-01"], "scheduled")
+    bench.emit(run, "task.state_changed", "T-01", {"code": "T-01", "event": "scheduled", "from": "ready", "to": "running"})
+    apply_transition(run.tasks["T-01"], "code_finished")
+    bench.emit(run, "task.state_changed", "T-01", {"code": "T-01", "event": "code_finished", "from": "running", "to": "verifying"})
+    run.tokens_used = 42
+    run.artifacts["baseline_SPEC"] = "1.1"
+    gate = bench._gate(run, "SPEC基线确认", {"spec": {}})
+    run_id = run.id
+    bench2, _ = _bench(tmp_path)
+    restored = bench2.runs[run_id]
+    assert restored.tasks["T-01"]["state"] == "done"
+    assert restored.tokens_used == 42
+    assert restored.artifacts["baseline_SPEC"] == "1.1"
+    assert any(item["id"] == gate["gate"]["id"] for item in restored.gates)
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_verifying_unmerged(tmp_path: Path) -> None:
+    bench, _ = _bench(tmp_path)
+    run = _ready_run(bench, _card())
+    repo = bench.data_dir / "runs" / run.id / "repo"
+    init_repo_sync(repo, {"README.md": "x\n"})
+    wt = bench.data_dir / "runs" / run.id / "wt" / "T-01"
+    create_worktree(repo, wt, "task/T-01")
+    (wt / "only-task.txt").write_text("unmerged\n", encoding="utf-8")
+    commit(wt, "task only")
+    apply_transition(run.tasks["T-01"], "scheduled")
+    bench.emit(run, "task.state_changed", "T-01", {"code": "T-01", "event": "scheduled", "from": "ready", "to": "running"})
+    apply_transition(run.tasks["T-01"], "code_finished")
+    bench.emit(run, "task.state_changed", "T-01", {"code": "T-01", "event": "code_finished", "from": "running", "to": "verifying"})
+    run_id = run.id
+    bench2, _ = _bench(tmp_path)
+    assert bench2.runs[run_id].tasks["T-01"]["state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_corrupt_snapshot_replays_jsonl(tmp_path: Path) -> None:
+    bench, _ = _bench(tmp_path)
+    run = _ready_run(bench, _card())
+    bench.emit(run, "stage.changed", "7", {"event": "plan_confirmed"})
+    snap = bench.data_dir / "runs" / run.id / "snapshot.json"
+    snap.write_text("{not-json", encoding="utf-8")
+    run_id = run.id
+    bench2, _ = _bench(tmp_path)
+    assert run_id in bench2.runs
+    assert (bench.data_dir / "recovery.jsonl").exists()
+    assert "runtime.recovery_failed" in (bench.data_dir / "recovery.jsonl").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -354,9 +411,9 @@ async def test_idea_to_acceptance_exports_release(tmp_path: Path) -> None:
     await bench.schedule_once(run)
     assert run.tasks["T-01"]["state"] == "done"
     assert run.tasks["T-02"]["state"] == "done"
+    assert run.engine.current == "8"
     accepted = await bench.accept(run)
     assert accepted["gate"]["kind"] == "验收确认"
-    run.engine.current = "8"
     done = await bench.resolve_gate(run, accepted["gate"]["id"], "approve", {})
     assert done["status"] == "done"
     release = Path(run.artifacts["release_dir"])
@@ -393,3 +450,94 @@ def test_worktree_remove_allows_recreate(tmp_path: Path) -> None:
     assert not wt.exists()
     create_worktree(repo, wt, "task/T-01")
     assert wt.exists()
+
+
+def _eval_ok() -> dict:
+    return {"dimension": "价值", "score": 4, "red_line": False, "blocking": False, "reason": "ok"}
+
+
+def _design_payload() -> dict:
+    return {
+        "chapters": ["概述", "模块", "接口", "数据", "决策", "预案", "附录"],
+        "modules": [{"code": "M1", "name": "m", "responsibility": "r", "sources": ["F1"], "provides": ["C1"], "depends_on": [], "data": []}],
+        "interfaces": [{"code": "C1", "provider": "M1", "consumers": ["M1"], "inputs": [], "outputs": [], "errors": []}],
+        "data": [],
+        "decisions": [],
+        "contingencies": [],
+        "appendix": "",
+    }
+
+
+def test_splice_affected_adds_and_deletes(tmp_path: Path) -> None:
+    bench, _ = _bench(tmp_path)
+    old = {"features": [{"code": "F1", "title": "old"}, {"code": "F2", "title": "keep"}]}
+    new = {"features": [{"code": "F3", "title": "added"}, {"code": "F2", "title": "keep"}]}
+    merged = bench._splice_affected(old, new, {"F1", "F3"}, ("features",))
+    assert [item["code"] for item in merged["features"]] == ["F2", "F3"]
+    assert merged["features"][0]["title"] == "keep"
+    assert merged["features"][1]["title"] == "added"
+
+
+@pytest.mark.asyncio
+async def test_doc_check_failure_opens_gate(tmp_path: Path) -> None:
+    bad = {"elevator": "e", "chapters": ["电梯演讲"], "features": [], "risks": [], "estimate_total": 0, "capacity": 40}
+    bench, _ = _bench(tmp_path, [bad, bad, bad])
+    project = bench.create_project("docfail")
+    run = bench.create_run(project["id"], "idea")
+    run.artifacts["idea_card"] = {"raw": "x", "approach": "a", "features": ["查看"]}
+    run.artifacts["issues"] = []
+    result = await bench.run_proposal(run)
+    assert result["gate"]["kind"] == "文档检查失败"
+    assert run.pending_human is True
+    assert result["gate"]["payload"]["retry"] == "proposal"
+    assert result["gate"]["payload"]["errors"]
+
+
+@pytest.mark.asyncio
+async def test_decide_cr_gate_without_code(tmp_path: Path) -> None:
+    bench, _ = _bench(tmp_path, [_eval_ok(), _eval_ok(), _eval_ok()])
+    run = _ready_run(bench, _card())
+    gate = await bench.submit_cr(run, "改查询页", ["F1"], kind="小变更")
+    result = await bench.resolve_gate(run, gate["gate"]["id"], "reject", {})
+    assert result["status"] == "rejected"
+    with pytest.raises(ValidationFailed):
+        await bench.decide_cr(run, {"decision": "批准"})
+
+
+@pytest.mark.asyncio
+async def test_cr_plan_card_used_on_rerun(tmp_path: Path) -> None:
+    new_card = _card(
+        write_set=["tests/test_new.py"],
+        outputs=["tests/test_new.py"],
+        acceptance=[AcceptanceCheck(cmd=["python", "-m", "pytest", "tests/test_new.py", "-q"], pass_criteria="ok", from_criterion="F1")],
+    )
+    bench, _ = _bench(
+        tmp_path,
+        [
+            _eval_ok(),
+            _eval_ok(),
+            _eval_ok(),
+            _spec_payload("改过的查询页"),
+            _design_payload(),
+            {"tasks": [new_card.model_dump()], "notes": "", "capacity": 40},
+            {"tool_calls": [{"name": "write_file", "arguments": {"path": "tests/test_new.py", "content": "def test_new():\n    assert True\n"}}]},
+            {"done": True, "summary": "rewritten"},
+            {"verdict": "pass", "issues": []},
+        ],
+    )
+    run = _ready_run(bench, _card())
+    run.tasks["T-01"]["state"] = "done"
+    run.tasks["T-01"]["evidence"] = [{"kind": "merge", "summary": "keep-me"}]
+    run.trace.link("F1", "T-01", "spec_item → task")
+    run.artifacts["design"] = _design_payload()
+    gate = await bench.submit_cr(run, "改查询页", ["F1"], kind="小变更")
+    decided = await bench.decide_cr(run, {"code": gate["gate"]["payload"]["cr"]["code"], "decision": "批准"})
+    assert decided["status"] == "applied"
+    assert run.tasks["T-01"]["state"] == "stale"
+    assert run.tasks["T-01"]["evidence"] == [{"kind": "merge", "summary": "keep-me"}]
+    assert run.tasks["T-01"]["card"]["write_set"] == ["tests/test_new.py"]
+    await bench.schedule_once(run)
+    assert run.tasks["T-01"]["state"] == "done"
+    repo = bench.data_dir / "runs" / run.id / "repo"
+    assert (repo / "tests" / "test_new.py").exists()
+    assert "def test_new" in (repo / "tests" / "test_new.py").read_text(encoding="utf-8")
