@@ -50,10 +50,10 @@ FEEDBACK_HASH_KEY=请换成足够长的本地随机串
 cd Test3 && make dev-backend   # http://127.0.0.1:8765
 
 # 终端 2
-cd Test3 && make dev-frontend  # http://127.0.0.1:5173 ，/api 代理到后端
+cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代理到后端
 ```
 
-默认 `scripted` + `study-room`：在前端或 API 创建项目并提交自习室想法后，会按 Design.md 第 11 章金标准走完想法 → 讨论 → 方案 → 评审 → SPEC 关卡。队列用尽后的设计/分解/执行需要补 scripted 项、改 `replay`，或改 `dashscope`。
+默认 `scripted` + `study-room`：在前端 Workstation（`/workstation`）或 API 创建项目并提交自习室想法后，会按 Design.md 金标准走完想法 → 讨论 → 方案 → 评审 → SPEC → 设计规格（DESIGN）→ 任务分解（PLAN）→ 编排器执行（T-01/T-02）→ 验收导出。Workstation 左侧支持输入需求并查看分阶段任务进度，右侧通过 React Flow Twin Graph 可视化全流程及任务依赖图，并支持任务级控制（pause/resume/retry/skip/force-pass/takeover/submit-takeover）。
 
 示例想法：
 

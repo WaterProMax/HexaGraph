@@ -14,7 +14,7 @@ export default function Projects() {
     },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      nav(`/runs/${res.run.id}`);
+      nav(`/workstation/${res.run.id}`);
     },
   });
   return (

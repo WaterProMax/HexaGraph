@@ -23,3 +23,12 @@ async def test_health_and_project_flow(tmp_path) -> None:
         assert created.status_code == 200
         listed = await client.get("/api/projects")
         assert listed.json()
+        proj_id = created.json()["id"]
+        run_res = await client.post(
+            f"/api/projects/{proj_id}/runs",
+            json={"idea": "做一个帮同学在期末周找到有空位自习室的小程序。"},
+        )
+        assert run_res.status_code == 200
+        runs = await client.get("/api/runs")
+        assert runs.status_code == 200
+        assert len(runs.json()) == 1

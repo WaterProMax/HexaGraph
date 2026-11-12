@@ -468,9 +468,9 @@ class Workbench:
             return
         if provider.queue:
             return
-        from app.fixtures.study_room import scripted_m1_queue
+        from app.fixtures.study_room import scripted_full_queue
 
-        provider.queue = list(scripted_m1_queue())
+        provider.queue = list(scripted_full_queue())
 
     def _drain_gateway(self, run: RunState) -> None:
         while self.gateway.events:

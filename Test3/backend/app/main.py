@@ -24,11 +24,11 @@ async def lifespan(app: FastAPI):
         pass
     provider = build_provider(settings.test3_llm_provider, models)
     if settings.test3_llm_provider == "scripted" and settings.test3_scripted_fixture == "study-room":
-        from app.fixtures.study_room import scripted_m1_queue
+        from app.fixtures.study_room import scripted_full_queue
         from app.llm.providers import ScriptedProvider
 
         if isinstance(provider, ScriptedProvider):
-            provider.queue.extend(scripted_m1_queue())
+            provider.queue.extend(scripted_full_queue())
     gateway = Gateway(models, provider, data_dir=settings.data_dir())
     app.state.workbench = Workbench(gateway, RoleRegistry(roles), settings.data_dir())
     app.state.settings = settings
