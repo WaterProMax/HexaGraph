@@ -1,12 +1,7 @@
-import { Layout, Menu, Tag } from "antd";
-import {
-  ApartmentOutlined,
-  AppstoreOutlined,
-  DesktopOutlined,
-  FolderOpenOutlined,
-  SettingOutlined,
-} from "@ant-design/icons";
-import { Link, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { DesktopOutlined, FolderOpenOutlined, SettingOutlined } from "@ant-design/icons";
+import { useQuery } from "@tanstack/react-query";
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { api } from "./api/client";
 import Overview from "./pages/Overview";
 import Projects from "./pages/Projects";
 import Discussion from "./pages/Discussion";
@@ -19,131 +14,127 @@ import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 
-export default function App() {
+export function runDot(run: any): string {
+  if (run?.status === "done") return "completed";
+  if (run?.status === "waiting" || run?.paused) return "error";
+  if (run?.status === "running") return "in_progress";
+  return "pending";
+}
+
+function BrandMark() {
+  return (
+    <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden>
+      <defs>
+        <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#0bf" />
+          <stop offset="1" stopColor="#0066fa" />
+        </linearGradient>
+      </defs>
+      <path d="M12 1.5 21.1 6.75v10.5L12 22.5 2.9 17.25V6.75z" fill="url(#hg)" />
+      <path d="M12 7.2 16.2 9.6v4.8L12 16.8l-4.2-2.4V9.6z" fill="#fff" opacity=".9" />
+    </svg>
+  );
+}
+
+function Sidebar() {
   const loc = useLocation();
-  const selectedKey = loc.pathname.startsWith("/projects")
-    ? "p"
-    : loc.pathname.startsWith("/settings")
-    ? "s"
-    : loc.pathname.startsWith("/runs")
-    ? "r"
-    : "w";
+  const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
+  const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
+
+  const nav = [
+    { to: "/workstation", icon: <DesktopOutlined />, label: "工作台", match: "/workstation" },
+    { to: "/projects", icon: <FolderOpenOutlined />, label: "项目", match: "/projects" },
+    { to: "/settings", icon: <SettingOutlined />, label: "模型槽位", match: "/settings" },
+  ];
 
   return (
-    <Layout style={{ minHeight: "100vh" }}>
-      <Layout.Sider width={210} theme="dark" style={{ borderRight: "1px solid #1f1f1f" }}>
-        <div
-          style={{
-            height: 52,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "0 16px",
-            color: "#fff",
-            fontWeight: 700,
-            fontSize: 15,
-            borderBottom: "1px solid rgba(255,255,255,0.1)",
-          }}
-        >
-          <span>HexaGraph</span>
-          <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>
-            Test3
-          </Tag>
+    <aside className="sidebar">
+      <Link to="/workstation" className="brand" style={{ color: "inherit", textDecoration: "none" }}>
+        <BrandMark />
+        <span className="brand-name">HexaGraph</span>
+        <span className="brand-badge">Test3</span>
+      </Link>
+      <div className="sidebar-scroll">
+        <p className="tagline">多体讨论驱动的工作流工作台。把一句想法推进成规格、设计、任务与交付。</p>
+        <div className="nav-label">浏览</div>
+        {nav.map((n) => (
+          <Link
+            key={n.to}
+            to={n.to}
+            className={`nav-item ${loc.pathname.startsWith(n.match) ? "active" : ""}`}
+          >
+            {n.icon}
+            <span className="nav-text">{n.label}</span>
+          </Link>
+        ))}
+        <div className="nav-label">
+          <span>最近运行</span>
+          <span className="mono">{runs?.length ?? 0}</span>
         </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          defaultOpenKeys={["proj", "ctrl"]}
-          items={[
-            {
-              key: "proj",
-              label: "Project Center",
-              icon: <AppstoreOutlined />,
-              children: [
-                {
-                  key: "w",
-                  icon: <DesktopOutlined />,
-                  label: <Link to="/workstation">Workstation</Link>,
-                },
-                {
-                  key: "p",
-                  icon: <FolderOpenOutlined />,
-                  label: <Link to="/projects">Projects Registry</Link>,
-                },
-              ],
-            },
-            {
-              key: "ctrl",
-              label: "Control & Settings",
-              icon: <ApartmentOutlined />,
-              children: [
-                {
-                  key: "s",
-                  icon: <SettingOutlined />,
-                  label: <Link to="/settings">Models & Slots</Link>,
-                },
-              ],
-            },
-          ]}
-        />
-      </Layout.Sider>
-      <Layout>
-        <Layout.Content style={{ minHeight: "100vh", background: "#f0f2f5" }}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/workstation" replace />} />
-            <Route path="/workstation" element={<Workstation />} />
-            <Route path="/workstation/:id" element={<Workstation />} />
-            <Route
-              path="/projects"
-              element={
-                <div style={{ padding: 16 }}>
-                  <Projects />
-                </div>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <div style={{ padding: 16 }}>
-                  <Settings />
-                </div>
-              }
-            />
-            <Route
-              path="/runs/:id/*"
-              element={
-                <div style={{ padding: 16 }}>
-                  <RunShell />
-                </div>
-              }
-            />
-            <Route path="*" element={<Navigate to="/workstation" replace />} />
-          </Routes>
-        </Layout.Content>
-      </Layout>
-    </Layout>
+        {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
+        {recent.map((r: any) => (
+          <NavLink key={r.id} to={`/workstation/${r.id}`} className="nav-item">
+            <span className={`dot ${runDot(r)}`} />
+            <span className="nav-text">{r.idea || r.id.slice(0, 8)}</span>
+            <span className="nav-meta">S{r.stage}</span>
+          </NavLink>
+        ))}
+      </div>
+      <div className="sidebar-foot">
+        想法 → 讨论 → 规格 → 设计 → 任务 → 交付
+        <br />© 2026 HexaGraph
+      </div>
+    </aside>
+  );
+}
+
+export default function App() {
+  return (
+    <div className="shell">
+      <Sidebar />
+      <main className="main">
+        <Routes>
+          <Route path="/" element={<Navigate to="/workstation" replace />} />
+          <Route path="/workstation" element={<Workstation />} />
+          <Route path="/workstation/:id" element={<Workstation />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/runs/:id/*" element={<RunShell />} />
+          <Route path="*" element={<Navigate to="/workstation" replace />} />
+        </Routes>
+      </main>
+    </div>
   );
 }
 
 function RunShell() {
   const { id } = useParams();
+  const tabs = [
+    { to: `/runs/${id}`, label: "总览", end: true },
+    { to: `/runs/${id}/discussion`, label: "讨论" },
+    { to: `/runs/${id}/docs`, label: "文档" },
+    { to: `/runs/${id}/todos`, label: "待办" },
+    { to: `/runs/${id}/tasks`, label: "任务图" },
+    { to: `/runs/${id}/timeline`, label: "时间线" },
+    { to: `/runs/${id}/budget`, label: "预算" },
+    { to: `/runs/${id}/changes`, label: "变更与反馈" },
+  ];
   return (
-    <div>
-      <Menu
-        mode="horizontal"
-        items={[
-          { key: "ws", label: <Link to={`/workstation/${id}`}>Workstation 视图</Link> },
-          { key: "o", label: <Link to={`/runs/${id}`}>总览</Link> },
-          { key: "d", label: <Link to={`/runs/${id}/discussion`}>讨论</Link> },
-          { key: "doc", label: <Link to={`/runs/${id}/docs`}>文档</Link> },
-          { key: "t", label: <Link to={`/runs/${id}/todos`}>待办</Link> },
-          { key: "g", label: <Link to={`/runs/${id}/tasks`}>任务图</Link> },
-          { key: "tl", label: <Link to={`/runs/${id}/timeline`}>时间线</Link> },
-          { key: "b", label: <Link to={`/runs/${id}/budget`}>预算</Link> },
-          { key: "c", label: <Link to={`/runs/${id}/changes`}>变更与反馈</Link> },
-        ]}
-      />
+    <div className="page">
+      <div className="page-head">
+        <h1>运行详情</h1>
+        <p className="mono">{id}</p>
+      </div>
+      <div className="subnav">
+        <Link to={`/workstation/${id}`} className="chip">
+          ← 工作台视图
+        </Link>
+        {tabs.map((t) => (
+          <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `chip ${isActive ? "active" : ""}`}>
+            {t.label}
+          </NavLink>
+        ))}
+      </div>
       <Routes>
         <Route index element={<Overview />} />
         <Route path="discussion" element={<Discussion />} />
