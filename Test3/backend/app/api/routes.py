@@ -71,6 +71,11 @@ async def create_run(project_id: str, body: CreateRun, request: Request) -> dict
     return {"run": _run_view(run), "result": started}
 
 
+@router.get("/runs")
+async def list_runs(request: Request) -> list[dict[str, Any]]:
+    return [_run_view(r) for r in wb(request).runs.values()]
+
+
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     return _run_view(_run(request, run_id))

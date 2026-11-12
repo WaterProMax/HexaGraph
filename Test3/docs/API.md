@@ -22,6 +22,7 @@
 | GET | `/health` | `{status: ok}` |
 | POST/GET | `/projects` | 建项目 / 列表 |
 | POST | `/projects/{id}/runs` | 建运行并立刻 `start_idea` |
+| GET | `/runs` | 运行列表 |
 | GET | `/runs/{id}` | 状态、阶段、关卡、revision |
 | GET | `/runs/{id}/stages` | 当前阶段与历史 |
 | GET | `/runs/{id}/artifacts` | 产物字典 |
