@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
+import "./workstation-glass.css";
 import App from "./App";
 import { theme } from "./theme";
 

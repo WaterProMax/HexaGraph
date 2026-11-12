@@ -140,7 +140,7 @@ function PhaseGroupNode({ data }: { data: any }) {
 function TwinTaskNode({ data }: { data: any }) {
   const status: ItemStatus = data.status || "pending";
   return (
-    <div className={`flow-node ${data.selected ? "selected" : ""}`}>
+    <div className={`flow-node ${data.selected ? "selected" : ""}`} data-status={status}>
       <Handle type="target" position={Position.Left} />
       <div className="head">
         <span className={`dot ${status}`} />
@@ -658,6 +658,7 @@ export default function Workstation() {
     <>
       <Input
         size="small"
+        aria-label="任务控制理由"
         placeholder="控制理由（跳过 / 强制通过必填）"
         value={controlReason}
         onChange={(e) => setControlReason(e.target.value)}
@@ -696,6 +697,8 @@ export default function Workstation() {
           {Array.isArray(runsList) && runsList.length > 0 && (
             <Select
               size="small"
+              aria-label="选择历史运行"
+              classNames={{ popup: { root: "glass-select-popup" } }}
               variant="filled"
               style={{ width: 220 }}
               value={activeRunId}
@@ -726,8 +729,8 @@ export default function Workstation() {
               </span>
             </Tooltip>
             <Tooltip title="自动批准当前挂起关卡以快速推进">
-              <span className="pill" style={{ cursor: "pointer" }} onClick={() => setAutoAdvance((v) => !v)}>
-                <Switch size="small" checked={autoAdvance} />
+              <span className="pill auto-advance">
+                <Switch size="small" aria-label="自动过关" checked={autoAdvance} onChange={setAutoAdvance} />
                 自动过关
               </span>
             </Tooltip>
@@ -756,32 +759,41 @@ export default function Workstation() {
             <Button
               size="small"
               icon={run.paused ? <CaretRightOutlined /> : <PauseOutlined />}
+              aria-label={run.paused ? "恢复" : "暂停"}
               onClick={() => runCtrlMut.mutate(run.paused ? "resume" : "pause")}
             >
               {run.paused ? "恢复" : "暂停"}
             </Button>
             <Tooltip title="刷新">
-              <Button size="small" type="text" icon={<ReloadOutlined />} onClick={refreshAll} />
+              <Button size="small" type="text" aria-label="刷新" icon={<ReloadOutlined />} onClick={refreshAll} />
             </Tooltip>
           </div>
         )}
       </header>
 
       <div className="ws-body">
-        <aside className="ws-left">
-          <div className="composer">
+        <aside className="ws-left" aria-label="工作台运行面板">
+          <section className="composer glass-panel" aria-labelledby="composer-heading">
+            <div className="panel-heading">
+              <span className="panel-icon"><ThunderboltOutlined /></span>
+              <h2 id="composer-heading">想法输入</h2>
+            </div>
+            <div className="composer-fields">
             <input
               className="composer-name"
+              aria-label="项目名称"
               value={projectName}
               onChange={(e) => setProjectName(e.target.value)}
               placeholder="项目名称"
             />
             <textarea
+              aria-label="产品想法"
               rows={3}
               value={ideaInput}
               onChange={(e) => setIdeaInput(e.target.value)}
               placeholder="用一两句话描述产品想法…"
             />
+            </div>
             <div className="composer-actions">
               <Tooltip title="创建后逐个关卡推进到任务分解并开始执行">
                 <Button
@@ -803,20 +815,21 @@ export default function Workstation() {
                 启动 <ArrowRightOutlined />
               </Button>
             </div>
-          </div>
+          </section>
 
           {pendingGate && (
-            <div className="gate-card">
+            <section className="gate-card glass-panel" aria-labelledby="gate-heading">
               <div>
                 <div className="gate-kicker">等待你确认</div>
-                <div className="gate-head">
+                <h2 className="gate-head" id="gate-heading">
                   <span className="dot error" />
                   {pendingGate.kind}
-                </div>
+                </h2>
               </div>
               {pendingGate.kind === "想法补充" && (
                 <Input.TextArea
                   rows={2}
+                  aria-label="补充想法"
                   placeholder="补充缺失的用户或问题说明…"
                   value={supplementText}
                   onChange={(e) => setSupplementText(e.target.value)}
@@ -824,6 +837,7 @@ export default function Workstation() {
               )}
               <Input
                 size="small"
+                aria-label="裁决理由"
                 placeholder={
                   pendingGate.kind === "验收确认" && !pendingGate.payload?.pass
                     ? "验收未通过，人工批准必须填写理由"
@@ -832,7 +846,7 @@ export default function Workstation() {
                 value={gateReason}
                 onChange={(e) => setGateReason(e.target.value)}
               />
-              <div style={{ display: "flex", gap: 6 }}>
+              <div className="gate-actions">
                 <Button
                   type="primary"
                   size="small"
@@ -852,7 +866,7 @@ export default function Workstation() {
                   驳回重写
                 </Button>
               </div>
-            </div>
+            </section>
           )}
 
           {hasReadyTasks && !pendingGate && (
@@ -864,56 +878,67 @@ export default function Workstation() {
             </div>
           )}
 
-          <div>
-            <div className="section-title" style={{ padding: "0 8px" }}>
-              <span>进度</span>
+          <section className="progress-section" aria-labelledby="progress-heading">
+            <div className="progress-summary glass-panel">
+            <div className="section-title">
+              <h2 id="progress-heading">进度</h2>
               <span className="hint mono">
                 {completedCount}/{allItems.length} · {overallPercent}%
               </span>
             </div>
-            <div className="meter" style={{ margin: "0 8px 18px" }}>
+            <div className="meter brand" role="progressbar" aria-label="整体进度" aria-valuenow={overallPercent} aria-valuemin={0} aria-valuemax={100}>
               <span style={{ width: `${overallPercent}%` }} />
             </div>
+            </div>
 
+            <div className="phase-list">
             {phases.map((phase) => {
               const doneCnt = phase.items.filter((i) => i.status === "completed").length;
               return (
-                <div className="phase" key={phase.key}>
+                <section className="phase glass-panel" key={phase.key} aria-labelledby={`${phase.key}-heading`}>
                   <div className="phase-head">
                     <span className="phase-no">{phase.no}</span>
-                    <span className="phase-title">{phase.title}</span>
+                    <h3 className="phase-title" id={`${phase.key}-heading`}>{phase.title}</h3>
                     <span className="phase-pct">
                       {doneCnt}/{phase.items.length}
                     </span>
                   </div>
-                  {phase.items.length === 0 && <div className="row-sub" style={{ padding: "4px 8px" }}>尚无条目</div>}
+                  <div className="phase-items">
+                  {phase.items.length === 0 && <div className="phase-empty">尚无条目</div>}
                   {phase.items.map((item) => (
-                    <div
+                    <button
+                      type="button"
                       key={item.id}
                       className={`row ${selectedItem?.id === item.id ? "active" : ""}`}
+                      aria-pressed={selectedItem?.id === item.id}
+                      data-status={item.status}
                       onClick={() => setSelectedId(item.id)}
                     >
-                      <span className={`dot ${item.status}`} />
-                      <div className="row-main">
-                        <div className="row-title">
+                      <span className={`dot ${item.status}`} aria-hidden="true" />
+                      <span className="row-main">
+                        <span className="row-meta">
                           <span className="code">{item.code}</span>
+                          <span className="row-state">{item.rawState}</span>
+                        </span>
+                        <span className="row-title">
                           <span className="text" title={item.title}>
                             {item.title}
                           </span>
-                        </div>
+                        </span>
                         {item.subtitle && (
-                          <div className="row-sub" title={item.subtitle}>
+                          <span className="row-sub" title={item.subtitle}>
                             {item.subtitle}
-                          </div>
+                          </span>
                         )}
-                      </div>
-                      <span className="row-state">{item.rawState}</span>
-                    </div>
+                      </span>
+                    </button>
                   ))}
-                </div>
+                  </div>
+                </section>
               );
             })}
-          </div>
+            </div>
+          </section>
         </aside>
 
         <section className="canvas">
@@ -923,6 +948,7 @@ export default function Workstation() {
                 <button
                   key={t.key}
                   className={`chip ${activeTab === t.key ? "active" : ""}`}
+                      aria-pressed={activeTab === t.key}
                   onClick={() => setActiveTab(t.key)}
                 >
                   {t.label}
@@ -984,7 +1010,7 @@ export default function Workstation() {
                           }
                         }}
                       >
-                        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#d4d4d8" />
+                        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#b5cfe1" />
                         <Controls position="top-right" showInteractive={false} />
                         <AutoFit
                           signature={`${orientation}:${flowNodes.length}:${canvasSize.w}x${canvasSize.h}`}

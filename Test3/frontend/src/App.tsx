@@ -48,7 +48,7 @@ function Sidebar() {
   ];
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" aria-label="应用导航">
       <Link to="/workstation" className="brand" style={{ color: "inherit", textDecoration: "none" }}>
         <BrandMark />
         <span className="brand-name">HexaGraph</span>
@@ -56,21 +56,25 @@ function Sidebar() {
       </Link>
       <div className="sidebar-scroll">
         <p className="tagline">多体讨论驱动的工作流工作台。把一句想法推进成规格、设计、任务与交付。</p>
-        <div className="nav-label">浏览</div>
+        <nav className="nav-group" aria-label="浏览">
+        <h2 className="nav-label">浏览</h2>
         {nav.map((n) => (
           <Link
             key={n.to}
             to={n.to}
             className={`nav-item ${loc.pathname.startsWith(n.match) ? "active" : ""}`}
+            aria-current={loc.pathname.startsWith(n.match) ? "page" : undefined}
           >
             {n.icon}
             <span className="nav-text">{n.label}</span>
           </Link>
         ))}
-        <div className="nav-label">
+        </nav>
+        <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
+        <h2 className="nav-label" id="recent-runs-heading">
           <span>最近运行</span>
           <span className="mono">{runs?.length ?? 0}</span>
-        </div>
+        </h2>
         {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
         {recent.map((r: any) => (
           <NavLink key={r.id} to={`/workstation/${r.id}`} className="nav-item">
@@ -79,6 +83,7 @@ function Sidebar() {
             <span className="nav-meta">S{r.stage}</span>
           </NavLink>
         ))}
+        </section>
       </div>
       <div className="sidebar-foot">
         想法 → 讨论 → 规格 → 设计 → 任务 → 交付

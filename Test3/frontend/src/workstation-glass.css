@@ -1,0 +1,261 @@
+/* Ice Glass v1.1. Shared shell tokens, scoped workstation surfaces and controls.
+ * Design contract: Test3/docs/design/UI-Design-System.md */
+.shell {
+  --glass-ink: #122d42;
+  --glass-secondary: #304b60;
+  --glass-muted: #405c71;
+  --glass-accent: #0066fa;
+  --glass-surface: rgba(246, 253, 255, 0.78);
+  --glass-field: rgba(255, 255, 255, 0.72);
+  --glass-hover: rgba(255, 255, 255, 0.62);
+  --glass-radius-panel: 24px;
+  --glass-radius-item: 16px;
+  --glass-radius-field: 14px;
+  --glass-space: 16px;
+  --glass-shadow: 0 6px 20px -12px rgba(29, 80, 118, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --glass-focus: 0 0 0 3px rgba(0, 102, 250, 0.25);
+}
+
+.sidebar,
+.ws {
+  color: var(--glass-ink);
+  font-family: "Funnel Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.sidebar, .ws-left {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+/* Navigation: filled groups and generous touch targets, no stacked outlines. */
+.sidebar {
+  padding: 20px 12px 12px;
+  border: 0;
+  background: radial-gradient(ellipse at 0 0, #f5fdff 0, transparent 65%), linear-gradient(160deg, #d9edf8, #e9f3fb 65%, #dbeef7);
+}
+
+.sidebar .brand {
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 6px;
+  margin: 0 0 16px;
+  border: 0;
+  gap: 8px;
+}
+
+.sidebar .brand-mark { width: 30px; height: 30px; filter: drop-shadow(0 4px 6px #0066fa24); }
+.sidebar .brand-name { font-size: 19px; font-weight: 650; letter-spacing: -0.6px; }
+.sidebar .brand-badge { border: 0; border-radius: 999px; padding: 3px 7px; background: #ffffffb8; color: var(--glass-secondary); font-size: 10px; }
+.sidebar .sidebar-scroll { display: flex; flex-direction: column; gap: 16px; padding: 0 2px 16px; }
+.sidebar .tagline { margin: 0; padding: 0 8px 2px; border: 0; color: var(--glass-secondary); font-size: 12px; line-height: 1.8; }
+.sidebar .nav-group { padding: 10px 6px 6px; border-radius: var(--glass-radius-panel); background: rgba(248, 253, 255, 0.52); box-shadow: var(--glass-shadow); }
+.sidebar .nav-label { margin: 2px 10px 10px; color: var(--glass-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; }
+.sidebar .nav-label .mono { font-size: 10px; background: #ffffffb3; padding: 2px 7px; border-radius: 999px; letter-spacing: 0; }
+.sidebar .nav-item { min-height: 42px; height: auto; padding: 11px 10px; margin-top: 3px; border-radius: var(--glass-radius-item); gap: 10px; color: var(--glass-secondary); transition: background 160ms var(--ease-out), box-shadow 160ms var(--ease-out); }
+.sidebar .nav-item:hover { background: var(--glass-hover); color: var(--glass-ink); }
+.sidebar .nav-item.active { background: var(--glass-field); color: #0054c9; font-weight: 600; box-shadow: 0 3px 8px -5px #235f8f55; }
+.sidebar .nav-item .anticon { font-size: 16px; color: inherit; }
+.sidebar .nav-meta { color: var(--glass-muted); background: #e1edf5; border-radius: 999px; padding: 2px 6px; font-size: 10px; }
+.sidebar .sidebar-foot { border: 0; margin: 12px 4px 0; padding: 12px 4px 4px; color: var(--glass-muted); font-size: 10.5px; line-height: 1.9; }
+
+/* Workstation tray: the blue backdrop makes translucency visible without images. */
+.ws-left {
+  padding: 18px 14px 24px;
+  gap: var(--glass-space);
+  border: 0;
+  background: radial-gradient(ellipse at 95% 0%, #d3f3ff 0, transparent 48%), linear-gradient(165deg, #abd6ec 0%, #c5e5f5 44%, #b4d5ec 100%);
+}
+
+.ws-left > * { flex-shrink: 0; }
+.ws-left .glass-panel { border: 0; border-radius: var(--glass-radius-panel); background: var(--glass-surface); box-shadow: var(--glass-shadow); }
+.ws-left h2, .ws-left h3 { margin: 0; color: var(--glass-ink); }
+.ws-left .panel-heading { display: flex; align-items: center; gap: 9px; padding: 0 2px; margin-bottom: 12px; }
+.ws-left .panel-heading h2 { font-size: 15px; font-weight: 650; letter-spacing: -0.3px; }
+.ws-left .panel-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 11px; background: #dcedff; color: #0054c9; font-size: 16px; }
+.ws-left .composer { padding: 16px; }
+.ws-left .composer:focus-within { box-shadow: var(--glass-shadow); }
+.ws-left .composer-fields { background: var(--glass-field); border-radius: var(--glass-radius-field); padding: 4px 0; transition: box-shadow 160ms var(--ease-out); }
+.ws-left .composer-fields:focus-within { box-shadow: var(--glass-focus); }
+.ws-left .composer .composer-name { padding: 10px 12px 6px; color: var(--glass-ink); font-size: 13px; font-weight: 600; }
+.ws-left .composer textarea { display: block; padding: 4px 12px 10px; color: var(--glass-secondary); line-height: 1.75; min-height: 86px; }
+.ws-left .composer input::placeholder, .ws-left .composer textarea::placeholder { color: var(--glass-muted); }
+.ws-left .composer-actions { border: 0; padding: 12px 0 0; gap: 8px; flex-wrap: wrap; }
+.ws-left .composer-actions > .ant-btn:first-child { flex: 1 1 auto; padding-inline: 10px; background: #ffffff85; color: #0054c9; }
+.ws-left .composer-actions > .ant-btn:last-child { flex: 1 0 76px; }
+
+.ws-left .ant-btn { min-height: 36px; height: auto; padding: 7px 14px; border-radius: 999px; border-color: transparent; font-weight: 550; font-size: 12px; white-space: normal; box-shadow: none; }
+.ws-left .ant-btn-primary:not(:disabled) { background: var(--glass-accent); color: #fff; box-shadow: 0 5px 12px -6px #0066fa80; }
+.ws-left .ant-btn-primary:not(:disabled):hover { background: #0055d6; }
+.ws-left .ant-btn-text:not(:disabled):hover { background: #ffffffd9; }
+.ws-left .ant-btn-dangerous:not(:disabled) { color: #b4233a; }
+.ws-left .ant-btn:disabled { background: #e4eaf0; color: #667788; box-shadow: none; }
+.ws-left .ant-input, .ws-left .ant-input-affix-wrapper { padding: 9px 12px; border: 0; border-radius: var(--glass-radius-field); background: var(--glass-field); color: var(--glass-ink); font-size: 12px; }
+.ws-left .ant-input::placeholder { color: var(--glass-muted); }
+.ws-left .ant-input:focus, .ws-left .ant-input-affix-wrapper-focused { box-shadow: var(--glass-focus); }
+
+.ws-left .gate-card { padding: 16px; gap: 14px; background: linear-gradient(135deg, #fff9eff5, #fff3e6db); }
+.ws-left .gate-card .gate-kicker { margin-bottom: 7px; color: #91501e; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; }
+.ws-left .gate-card .gate-head { font-size: 16px; font-weight: 650; }
+.ws-left .gate-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ws-left .gate-actions > .ant-btn { flex: 1; }
+.ws-left .notice { padding: 14px; gap: 12px; border-radius: var(--glass-radius-item); background: #e8f5ffed; color: #24587c; flex-wrap: wrap; }
+
+/* One heading + one grouped list per phase. Codes never compete with titles. */
+.ws-left .progress-section { display: flex; flex-direction: column; gap: 14px; }
+.ws-left .progress-summary { padding: 16px; }
+.ws-left .section-title { margin-bottom: 12px; }
+.ws-left .section-title h2 { font-size: 15px; font-weight: 650; }
+.ws-left .section-title .hint { font-size: 11px; color: var(--glass-secondary); background: #ffffffa6; border-radius: 999px; padding: 4px 8px; }
+.ws-left .meter { height: 6px; margin: 0; background: #c7deed; }
+.ws-left .phase-list { display: flex; flex-direction: column; gap: 14px; }
+.ws-left .phase { margin: 0; padding: 16px 8px 8px; }
+.ws-left .phase-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 8px; padding: 0 8px 14px; }
+.ws-left .phase-no { grid-column: 1; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; color: var(--glass-secondary); }
+.ws-left .phase-title { grid-column: 1; grid-row: 2; font-size: 14px; font-weight: 650; line-height: 1.5; }
+.ws-left .phase-pct { grid-column: 2; grid-row: 1 / 3; background: #ffffffb3; color: var(--glass-secondary); padding: 5px 9px; border-radius: 999px; font-size: 11px; }
+.ws-left .phase-items { padding: 4px; border-radius: 18px; background: rgba(219, 236, 248, 0.56); display: flex; flex-direction: column; gap: 4px; }
+.ws-left .row { width: 100%; min-width: 0; margin: 0; border: 0; padding: 12px 10px; gap: 10px; border-radius: var(--glass-radius-item); font: inherit; color: var(--glass-ink); background: transparent; text-align: left; appearance: none; }
+.ws-left .row:hover { background: var(--glass-hover); }
+.ws-left .row.active { background: #ffffffed; box-shadow: 0 4px 12px -8px #29668b60; }
+.ws-left .row .dot { margin-top: 5px; }
+.ws-left .row-main { display: block; }
+.ws-left .row-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; margin-bottom: 5px; }
+.ws-left .row-meta .code { font-family: var(--font-mono); font-size: 10px; font-weight: 600; color: #365c78; letter-spacing: 0.03em; }
+.ws-left .row-state { margin: 0; padding: 2px 6px; border-radius: 999px; background: #e6eef4; color: #466079; font-size: 9px; max-width: 100%; overflow-wrap: anywhere; }
+.ws-left .row[data-status="completed"] .row-state { background: #ddf3e9; color: #21643f; }
+.ws-left .row[data-status="in_progress"] .row-state { background: #deecff; color: #0054b8; }
+.ws-left .row[data-status="error"] .row-state { background: #ffead6; color: #8d4513; }
+.ws-left .row-title { display: block; }
+.ws-left .row-title .text { display: block; white-space: normal; overflow-wrap: anywhere; font-size: 13px; font-weight: 600; line-height: 1.55; }
+.ws-left .row-sub { display: block; margin-top: 5px; color: var(--glass-muted); font-size: 11px; line-height: 1.6; }
+.ws-left .phase-empty { padding: 16px 12px; color: var(--glass-muted); font-size: 12px; }
+.sidebar .dot.pending, .ws-left .dot.pending { box-shadow: inset 0 0 0 1.5px #718b9f; }
+.sidebar a:focus-visible, .ws button:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 3px; }
+
+/* Workstation-wide colour roles override old pale greys without changing other pages. */
+.ws {
+  --ink: var(--glass-ink);
+  --ink-2: var(--glass-secondary);
+  --ink-3: var(--glass-muted);
+  --ink-4: var(--glass-muted);
+  --well: #e9f3fa;
+  background: #e4f1fa;
+}
+
+/* Shared controls: the toolbar, details and dock use the same pills as the composer. */
+.ws .ant-btn { min-height: 36px; height: auto; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--glass-field); color: var(--glass-ink); font-weight: 550; font-size: 12px; box-shadow: 0 3px 10px -7px #235f8f55; }
+.ws .ant-btn:not(:disabled):hover { background: #fff; color: #004dbb; }
+.ws .ant-btn-primary:not(:disabled) { background: var(--glass-accent); color: #fff; box-shadow: 0 5px 12px -6px #0066fa80; }
+.ws .ant-btn-primary:not(:disabled):hover { background: #0055d6; color: #fff; }
+.ws .ant-btn-dangerous:not(:disabled) { color: #b4233a; background: #fff0f1; }
+.ws .ant-btn:disabled { background: #e1eaf1; color: #607486; box-shadow: none; }
+.ws .ant-btn-icon-only { width: 36px; padding-inline: 0; }
+.ws .ant-input, .ws .ant-input-affix-wrapper { min-height: 36px; padding: 8px 12px; border: 0; border-radius: var(--glass-radius-field); background: var(--glass-field); color: var(--glass-ink); font-size: 12px; }
+.ws .ant-input::placeholder { color: var(--glass-muted); }
+.ws .ant-input:focus, .ws .ant-input-affix-wrapper-focused { box-shadow: var(--glass-focus); }
+
+.ws .topbar { height: auto; min-height: 68px; padding: 12px 18px; gap: 10px 16px; flex-wrap: wrap; border: 0; background: linear-gradient(115deg, #e7f5fbeF, #d6eaf7ef); box-shadow: 0 4px 16px -12px #1d50764d, inset 0 1px 0 #ffffffd9; }
+.ws .topbar-left { flex: 1 1 250px; flex-wrap: wrap; gap: 10px; }
+.ws .topbar-right { flex: 1 1 auto; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.ws .crumb { color: var(--glass-secondary); font-size: 12px; }
+.ws .crumb strong { color: var(--glass-ink); font-weight: 600; }
+.ws .pill { height: 34px; padding: 0 12px; background: var(--glass-field); color: var(--glass-secondary); box-shadow: inset 0 1px 0 #ffffffd9; font-size: 12px; }
+.ws .topbar .meter { height: 5px; margin: 0; padding: 0; background: #c8deed; }
+.ws .topbar .ant-select { height: 36px; }
+.ws .topbar .ant-select-selector { border: 0 !important; border-radius: 999px; background: var(--glass-field) !important; padding-inline: 13px; color: var(--glass-ink); box-shadow: 0 3px 10px -7px #235f8f55; }
+.ws .topbar .ant-select-selection-item { color: var(--glass-ink); font-size: 12px; font-weight: 500; }
+.ws .ant-select-arrow { color: var(--glass-muted); }
+.ws .ant-switch { background: #718fa7; }
+.ws .ant-switch.ant-switch-checked { background: var(--glass-accent); }
+.ws .auto-advance { gap: 8px; }
+.glass-select-popup { padding: 6px; background: #f0f9fff5; border-radius: 18px; box-shadow: 0 10px 28px -10px #1d50764d, inset 0 1px 0 #fff; }
+.glass-select-popup .ant-select-item { border-radius: 12px; padding: 9px 10px; color: #122d42; }
+.glass-select-popup .ant-select-item-option-selected:not(.ant-select-item-option-disabled) { background: #dceeff; color: #004dbb; }
+.glass-select-popup .ant-select-item-option-active:not(.ant-select-item-option-disabled) { background: #e4f1fa; }
+
+.ws .canvas { background: linear-gradient(160deg, #edf8ff, #deedf8); }
+.ws .canvas-toolbar { padding: 10px 16px; flex-wrap: wrap; border: 0; gap: 10px; background: #e6f3fcde; }
+.ws .canvas-toolbar .chips { padding: 4px; gap: 4px; background: #f8fdffb8; border-radius: 999px; box-shadow: var(--glass-shadow); }
+.ws .chip { height: 34px; padding: 0 15px; color: var(--glass-secondary); font-weight: 550; }
+.ws .chip:hover { background: #fff; color: #004dbb; }
+.ws .chip.active { color: #fff; background: var(--glass-accent); box-shadow: 0 4px 10px -6px #0066fa80; }
+.ws .chip .count { color: inherit; opacity: 1; }
+.ws .legend { color: var(--glass-secondary); font-weight: 500; gap: 12px; }
+.ws .dot.pending { box-shadow: inset 0 0 0 1.5px #718b9f; }
+.ws .react-flow__controls { border-radius: 999px; padding: 5px; background: #f0f9ffed; box-shadow: var(--glass-shadow) !important; gap: 4px; }
+.ws .react-flow__controls-button { width: 34px !important; height: 34px !important; border: 0 !important; border-radius: 50%; color: var(--glass-ink); background: #ffffffba; fill: currentColor; }
+.ws .react-flow__controls-button:hover { background: #dceeff; }
+.ws .react-flow__controls-button:disabled { opacity: 1; color: #607486; background: #e1eaf1; }
+.ws .react-flow__controls-button:disabled svg { fill-opacity: 1; }
+
+/* Preserve node dimensions and graph geometry; only replace surface treatment. */
+.ws .flow-group { border-radius: 24px; background: #cce5f47a; background-image: none; box-shadow: inset 0 1px 0 #ffffffbd; }
+.ws .flow-group .label { height: 28px; padding-inline: 12px; background: #f7fcfff0; color: var(--glass-ink); box-shadow: 0 3px 10px -7px #235f8f55; font-weight: 600; }
+.ws .flow-group .label .no, .ws .flow-group .label .pct { color: var(--glass-secondary); }
+.ws .flow-node { border-radius: 16px; background: #fafdfff5; color: var(--glass-ink); box-shadow: 0 5px 14px -8px #235f8f66, inset 0 1px 0 #fff; }
+.ws .flow-node:hover { box-shadow: 0 6px 18px -8px #235f8f88, inset 0 1px 0 #fff; }
+.ws .flow-node.selected { box-shadow: inset 0 0 0 1.5px var(--glass-accent), 0 0 0 4px #0066fa1f, 0 6px 18px -8px #235f8f55; }
+.ws .flow-node .head { gap: 6px; }
+.ws .flow-node .code { color: var(--glass-secondary); font-weight: 550; }
+.ws .flow-node .title { color: var(--glass-ink); font-weight: 600; }
+.ws .flow-node .sub { color: var(--glass-muted); }
+.ws .flow-node .state { font-size: 9px; padding: 2px 5px; border-radius: 999px; background: #e6eef4; color: #304b60; }
+.ws .flow-node[data-status="completed"] .state { background: #ddf3e9; color: #21643f; }
+.ws .flow-node[data-status="in_progress"] .state { background: #deecff; color: #0054b8; }
+.ws .flow-node[data-status="error"] .state { background: #ffead6; color: #8d4513; }
+.ws .flow-node .react-flow__handle { border-color: #68869b; }
+
+.ws .dock { padding: 12px 14px; border-radius: var(--glass-radius-panel); background: #f1faffed; box-shadow: var(--glass-shadow); }
+.ws .dock-info { white-space: normal; gap: 8px; }
+.ws .dock-info .title { color: var(--glass-ink); font-weight: 600; }
+.ws .dock-info > .mono { color: var(--glass-secondary); }
+.ws .dock-actions { gap: 6px; max-width: 100%; }
+.ws .dock-actions .ant-input { max-width: 100%; }
+.ws .canvas-scroll { background: #e9f4fb; color: var(--glass-ink); }
+.ws .detail-head h2 { font-weight: 600; }
+.ws .kv { border-radius: 20px; background: #f7fcff; box-shadow: var(--glass-shadow); }
+.ws .kv .k { background: #deedf7; color: var(--glass-secondary); }
+.ws .kv > div { border-bottom-color: #d5e5f0; }
+.ws .code-well, .ws .well { border-radius: 18px; background: #f7fcff; color: var(--glass-secondary); box-shadow: var(--glass-shadow); }
+.ws .section-title { color: var(--glass-ink); font-weight: 600; }
+.ws .section-title .hint, .ws .event .seq, .ws .event .payload, .ws .muted, .ws .ant-empty-description { color: var(--glass-muted); }
+.ws .event { margin-bottom: 8px; padding: 14px; border-radius: 18px; background: #f7fcffb8; }
+.ws .event:hover { background: #fff; }
+.ws .hero { background-color: #e9f4fb; background-image: radial-gradient(#93b7d047 1px, transparent 1px); }
+.ws .hero h1 { color: var(--glass-ink); font-weight: 600; }
+.ws .hero p { color: var(--glass-secondary); }
+.ws .pipeline .pill { background: #f7fcffe6; color: var(--glass-secondary); box-shadow: var(--glass-shadow); }
+
+/* Blur is progressive enhancement. Opaque-enough fills are the default. */
+@supports (backdrop-filter: blur(12px)) {
+  .ws-left .composer, .ws-left .gate-card, .ws-left .progress-summary, .sidebar .nav-group, .ws .topbar, .ws .dock { backdrop-filter: blur(12px) saturate(120%); }
+}
+
+@media (max-width: 1280px) {
+  .sidebar { padding: 16px 8px 10px; }
+  .sidebar .brand { gap: 6px; }
+  .sidebar .brand-name { font-size: 17px; }
+  .sidebar .brand-mark { width: 26px; height: 26px; }
+  .sidebar .brand-badge { font-size: 9px; padding: 3px 5px; }
+  .ws-left { padding: 14px 10px 20px; }
+  .ws-left .composer, .ws-left .gate-card, .ws-left .progress-summary { padding: 14px; }
+  .ws-left .composer-actions > .ant-btn:first-child { flex-basis: 100%; }
+}
+
+/* This is a desktop workbench: preserve useful panel widths on small screens. */
+@media (max-width: 960px) {
+  .main:has(.ws) { overflow-x: auto; }
+  .ws { min-width: 760px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar *, .ws * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .shell { --glass-surface: #f0f9ff; --glass-field: #fff; }
+  .sidebar .nav-group { background: #f0f9ff; }
+  .ws-left .glass-panel, .sidebar .nav-group, .ws .topbar, .ws .dock { backdrop-filter: none; }
+  .ws .topbar, .ws .dock { background: #edf7fe; }
+  .ws-left .gate-card { background: #fff5e9; }
+}

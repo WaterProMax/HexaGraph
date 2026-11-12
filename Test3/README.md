@@ -63,6 +63,8 @@ cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代�
 
 ## 测试
 
+前端视觉维护请先读 [Ice Glass UI 设计规范](docs/design/UI-Design-System.md)；本轮修改与验证记录见 [UI 改版记录](docs/design/UI-Redesign-Log.md)。
+
 ```bash
 cd Test3
 make test          # 后端，排除 @pytest.mark.live
