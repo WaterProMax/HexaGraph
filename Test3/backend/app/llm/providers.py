@@ -10,6 +10,47 @@ from app.llm.types import LLMResult
 from app.settings import ModelsFile, get_settings
 
 
+def validate_tool_protocol(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> None:
+    if tools:
+        for spec in tools:
+            fn = spec.get("function") if isinstance(spec, dict) else None
+            params = (fn or spec or {}).get("parameters") if isinstance(fn or spec, dict) else None
+            if not isinstance(params, dict) or "properties" not in params:
+                raise ValueError("tool schema missing properties")
+            if params.get("type") != "object":
+                raise ValueError("tool schema type must be object")
+    pending_ids: set[str] | None = None
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant" and message.get("tool_calls"):
+            pending_ids = set()
+            for call in message["tool_calls"]:
+                call_id = str(call.get("id") or "")
+                if not call_id:
+                    raise ValueError("assistant tool_calls missing id")
+                pending_ids.add(call_id)
+            continue
+        if role == "tool":
+            if not pending_ids:
+                raise ValueError("tool message without assistant tool_calls")
+            call_id = str(message.get("tool_call_id") or "")
+            if not call_id:
+                raise ValueError("tool message missing tool_call_id")
+            if call_id not in pending_ids:
+                raise ValueError("tool_call_id mismatch")
+            pending_ids.discard(call_id)
+            if not pending_ids:
+                pending_ids = None
+            continue
+        if pending_ids:
+            raise ValueError("missing tool responses for assistant tool_calls")
+        pending_ids = None
+
+
+def _item_tokens(item: dict[str, Any]) -> tuple[int, int]:
+    return int(item.get("tokens_in") or 0), int(item.get("tokens_out") or 0)
+
+
 class ScriptedProvider:
     def __init__(self, queue: list[Any] | None = None) -> None:
         self.queue: list[Any] = list(queue or [])
@@ -28,6 +69,7 @@ class ScriptedProvider:
         **kwargs: Any,
     ) -> LLMResult:
         self.calls.append({"slot": slot, "messages": messages, "schema": schema, "tools": tools})
+        validate_tool_protocol(messages, tools)
         if not self.queue:
             raise RuntimeError(f"scripted queue empty for slot={slot}")
         item = self.queue.pop(0)
@@ -36,9 +78,27 @@ class ScriptedProvider:
         if isinstance(item, LLMResult):
             return item
         if isinstance(item, dict) and item.get("tool_calls"):
-            return LLMResult(tool_calls=item["tool_calls"], parsed=item.get("parsed"), text=item.get("text", ""), model=slot)
+            tokens_in, tokens_out = _item_tokens(item)
+            return LLMResult(
+                tool_calls=item["tool_calls"],
+                parsed=item.get("parsed"),
+                text=item.get("text", ""),
+                model=slot,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            )
         if isinstance(item, dict):
-            return LLMResult(text=json.dumps(item, ensure_ascii=False), parsed=item, model=slot)
+            tokens_in, tokens_out = _item_tokens(item)
+            parsed = {k: v for k, v in item.items() if k not in {"tokens_in", "tokens_out", "tool_calls", "text"}}
+            if item.get("parsed") is not None:
+                parsed = item["parsed"]
+            return LLMResult(
+                text=item.get("text") or json.dumps(parsed or item, ensure_ascii=False),
+                parsed=parsed or item,
+                model=slot,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+            )
         return LLMResult(text=str(item), model=slot)
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -132,10 +192,7 @@ class DashScopeProvider:
         return LLMResult(
             text=text,
             parsed=parsed,
-            tool_calls=[
-                {"name": c.function.name, "arguments": json.loads(c.function.arguments or "{}")}
-                for c in (choice.message.tool_calls or [])
-            ],
+            tool_calls=_dashscope_tool_calls(choice.message),
             tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
             tokens_out=getattr(usage, "completion_tokens", 0) or 0,
             latency_ms=int((time.perf_counter() - started) * 1000),
@@ -146,3 +203,23 @@ class DashScopeProvider:
         cfg = self.models.slots["embedding"]
         result = await self._client_obj().embeddings.create(model=cfg.model, input=texts)
         return [item.embedding for item in result.data]
+
+
+def _dashscope_tool_calls(message: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for index, call in enumerate(getattr(message, "tool_calls", None) or []):
+        raw_args = getattr(getattr(call, "function", None), "arguments", None) or "{}"
+        try:
+            arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+        except json.JSONDecodeError:
+            arguments = {}
+        fn = getattr(call, "function", None)
+        calls.append(
+            {
+                "id": getattr(call, "id", None) or f"call_{index}",
+                "type": getattr(call, "type", None) or "function",
+                "name": getattr(fn, "name", "") if fn is not None else "",
+                "arguments": arguments,
+            }
+        )
+    return calls

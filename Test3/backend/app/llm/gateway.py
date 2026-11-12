@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,16 @@ from app.errors import AgentOutputError, ReplayMissing
 from app.llm.providers import DashScopeProvider, ReplayProvider, ScriptedProvider
 from app.llm.types import LLMResult
 from app.settings import ModelsFile, get_settings
+
+USAGE_ACCUMULATOR: ContextVar[dict[str, int] | None] = ContextVar("usage_acc", default=None)
+
+
+def record_usage(tokens_in: int, tokens_out: int) -> None:
+    acc = USAGE_ACCUMULATOR.get()
+    if acc is None:
+        return
+    acc["tokens_in"] = int(acc.get("tokens_in") or 0) + int(tokens_in or 0)
+    acc["tokens_out"] = int(acc.get("tokens_out") or 0) + int(tokens_out or 0)
 
 
 class TokenBucket:
@@ -66,6 +77,7 @@ class Gateway:
                 self.stats["tokens_in"] += result.tokens_in
                 self.stats["tokens_out"] += result.tokens_out
                 self.stats["calls"] += 1
+                record_usage(result.tokens_in, result.tokens_out)
                 self._persist(slot, messages, result)
                 return result
             except Exception as exc:  # noqa: BLE001
@@ -81,6 +93,7 @@ class Gateway:
                 self.stats["tokens_in"] += result.tokens_in
                 self.stats["tokens_out"] += result.tokens_out
                 self.stats["calls"] += 1
+                record_usage(result.tokens_in, result.tokens_out)
                 self._persist(slot, messages, result)
                 return result
             except Exception as exc:  # noqa: BLE001

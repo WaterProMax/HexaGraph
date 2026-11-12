@@ -194,3 +194,98 @@ def scripted_m1_queue() -> list[dict[str, Any]]:
         }
     )
     return queue
+
+
+def _passing_review(dimension: str) -> dict[str, Any]:
+    return {"reviewer": dimension, "dimension": dimension, "score": 4, "opinions": [{"text": "可进入下一阶段", "kind": "验证类", "blocking": False}]}
+
+
+def scripted_full_queue() -> list[dict[str, Any]]:
+    """Idea → SPEC → DESIGN → PLAN → two tasks → acceptance."""
+    queue = scripted_m1_queue()
+    queue.append(
+        {
+            "chapters": ["概述", "模块", "接口", "数据", "决策", "预案", "附录"],
+            "modules": [
+                {"code": "M1", "name": "查询服务", "responsibility": "查看剩余座位", "sources": ["F1"], "provides": ["C1"], "depends_on": [], "data": []},
+                {"code": "M2", "name": "上报服务", "responsibility": "上报限频", "sources": ["F2"], "provides": ["C2"], "depends_on": [], "data": []},
+                {"code": "M3", "name": "账号", "responsibility": "查看免登录", "sources": ["F2"], "provides": [], "depends_on": [], "data": []},
+                {"code": "M4", "name": "教室数据", "responsibility": "座位数与时间", "sources": ["F1"], "provides": [], "depends_on": [], "data": []},
+                {"code": "M5", "name": "界面", "responsibility": "小程序", "sources": ["F1", "F3"], "provides": [], "depends_on": [], "data": []},
+                {"code": "M6", "name": "收藏", "responsibility": "收藏教室", "sources": ["F3"], "provides": [], "depends_on": [], "data": []},
+            ],
+            "interfaces": [
+                {"code": "C1", "provider": "M1", "consumers": ["M5"], "inputs": [], "outputs": [], "errors": []},
+                {"code": "C2", "provider": "M2", "consumers": ["M5"], "inputs": [], "outputs": [], "errors": ["10 分钟内重复上报"]},
+            ],
+            "data": [],
+            "decisions": [],
+            "contingencies": [{"code": "I-03"}, {"code": "I-04"}],
+            "appendix": "",
+        }
+    )
+    queue.append(_passing_review("架构一致性"))
+    queue.append(_passing_review("实现质量"))
+    queue.append(
+        {
+            "tasks": [
+                {
+                    "code": "T-01",
+                    "title": "实现座位模块",
+                    "kind": "impl",
+                    "module": "M1",
+                    "sources": ["F1", "F2", "F3"],
+                    "description": "写座位模块",
+                    "write_set": ["src/seats.py"],
+                    "outputs": ["src/seats.py"],
+                    "acceptance": [{"cmd": ["python", "-m", "pytest", "tests/test_smoke.py", "-q"], "pass_criteria": "ok", "from_criterion": "F1"}],
+                    "depends_on": [],
+                    "points": 3,
+                    "priority": "P0",
+                    "role": "coder",
+                },
+                {
+                    "code": "T-02",
+                    "title": "座位测试",
+                    "kind": "test",
+                    "module": "M1",
+                    "sources": ["F1", "F2", "F3"],
+                    "description": "写测试",
+                    "write_set": ["tests/test_feature.py"],
+                    "outputs": ["tests/test_feature.py"],
+                    "acceptance": [{"cmd": ["python", "-m", "pytest", "tests/test_feature.py", "-q"], "pass_criteria": "ok", "from_criterion": "F1"}],
+                    "depends_on": ["T-01"],
+                    "points": 2,
+                    "priority": "P0",
+                    "role": "tester",
+                },
+            ],
+            "notes": "",
+            "capacity": 40,
+        }
+    )
+    queue.extend(
+        [
+            {
+                "tool_calls": [
+                    {"name": "write_file", "arguments": {"path": "src/seats.py", "content": "def seats() -> int:\n    return 1\n"}}
+                ]
+            },
+            {"done": True, "summary": "impl", "files": ["src/seats.py"]},
+            {"verdict": "pass", "issues": []},
+            {
+                "tool_calls": [
+                    {
+                        "name": "write_file",
+                        "arguments": {
+                            "path": "tests/test_feature.py",
+                            "content": "from src.seats import seats\n\ndef test_feature() -> None:\n    assert seats() == 1\n",
+                        },
+                    }
+                ]
+            },
+            {"done": True, "summary": "test", "files": ["tests/test_feature.py"]},
+            {"verdict": "pass", "issues": []},
+        ]
+    )
+    return queue

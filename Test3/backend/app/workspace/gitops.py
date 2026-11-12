@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import threading
 from pathlib import Path
 
@@ -52,8 +53,35 @@ def init_repo_sync(path: Path, files: dict[str, str] | None = None) -> None:
     _git_sync(path, "commit", "-m", "init")
 
 
+def remove_worktree(repo: Path, worktree: Path) -> None:
+    _git_sync(repo, "worktree", "remove", "--force", str(worktree))
+    _git_sync(repo, "worktree", "prune")
+    if worktree.exists():
+        shutil.rmtree(worktree, ignore_errors=True)
+
+
+def _drop_registered_worktree(repo: Path, branch: str) -> None:
+    _, listed = _git_sync(repo, "worktree", "list", "--porcelain")
+    current_path = ""
+    drop: list[str] = []
+    expected = f"refs/heads/{branch}"
+    for line in listed.splitlines():
+        if line.startswith("worktree "):
+            current_path = line.split(" ", 1)[1].strip()
+        elif line.startswith("branch ") and line.split(" ", 1)[1].strip() == expected and current_path:
+            drop.append(current_path)
+    for path in drop:
+        _git_sync(repo, "worktree", "remove", "--force", path)
+    _git_sync(repo, "worktree", "prune")
+
+
 def create_worktree(repo: Path, worktree: Path, branch: str, start_point: str = "HEAD") -> None:
     worktree.parent.mkdir(parents=True, exist_ok=True)
+    code, out = _git_sync(repo, "worktree", "add", "-B", branch, str(worktree), start_point)
+    if code == 0:
+        return
+    remove_worktree(repo, worktree)
+    _drop_registered_worktree(repo, branch)
     code, out = _git_sync(repo, "worktree", "add", "-B", branch, str(worktree), start_point)
     if code != 0:
         raise RuntimeError(out)

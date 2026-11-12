@@ -12,7 +12,7 @@ initial_files:
 whitelist_prefixes:
   - pytest
   - python -m pytest
-  - python -m
+  - python -m ruff
   - ruff check
 forbidden_prefixes:
   - pip

@@ -17,6 +17,7 @@ class EventBus:
         self._subs: dict[str, list[asyncio.Queue[EventRow]]] = defaultdict(list)
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._seq: dict[str, int] = defaultdict(int)
+        self._local: dict[str, list[EventRow]] = defaultdict(list)
 
     async def emit(
         self,
@@ -43,9 +44,35 @@ class EventBus:
             )
             session.add(row)
             await session.flush()
+            self._local[run_id].append(row)
             for queue in list(self._subs.get(run_id, [])):
                 await queue.put(row)
             return row
+
+    def emit_sync(
+        self,
+        run_id: str,
+        kind: str,
+        subject: str = "",
+        payload: dict[str, Any] | None = None,
+        actor: str = "system",
+        seq: int | None = None,
+    ) -> EventRow:
+        if seq is None:
+            self._seq[run_id] += 1
+            seq = self._seq[run_id]
+        else:
+            self._seq[run_id] = max(self._seq[run_id], seq)
+        row = EventRow(
+            run_id=run_id,
+            seq=seq,
+            kind=kind,
+            subject=subject,
+            actor=actor,
+            payload_json=json.dumps(payload or {}, ensure_ascii=False),
+        )
+        self._local[run_id].append(row)
+        return row
 
     def subscribe(self, run_id: str) -> asyncio.Queue[EventRow]:
         queue: asyncio.Queue[EventRow] = asyncio.Queue()

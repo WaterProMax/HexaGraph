@@ -7,6 +7,21 @@ from app.errors import CommandDenied, WriteDenied
 from app.tools.sandbox import in_write_set, normalize_under, run_command
 
 
+def _tool_spec(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
 class TaskToolset:
     def __init__(
         self,
@@ -18,10 +33,12 @@ class TaskToolset:
         env_allow: list[str],
         truncate: int,
         on_denied: Callable[[str, str], None] | None = None,
+        forbidden: list[str] | None = None,
     ) -> None:
         self.root = root
         self.write_set = write_set
         self.whitelist = whitelist
+        self.forbidden = list(forbidden or [])
         self.timeout = timeout
         self.env_allow = env_allow
         self.truncate = truncate
@@ -29,10 +46,33 @@ class TaskToolset:
         self.written: list[str] = []
         self.denied: list[str] = []
         self.specs = [
-            {"type": "function", "function": {"name": "write_file", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "run_command", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}},
-            {"type": "function", "function": {"name": "list_dir", "parameters": {"type": "object"}}},
+            _tool_spec(
+                "write_file",
+                "Write a text file inside the task write_set.",
+                {"path": {"type": "string"}, "content": {"type": "string"}},
+                ["path", "content"],
+            ),
+            _tool_spec(
+                "run_command",
+                "Run a whitelisted command in the task workspace.",
+                {
+                    "cmd": {"type": "array", "items": {"type": "string"}},
+                    "command": {"type": "array", "items": {"type": "string"}},
+                },
+                ["cmd"],
+            ),
+            _tool_spec(
+                "read_file",
+                "Read a text file under the task workspace.",
+                {"path": {"type": "string"}},
+                ["path"],
+            ),
+            _tool_spec(
+                "list_dir",
+                "List entries in a directory under the task workspace.",
+                {"path": {"type": "string"}},
+                [],
+            ),
         ]
 
     async def execute(self, name: str, arguments: dict[str, Any] | None) -> Any:
@@ -51,6 +91,7 @@ class TaskToolset:
                     timeout=self.timeout,
                     env_allow=self.env_allow,
                     truncate=self.truncate,
+                    forbidden=self.forbidden,
                 )
             except CommandDenied as exc:
                 if self.on_denied:

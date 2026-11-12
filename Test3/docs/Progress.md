@@ -9,8 +9,9 @@ $ cd Test3/backend && uv run ruff check app tests
 All checks passed!
 
 $ cd Test3/backend && uv run pytest -q -m "not live"
-................................................................          [100%]
-# 72 passed（含六处缺口：冲突任务、交付包、缺陷变更单 2 轮、5 秒调度、接管/二次确认、1.1 applied、embedding 失败走 fast）
+........................................................................ [ 76%]
+......................                                                   [100%]
+# 94 passed（M3/M7 补完 + N1–N5：原子 snapshot、文档检查失败关卡、splice 增删、decide_cr 缺 code、并发回滚钉死 T-01、阶段机走到验收）
 
 $ cd Test3 && make e2e
 # 等同 pytest tests/e2e：6 passed
@@ -45,23 +46,25 @@ $ curl -sS http://127.0.0.1:8765/api/health
 |---|---|---|
 | P00 工程与模型配置 | 落地，百炼探测未跑 | `Makefile`、`pyproject.toml`、`config/models.yaml`、`.env.example`；`check-models.py` 无密钥时打印 `no-key` |
 | P01 模式/配置/编号/转换表 | 落地 | `tests/unit/test_core_tables.py`（6） |
-| P02 事件/存储/API/SSE | 部分 | 内存事件 + FastAPI；DB/EventBus 有集成测试。HTTP 主路径不持久化 |
-| P03 网关与 Agent | 落地（scripted） | `tests/unit/test_tools_llm_agents.py`、`test_info_boundary.py` |
+| P02 事件/存储/API/SSE | 部分 | JSONL + 原子 snapshot；坏文件记 recovery.failed 并从 JSONL 回放。未进 SQLite 事件表 |
+| P03 网关与 Agent | 落地（scripted） | `tests/unit/test_tools_llm_agents.py`、`test_info_boundary.py`；工具 schema/`tool_call_id` 已校验 |
 | P04 讨论纯函数 | 落地 | `tests/unit/test_discussion_rules.py`（13），金标准 11.4 |
 | P05 想法+讨论 | 落地 | `test_m1_study_room_scripted` |
-| P06 方案/评审/SPEC/关卡 | 落地 | 同上，走到 `SPEC基线确认` |
-| P07 追溯+设计 | 检查与 API 有，全流程薄 | `check_design`、`TraceGraph`；`run_design` 无两位设计评审 |
-| P08 任务分解 | 检查有，全流程薄 | `check_task_graph`、`run_plan`；无 scripted 分解队列 |
+| P06 方案/评审/SPEC/关卡 | 落地 | 同上；文档检查仍不过开「文档检查失败」关卡 |
+| P07 追溯+设计 | 落地（scripted） | `run_design` 调 `review_arch`/`review_quality`，不通过走 `route_design_review` |
+| P08 任务分解 | 落地（scripted） | `check_task_graph`、`run_plan`；`scripted_full_queue` 含分解与两任务 |
 | P09 工作区与沙箱 | 落地 | `test_git_smoke`、`command_allowed`、工作树 |
-| P10 编排 | 部分 | 调度/分类/修复轮/控制有单测；执行会跑验收命令；任务状态未统一走 `transition()` |
+| P10 编排 | 落地（scripted） | 状态经 `_set_state`→`apply_transition`；merge 锁包住回归回滚；冲突后 `worktree remove` |
 | P11 验收 | 函数有 | `acceptance_pass`；未通过生成缺陷变更单（最多 2 轮）；通过确认后打 `build-<版本>` 并导出 `release/` |
 | P12 控制/待办/预算 | API+函数有 | 乐观锁、待办、预算；takeover/submit-takeover；终止需 `confirm=true`；5 秒调度兜底 |
 | P13 前端基础页 | 页面有 | `App.tsx` 路由；未跑 Playwright |
 | P14 任务图/时间线 | 页面有 | `@xyflow/react` 依赖在 `package.json`；无浏览器 e2e |
-| P15 变更 | 分级函数+API | `classify_cr`、提交 CR；批准后 1.1 增量；「扫码进教室」端到端未做 |
+| P15 变更 | 落地（scripted） | 增量 splice 支持新增/删除；PLAN 新卡写回 stale 任务；缺 code 从关卡取 |
 | P16 监听 | 导入流水线有 | `test_import_study_room_feedback`；embedding 失败走 `cluster_fast` |
 | P17 综合/文档 | 文档补齐，E1–E10/真联调未做 | 本文件与 README / API / Acceptance / Handoff / Demo |
 
 ## M1
 
 `tests/e2e/test_m1_study_room.py`：scripted 队列驱动想法检查 → 讨论（I-01/05/06/07 采纳，I-03/04 待定）→ 方案 → 四维评审 → SPEC（含 I-03/I-04 开口、功能来源含 I-02、功能标题不含「门禁」）→ `SPEC基线确认`。
+
+`tests/e2e/test_contract_must.py::test_idea_to_acceptance_exports_release`：同一夹具再批准 SPEC/DESIGN/PLAN，跑完两任务，验收导出 `code/`、`trace.json`，标签 `build-1.0`。

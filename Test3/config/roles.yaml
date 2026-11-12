@@ -101,7 +101,7 @@ roles:
     temperature: 0.2
     prompt: prompts/docs/proposal_writer.md
     output_schema: ProposalDoc
-    visible: [idea_card, issue_list]
+    visible: [idea_card, issue_list, rewrite]
     tools: []
   review_user:
     slot: flagship_alt
@@ -136,7 +136,7 @@ roles:
     temperature: 0.1
     prompt: prompts/docs/spec_writer.md
     output_schema: SpecDoc
-    visible: [idea_card, proposal, issue_list, review_sheet]
+    visible: [idea_card, proposal, issue_list, review_sheet, rewrite, change_request, baseline]
     tools: []
   spec_checker:
     slot: flagship_alt
@@ -150,7 +150,7 @@ roles:
     temperature: 0.3
     prompt: prompts/design/architect.md
     output_schema: DesignDoc
-    visible: [spec]
+    visible: [spec, rewrite, change_request, baseline]
     tools: []
   review_arch:
     slot: flagship_alt
@@ -178,7 +178,7 @@ roles:
     temperature: 0.2
     prompt: prompts/tasks/decomposer.md
     output_schema: TaskGraph
-    visible: [spec, design]
+    visible: [spec, design, rewrite, change_request, baseline]
     tools: []
   estimate_dev:
     slot: coder

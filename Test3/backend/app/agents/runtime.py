@@ -101,6 +101,24 @@ async def call_agent(
     raise AgentOutputError(f"{name} output invalid after retry: {last_error}")
 
 
+def _assistant_tool_message(result: Any) -> dict[str, Any]:
+    tool_calls = []
+    for index, call in enumerate(result.tool_calls or []):
+        call_id = str(call.get("id") or f"call_{index}")
+        arguments = call.get("arguments") or {}
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        tool_calls.append(
+            {
+                "id": call_id,
+                "type": call.get("type") or "function",
+                "function": {"name": call.get("name") or "", "arguments": arguments},
+            }
+        )
+        call["id"] = call_id
+    return {"role": "assistant", "content": result.text or None, "tool_calls": tool_calls}
+
+
 async def run_tool_agent(
     name: str,
     inputs: dict[str, Any],
@@ -111,7 +129,7 @@ async def run_tool_agent(
     max_steps: int = 30,
 ) -> Any:
     role = registry.get(name)
-    messages = render_prompt(role, inputs)
+    messages: list[dict[str, Any]] = render_prompt(role, inputs)
     for _ in range(max_steps):
         result = await gateway.complete(
             role.slot,
@@ -121,9 +139,16 @@ async def run_tool_agent(
             tools=getattr(toolset, "specs", None),
         )
         if result.tool_calls:
-            for call in result.tool_calls:
+            messages.append(_assistant_tool_message(result))
+            for index, call in enumerate(result.tool_calls):
                 output = await toolset.execute(call["name"], call.get("arguments") or {})
-                messages.append({"role": "tool", "content": str(output)})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(call.get("id") or f"call_{index}"),
+                        "content": json.dumps(output, ensure_ascii=False) if not isinstance(output, str) else output,
+                    }
+                )
             continue
         if result.parsed:
             return result.parsed
