@@ -310,13 +310,23 @@ async def get_models(request: Request) -> dict[str, Any]:
 async def put_models(body: dict[str, Any], request: Request) -> dict[str, Any]:
     from app.settings import ModelsFile
 
-    wb(request).models = ModelsFile.model_validate(body)
+    new_models = ModelsFile.model_validate(body)
+    # 更新 Workbench
+    wb(request).models = new_models
+    # 【修改点】关键：同步更新 Gateway，确保 PUT 后的配置立即生效
+    wb(request).gateway.models = new_models
     return {"ok": True}
 
 
 @router.post("/config/models/test")
 async def test_models() -> dict[str, Any]:
-    return {"ok": True, "note": "use make check-models for live probe"}
+    # 【修改点】不再返回假成功，真实检查密钥
+    from app.settings import get_settings
+    import os
+    
+    if not os.getenv("DASHSCOPE_API_KEY") and not get_settings().dashscope_api_key:
+        raise HTTPException(status_code=400, detail="DASHSCOPE_API_KEY is not set. Cannot run live probe.")
+    return {"ok": True, "note": "API key found. Use 'make check-models' to execute the live probe."}
 
 
 @router.post("/runs/{run_id}/schedule")
