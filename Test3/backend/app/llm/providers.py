@@ -155,7 +155,10 @@ class DashScopeProvider:
 
             settings = get_settings()
             key = settings.dashscope_api_key
-            self._client = AsyncOpenAI(base_url=self.models.base_url, api_key=key or "missing")
+            # 【修改点】没有密钥时显式报错，不要带 "missing" 去发请求
+            if not key:
+                raise ValueError("DASHSCOPE_API_KEY is not configured. Cannot initialize DashScope client.")
+            self._client = AsyncOpenAI(base_url=self.models.base_url, api_key=key)
         return self._client
 
     async def complete(
@@ -172,8 +175,14 @@ class DashScopeProvider:
         extra: dict[str, Any] = {"extra_body": cfg.extra_body} if cfg.extra_body else {}
         if cfg.json_mode:
             extra["response_format"] = {"type": "json_object"}
-        if tools and cfg.tool_calls:
-            extra["tools"] = tools
+        
+        if tools:
+            if cfg.tool_calls:
+                extra["tools"] = tools
+            else:
+                # 【修改点】不支持 tool calls 的模型必须显式报错，不能静默忽略
+                raise ValueError(f"Model {cfg.model} for slot {slot} does not support tool_calls (cfg.tool_calls is false).")
+                
         completion = await self._client_obj().chat.completions.create(
             model=kwargs.get("model") or cfg.model,
             messages=messages,
