@@ -7,7 +7,11 @@ test('scripted HTTP backend: create, approve, pause, resume and confirm terminat
     return origin === 'http://127.0.0.1:5173' ? route.continue() : route.abort();
   });
   const errors: string[] = [];
+  const terminations: string[] = [];
   page.on('pageerror', err => errors.push(err.message));
+  page.on('request', req => {
+    if (req.method() === 'POST' && req.url().endsWith('/terminate')) terminations.push(req.postData() || '');
+  });
   await page.goto('/workstation');
   await page.getByRole('textbox', { name: '项目名称', exact: true }).fill('离线集成验收');
   await page.getByRole('button', { name: /^启动/ }).click();
@@ -30,9 +34,14 @@ test('scripted HTTP backend: create, approve, pause, resume and confirm terminat
   page.once('dialog', dialog => dialog.dismiss());
   await button.click();
   await expect(button).toBeEnabled();
+  const afterCancel = await page.request.get(`/api/runs/${id}`);
+  expect(afterCancel.ok()).toBeTruthy();
+  expect((await afterCancel.json()).status).not.toBe('terminated');
+  expect(terminations).toEqual([]);
   page.once('dialog', dialog => dialog.accept());
   await button.click();
   await expect(button).toBeDisabled();
   await expect(page.getByText(/状态 terminated/)).toBeVisible();
+  expect(terminations.map(body => JSON.parse(body))).toEqual([{ confirm: true }]);
   expect(errors).toEqual([]);
 });

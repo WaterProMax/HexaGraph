@@ -19,7 +19,7 @@ npm run test:e2e -- --repeat-each=2
 
 runner 自动启动前端，5173 端口必须空闲；不会复用用户已开的服务。默认单 worker、零重试，不以重试隐藏失败。`*.pw.ts` 不会被原 Vitest 收集。
 
-mock 用真实浏览器操作 React 页面和真实 API 客户端，仅拦截 HTTP。覆盖创建项目与运行、批准关卡、暂停/恢复、终止取消与确认、创建项目失败、创建运行失败、批准关卡失败。检查 POST 路径/请求体和页面可见结果；未知接口和页面异常使测试失败。Google Fonts 返回空 CSS，其余外部请求中止并报错。SSE 为静态心跳，**不声称验证 SSE 推送、重连或实时延迟**。
+mock 用真实浏览器操作 React 页面和真实 API 客户端，仅拦截 HTTP。覆盖创建项目与运行、批准关卡、暂停/恢复、终止取消与确认、创建项目失败、创建运行失败、批准关卡失败与原页重试恢复、409 冲突保持当前阶段、验收失败时批准必须有非空理由。检查 POST 路径/请求体和页面可见结果；未知接口和页面异常使测试失败。Google Fonts 返回空 CSS，其余外部请求中止并报错。SSE 为静态心跳，**不声称验证 SSE 推送、重连或实时延迟**。
 
 ## scripted 真实前后端关键操作集成
 
@@ -39,11 +39,12 @@ npm run test:e2e:integration
 
 ## 证据与失败复现
 
-每次运行生成 `test-results/`（截图、每例 trace）和 `playwright-report/`（HTML）；下次运行会覆盖，先另存。查看：
+mock 生成 `test-results/mock/` 与 `playwright-report/mock/`，真实集成生成 `test-results/integration/` 与 `playwright-report/integration/`。两类运行互不覆盖；同类下次运行仍会覆盖，需先另存。查看：
 
 ```sh
-npx playwright show-report
-npx playwright show-trace test-results/<case>/trace.zip
+npx playwright show-report playwright-report/mock
+npx playwright show-report playwright-report/integration
+npx playwright show-trace test-results/mock/<case>/trace.zip
 npm run test:e2e -- --grep "failed gate"
 ```
 

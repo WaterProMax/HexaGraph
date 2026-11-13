@@ -2,11 +2,12 @@ import { test as base, expect, type Page } from '@playwright/test';
 
 // HTTP boundary only: real React pages, API client and Query cache are exercised.
 export async function mockApi(page: Page) {
-  const run = { id: 'offline-run-001', project_id: 'offline-project-001', status: 'waiting', stage: '0', revision: 1, paused: false, idea: '离线测试想法', gates: [{ id: 'offline-gate-001', kind: '初步做法确认', status: 'pending', payload: {} }], event_count: 0 };
+  const run = { id: 'offline-run-001', project_id: 'offline-project-001', status: 'waiting', stage: '0', revision: 1, paused: false, idea: '离线测试想法', gates: [{ id: 'offline-gate-001', kind: '初步做法确认', status: 'pending', payload: {} as Record<string, unknown> }], event_count: 0 };
   const writes: { path: string; body: any }[] = [];
   const unexpected: string[] = [];
   let created = false;
   let fail = '';
+  let failStatus = 503;
   await page.route('**/*', async route => {
     const req = route.request();
     const url = new URL(req.url());
@@ -18,7 +19,7 @@ export async function mockApi(page: Page) {
     const json = (data: unknown, status = 200) => route.fulfill({ status, json: data });
     if (method === 'POST') {
       writes.push({ path, body: req.postData() ? req.postDataJSON() : null });
-      if (path === fail) return json({ detail: 'offline failure' }, 503);
+      if (path === fail) return json({ detail: 'offline failure' }, failStatus);
       if (path === '/projects') return json({ id: run.project_id, name: req.postDataJSON().name, profile: 'python-pytest' });
       if (path === `/projects/${run.project_id}/runs`) { created = true; return json({ run, result: {} }); }
       if (path === '/gates/offline-gate-001/resolve') { run.gates[0].status = 'approved'; run.stage = '1'; run.revision++; return json({ ok: true }); }
@@ -37,7 +38,7 @@ export async function mockApi(page: Page) {
     unexpected.push(`${method} ${path}`);
     return json({ detail: 'Unexpected mock route' }, 501);
   });
-  return { run, writes, unexpected, seed: () => { created = true; }, fail: (path: string) => { fail = path; } };
+  return { run, writes, unexpected, seed: () => { created = true; }, fail: (path: string, status = 503) => { fail = path; failStatus = status; } };
 }
 
 export const test = base.extend<{ apiMock: Awaited<ReturnType<typeof mockApi>> }>({

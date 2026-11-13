@@ -79,4 +79,37 @@ test('failed gate approval keeps the gate actionable and shows the error', async
   await expect(page.getByText(/关卡处理失败:.*offline failure/)).toBeVisible();
   await expect(page.getByRole('button', { name: '批准并推进' })).toBeEnabled();
   await expect(page.locator('.topbar-right')).toContainText('阶段 0');
+  // The same page must recover after the server becomes available, without reload.
+  apiMock.fail('');
+  await page.getByRole('button', { name: '批准并推进' }).click();
+  await expect(page.locator('.topbar-right')).toContainText('阶段 1');
+  await expect(page.getByRole('button', { name: '批准并推进' })).toHaveCount(0);
+});
+
+test('a 409 gate conflict stays visible and never advances the stage', async ({ page, apiMock }) => {
+  apiMock.seed();
+  apiMock.fail('/gates/offline-gate-001/resolve', 409);
+  await page.goto(`/workstation/${apiMock.run.id}`);
+  await page.getByRole('button', { name: '批准并推进' }).click();
+  await expect(page.getByText('关卡处理失败: 409', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '批准并推进' })).not.toHaveClass(/ant-btn-loading/);
+  await expect(page.locator('.topbar-right')).toContainText('阶段 0');
+  expect(apiMock.writes).toEqual([{ path: '/gates/offline-gate-001/resolve', body: { decision: 'approve', payload: {} } }]);
+});
+
+test('failed acceptance requires a nonblank reason before approval', async ({ page, apiMock }) => {
+  apiMock.seed();
+  apiMock.run.gates[0].kind = '验收确认';
+  apiMock.run.gates[0].payload = { pass: false };
+  await page.goto(`/workstation/${apiMock.run.id}`);
+  const approve = page.getByRole('button', { name: '批准并推进' });
+  await expect(approve).toBeDisabled();
+  await page.getByRole('textbox', { name: '裁决理由' }).fill('   ');
+  await expect(approve).toBeDisabled();
+  expect(apiMock.writes).toEqual([]);
+  await page.getByRole('textbox', { name: '裁决理由' }).fill('  人工核对并接受剩余限制  ');
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(approve).toHaveCount(0);
+  expect(apiMock.writes).toEqual([{ path: '/gates/offline-gate-001/resolve', body: { decision: 'approve', payload: { reason: '人工核对并接受剩余限制' } } }]);
 });

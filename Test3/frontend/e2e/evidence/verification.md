@@ -8,11 +8,13 @@
 | `npm test` | 原有 controlEnabled：1 passed |
 | `npm run test:e2e:types` | 通过 |
 | `npm run build` | 通过；已有 bundle >500 kB 警告 |
-| `npm run test:e2e` | 7 passed |
-| `npm run test:e2e -- --repeat-each=2` | 14 passed，零重试，未观察到 flake |
+| `npm run test:e2e` | 9 passed（复核优化后） |
+| `npm run test:e2e -- --repeat-each=2` | 18 passed，零重试，未观察到 flake |
 | `npm run test:e2e:integration` | 1 passed，真实 HTTP scripted 后端 |
 
 `scripted-workstation.png`：真实 UI 创建、批准第一个关卡进入阶段 1，并完成暂停/恢复后的截图。`scripted-terminated.png`：总览页终止确认后状态为 terminated、按钮禁用。均为实际浏览器截图，数据仅来自专用离线运行。
+
+交付复核后，原单测、类型检查、构建、9 例 mock、18 次重复运行及真实集成均重新执行通过。两类报告独立保存为 `mock/` 和 `integration/`；集成结束后 mock 的 18 份 trace 仍存在。逐项交付判断及待完成项见 [delivery-checklist.md](delivery-checklist.md)。
 
 ## 既有后端基线的失败（本 PR 未改后端）
 
