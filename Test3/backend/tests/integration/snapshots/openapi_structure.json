@@ -1,0 +1,384 @@
+{
+  "paths": {
+    "GET /api/config/models": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/health": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/projects": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/runs": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/runs/{run_id}": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/artifacts": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/budget": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/crs": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/discussion": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/events": {
+      "body": null,
+      "params": [
+        "header:Last-Event-ID",
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/events/history": {
+      "body": null,
+      "params": [
+        "path:run_id*",
+        "query:after"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/feedback": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/stages": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/tasks": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/todos": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/trace": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/trace/impact": {
+      "body": null,
+      "params": [
+        "path:run_id*",
+        "query:codes*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/tasks/{task_id}": {
+      "body": null,
+      "params": [
+        "path:task_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PATCH /api/runs/{run_id}/limits": {
+      "body": "object",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/config/models/test": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "POST /api/crs/{code}/decision": {
+      "body": "object",
+      "params": [
+        "path:code*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/gates/{gate_id}/resolve": {
+      "body": "GateResolve",
+      "params": [
+        "path:gate_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/projects": {
+      "body": "CreateProject",
+      "params": [],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/runs": {
+      "body": "CreateRun",
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/accept": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/crs": {
+      "body": "object",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/feedback/import": {
+      "body": "object",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/pause": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/resume": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/schedule": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/terminate": {
+      "body": "ConfirmBody",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/tasks/{task_id}/{action}": {
+      "body": "ControlBody",
+      "params": [
+        "path:action*",
+        "path:task_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PUT /api/config/models": {
+      "body": "object",
+      "params": [],
+      "responses": [
+        "200",
+        "422"
+      ]
+    }
+  },
+  "schemas": {
+    "ConfirmBody": {
+      "properties": {
+        "confirm": "boolean"
+      },
+      "required": []
+    },
+    "ControlBody": {
+      "properties": {
+        "expected_revision": "integer",
+        "payload": "object",
+        "reason": "string"
+      },
+      "required": [
+        "expected_revision"
+      ]
+    },
+    "CreateProject": {
+      "properties": {
+        "name": "string",
+        "profile": "string"
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "CreateRun": {
+      "properties": {
+        "idea": "string"
+      },
+      "required": [
+        "idea"
+      ]
+    },
+    "GateResolve": {
+      "properties": {
+        "decision": "string",
+        "expected_revision": "anyOf",
+        "payload": "object"
+      },
+      "required": [
+        "decision"
+      ]
+    },
+    "HTTPValidationError": {
+      "properties": {
+        "detail": "array"
+      },
+      "required": []
+    },
+    "ValidationError": {
+      "properties": {
+        "ctx": "object",
+        "input": "any",
+        "loc": "array",
+        "msg": "string",
+        "type": "string"
+      },
+      "required": [
+        "loc",
+        "msg",
+        "type"
+      ]
+    }
+  }
+}

@@ -72,6 +72,8 @@ class EventBus:
             payload_json=json.dumps(payload or {}, ensure_ascii=False),
         )
         self._local[run_id].append(row)
+        for queue in list(self._subs.get(run_id, [])):
+            queue.put_nowait(row)
         return row
 
     def subscribe(self, run_id: str) -> asyncio.Queue[EventRow]:

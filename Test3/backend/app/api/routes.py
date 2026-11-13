@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -9,9 +10,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.errors import AgentOutputError, IllegalTransition, RevisionConflict, ValidationFailed
+from app.events.bus import BUS
 from app.services.runtime import Workbench
 
 router = APIRouter()
+
+SSE_HEARTBEAT_SECONDS = 15.0
 
 
 class CreateProject(BaseModel):
@@ -215,9 +219,16 @@ async def list_crs(run_id: str, request: Request) -> list[dict[str, Any]]:
 @router.post("/crs/{code}/decision")
 async def cr_decision(code: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
     bench = wb(request)
-    run = next(r for r in bench.runs.values() if any(c["code"] == code for c in r.crs))
+    run = next((r for r in bench.runs.values() if any(c["code"] == code for c in r.crs)), None)
+    if run is None:
+        raise HTTPException(404, "change request not found")
     body["code"] = code
-    return await bench.decide_cr(run, body)
+    try:
+        return await bench.decide_cr(run, body)
+    except RevisionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (IllegalTransition, ValidationFailed) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/feedback/import")
@@ -245,19 +256,49 @@ async def event_history(run_id: str, after: int = 0, request: Request = None) ->
 @router.get("/runs/{run_id}/events")
 async def event_sse(run_id: str, request: Request, last_event_id: str | None = Header(default=None, alias="Last-Event-ID")):
     run = _run(request, run_id)
-    after = int(last_event_id or 0)
+    after = _parse_last_event_id(last_event_id)
 
     async def gen():
+        # 先订阅再扫描，避免回放与订阅之间的事件丢失；以 seq 游标去重并保序。
+        queue = BUS.subscribe(run_id)
         last = after
-        while True:
-            for event in run.events:
+
+        def pending() -> list[str]:
+            nonlocal last
+            frames = []
+            for event in list(run.events):
                 if event["seq"] > last:
                     last = event["seq"]
-                    yield f"id: {event['seq']}\nevent: message\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    frames.append(f"id: {event['seq']}\nevent: message\ndata: {json.dumps(event, ensure_ascii=False)}\n\n")
+            return frames
+
+        try:
+            for frame in pending():
+                yield frame
             yield ": ping\n\n"
-            await asyncio.sleep(15)
+            deadline = time.monotonic() + SSE_HEARTBEAT_SECONDS
+            while True:
+                try:
+                    await asyncio.wait_for(queue.get(), max(deadline - time.monotonic(), 0))
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    deadline = time.monotonic() + SSE_HEARTBEAT_SECONDS
+                    continue
+                while not queue.empty():
+                    queue.get_nowait()
+                for frame in pending():
+                    yield frame
+        finally:
+            BUS.unsubscribe(run_id, queue)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+def _parse_last_event_id(value: str | None) -> int:
+    try:
+        return max(int((value or "0").strip() or 0), 0)
+    except ValueError:
+        return 0
 
 
 @router.get("/config/models")
@@ -286,7 +327,13 @@ async def schedule(run_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/runs/{run_id}/accept")
 async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
-    return await wb(request).accept(_run(request, run_id))
+    run = _run(request, run_id)
+    if "spec" not in run.artifacts:
+        raise HTTPException(409, "SPEC not ready; run has no spec artifact yet")
+    try:
+        return await wb(request).accept(run)
+    except (IllegalTransition, ValidationFailed) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _run(request: Request, run_id: str):

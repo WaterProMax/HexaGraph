@@ -6,12 +6,16 @@
 
 ## 信封与错误
 
+错误体为 FastAPI 默认形态：`{"detail": "..."}`（422 为校验错误数组）。没有统一 `{code,data}` 包装。
+
 | HTTP | 含义 |
 |---|---|
-| 200 | 成功；多数接口直接返回对象，没有统一 `{code,data}` 包一层 |
-| 400 | 非法转换、缺控制理由、缺 `FEEDBACK_HASH_KEY` |
-| 404 | 项目 / 运行 / 关卡 / 任务不存在 |
-| 409 | `expected_revision` 与任务当前 `revision` 不一致 |
+| 200 | 成功；多数接口直接返回对象 |
+| 400 | 非法转换、缺控制理由、终止未带 `confirm:true`、`ValidationFailed`（含变更单决策）、非法 limits 键、缺 `FEEDBACK_HASH_KEY` |
+| 404 | 项目 / 运行 / 关卡 / 任务 / 变更单（`/crs/{code}/decision`）不存在 |
+| 409 | `expected_revision` 不一致；`POST /runs/{id}/accept` 时运行尚无 SPEC |
+| 422 | 请求体/查询参数结构不合法（FastAPI 校验，含 `PATCH /limits` 非对象体、终止无 body） |
+| 500 | 仅用于未预期错误；已知输入问题不应再出现。已知例外：`PUT /config/models` 结构非法仍为 500（模型配置路由，不在本契约范围） |
 
 乐观锁：`POST /tasks/{task_id}/{action}` 与关卡决议体可带 `expected_revision`。任务控制比较的是**任务** revision，不是 run revision。
 
@@ -48,7 +52,13 @@
 
 ## SSE
 
-`GET /runs/{id}/events`：`text/event-stream`。从 `Last-Event-ID`（数字 seq）之后重放内存事件，然后每 15 秒打 `: ping`。这是轮询 `RunState.events`，不是持久化 `EventBus` 订阅。
+`GET /runs/{id}/events`：`text/event-stream`。帧格式不变：`id: <seq>\nevent: message\ndata: <事件 JSON>\n\n`。
+
+- 即时推送：`RunState.events` 追加后经 `EventBus` 唤醒订阅方，通常毫秒级到达（要求 ≤1 秒）；不再 15 秒轮询。
+- 心跳：连接建立后先发一次 `: ping`，之后每 15 秒无事件时发 `: ping`。
+- 续传：`Last-Event-ID` 为数字 seq，只发送 seq 更大的事件，不重复。非数字、负数或空值按 0 处理（全量回放），不报错。
+- 先订阅再回放，避免回放与订阅之间丢事件；客户端断开时取消订阅。
+- 未知 run 返回 404。
 
 进程重启后内存运行态丢失。SQLAlchemy / Alembic 表（`backend/app/storage/models.py`）有独立集成测试，HTTP 主路径尚未把每次关卡写入 SQLite。
 
