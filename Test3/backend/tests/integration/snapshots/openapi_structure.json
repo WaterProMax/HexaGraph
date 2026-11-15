@@ -216,6 +216,16 @@
         "422"
       ]
     },
+    "POST /api/projects/{project_id}/design-runs": {
+      "body": "DesignRunCreate",
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/projects/{project_id}/runs": {
       "body": "CreateRun",
       "params": [
@@ -349,6 +359,24 @@
       "required": [
         "idea"
       ]
+    },
+    "DesignRunCreate": {
+      "properties": {
+        "source": "DesignSource",
+        "text": "string",
+        "title": "string"
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "DesignSource": {
+      "properties": {
+        "kind": "string",
+        "name": "string",
+        "note": "string"
+      },
+      "required": []
     },
     "GateResolve": {
       "properties": {

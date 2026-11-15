@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.errors import AgentOutputError, IllegalTransition, RevisionConflict, ValidationFailed
 from app.events.bus import BUS
+from app.schemas.design_input import DesignRunCreate
 from app.services.runtime import Workbench
 
 router = APIRouter()
@@ -73,6 +74,18 @@ async def create_run(project_id: str, body: CreateRun, request: Request) -> dict
     except (AgentOutputError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"run": _run_view(run), "result": started}
+
+
+@router.post("/projects/{project_id}/design-runs")
+async def create_design_run(project_id: str, body: DesignRunCreate, request: Request) -> dict[str, Any]:
+    """从设计规格原文创建运行：整理、检查并停在 DESIGN 确认关卡，不生成任务。"""
+    bench = wb(request)
+    if project_id not in bench.projects:
+        raise HTTPException(404, "project not found")
+    try:
+        return await bench.create_design_run(project_id, body.text, body.source, body.title)
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/runs")
@@ -364,4 +377,6 @@ def _run_view(run) -> dict[str, Any]:
         "idea": run.idea,
         "gates": run.gates,
         "event_count": len(run.events),
+        "origin": "design_spec" if run.artifacts.get("design_input") else "idea",
+        "provenance": run.artifacts.get("provenance") or {},
     }

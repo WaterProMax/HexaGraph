@@ -26,6 +26,7 @@
 | GET | `/health` | `{status: ok}` |
 | POST/GET | `/projects` | 建项目 / 列表 |
 | POST | `/projects/{id}/runs` | 建运行并立刻 `start_idea` |
+| POST | `/projects/{id}/design-runs` | 从设计规格原文建运行：整理 SPEC/DESIGN、检查后停在 DESIGN 确认 |
 | GET | `/runs` | 运行列表 |
 | GET | `/runs/{id}` | 状态、阶段、关卡、revision |
 | GET | `/runs/{id}/stages` | 当前阶段与历史 |
@@ -49,6 +50,25 @@
 | GET/PUT | `/config/models` | 读/写进程内槽位 |
 | POST | `/config/models/test` | 占位，返回提示用 `make check-models` |
 | POST | `/runs/{id}/schedule` | 调度一轮就绪任务 |
+
+## 设计规格导入
+
+`POST /projects/{id}/design-runs`：
+
+```json
+{
+  "text": "设计规格原文（必填）",
+  "source": {"kind": "text|file", "name": "可选文件名", "note": "可选备注"},
+  "title": "可选标题"
+}
+```
+
+- 空文本或超过 100 KiB 返回 400/422；超过 24000 字符返回 `status: needs_split`（已知限制，不静默截断）。
+- 成功整理后进入阶段 5 并停在 `DESIGN基线确认`；**不生成任务、不自动调度**。
+- 响应 `status`：`awaiting_confirmation` / `needs_input` / `needs_split` / `failed`；附 `input{bytes,chars,sha256}`、`spec`、`design`、`missing`、`errors`、`checks`、`gate`、`provenance`。
+- `provenance` 区分 `generation: preset|model` 与 `execution: simulated|real_tool`，页面据此标注“预置输出/真实模型”。
+- 导入运行在 DESIGN 关卡被驳回时不原地改写，置 `stopped`，需修改原文后重新创建运行。
+- 后续复用既有 `DESIGN` → `PLAN` 关卡：DESIGN 批准走 `run_plan`，PLAN 批准走 `_materialize_tasks`；同一计划指纹重复确认不重建任务。
 
 ## SSE
 
