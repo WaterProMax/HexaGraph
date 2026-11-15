@@ -2,69 +2,95 @@
 
 证据只记本轮实际跑过的命令。未跑的项标「未跑」。
 
-## 命令
+## 设计规格工作流（本轮）
+
+- **起点提交**：`2d46abf`（`feat/design-spec-workflow` 自 `origin/teamwork-001`）
+- **目标**：设计规格输入 → SPEC/DESIGN 整理 → DESIGN/PLAN 确认 → 依赖调度 → 页面展示；不重写现有编排器
+
+### 命令与结果
 
 ```text
-$ cd Test3/backend && uv run ruff check app tests
-All checks passed!
+$ git rev-parse HEAD   # 工作开始时
+2d46abf7f9024312d7ce00f5e36e099c635d9f27
 
 $ cd Test3/backend && uv run pytest -q -m "not live"
-........................................................................ [ 76%]
-......................                                                   [100%]
-# 94 passed（M3/M7 补完 + N1–N5：原子 snapshot、文档检查失败关卡、splice 增删、decide_cr 缺 code、并发回滚钉死 T-01、阶段机走到验收）
+138 passed, 1 deselected
 
-$ cd Test3 && make e2e
-# 等同 pytest tests/e2e：6 passed
+$ cd Test3/frontend && npx tsc --noEmit && npm test
+# tsc 无错误；control.test.ts 1 passed
 
-$ make check-models
-# 未跑（本环境无 DASHSCOPE_API_KEY）
-
-$ make test-live
-# 未跑
+$ UI_PLAYWRIGHT_MODULE=Test3/frontend/tools/node_modules/playwright \
+  UI_BASE_URL=http://127.0.0.1:5173 \
+  node Test3/frontend/scripts/verify-design-spec.cjs
+PASS happy path: design import → DESIGN → PLAN → schedule
+PASS missing input stops before planning
+PASS generation failure surfaces error
+PASS task failure detail + SSE disconnect alert
+PASS no browser runtime errors
 ```
 
-`make lint` 中 `ruff check` 已绿；`ruff format --check` 与 `mypy app` 在 Makefile 里是 `|| true`，不作为通过门。
+说明：Cursor 沙箱禁写 `.git/hooks` 时，依赖 git worktree 的调度测试会假失败；上表数字在无沙箱环境下取得。
+
+### 真实性区分
+
+| 步骤 | 方式 | 证据 |
+|---|---|---|
+| 计划/文档生成（回归） | 预置 scripted | `test_design_input.py`、`test_design_input_change.py`；`provenance.generation=preset` |
+| 任务执行（回归） | 模拟工具调用 | `test_schedule_dependencies.py`（A→B/C→D） |
+| 浏览器闭环 | mock `/api/` | `verify-design-spec.cjs`（不消耗模型） |
+| 真实模型分解 | DashScope 探测 | 见下；**未**静默回退为预置任务 |
+
+### 真实模型探测
+
+环境有 `DASHSCOPE_API_KEY`。一次 `create_design_run(self-study-room.md)`：
+
+- `provenance.generation=model`，模型 `qwen3.8-max-0902`
+- 结果 `status=failed`，错误暴露为 SOCKS 代理缺少 `socksio`（本机代理环境问题）
+- **没有**回退成 preset 任务图后显示“生成成功”
+- 记录：`docs/RealModelTest-design-spec-self-study.json`
+- 取消代理后的重试长时间无响应已中止；**不声称真实分解已成功**
+
+### 示例输入与变更
+
+- `examples/design-specs/self-study-room.md`：座位、时段、冲突、预约/取消
+- `examples/design-specs/club-signup.md`：活动、名额、截止、**管理员审核**、导出
+- `examples/design-specs/club-signup-auto.md`：同上但改为**满足条件后自动通过**
+- 变更对比（scripted）：`test_design_input_change.py` 比较 F4 来源/标题/依赖，不以任务数量为唯一依据（两版均为 7 任务）
+
+### 演示步骤（对照）
+
+1. 工作台切换「从设计规格开始」，粘贴或读取 Markdown  
+2. 「整理并检查」→ 查看结构化 SPEC/DESIGN 与缺项；跳过的讨论阶段显示「不适用」  
+3. 确认 DESIGN → 分解停在 PLAN；确认 PLAN → 调度；点任务查看状态/等待原因/错误  
+4. 异常：空文/超限、缺项、生成失败、任务失败、事件断开均应显式提示  
+
+### 已知限制
+
+- 真实模型端到端分解在本环境因代理未完成；可控输出与编排已有自动化证明  
+- 浏览器脚本依赖本机 Chrome + `frontend/tools` 内 Playwright，未写入产品 `package.json`  
+- 设计规格入口跳过讨论仅为 UI「不适用」标注，后端仍从 stage 5 起步  
+
+---
+
+## 历史命令（更早轮次）
 
 ```text
-$ cd Test3/frontend && npm test
-✓ src/control.test.ts (1 test)
-Test Files  1 passed (1)
-
-$ curl -sS http://127.0.0.1:8765/api/health
-{"status":"ok"}
-
-# 本机 scripted 夹具连续两次 HTTP 走完 M1 至关卡 SPEC基线确认
-# 争议状态 I-01/02/05/06/07=采纳，I-03/04=待定
-# 再批准 SPEC：400 scripted queue empty（设计/分解未灌队列，不假装成功）
+$ cd Test3/backend && uv run pytest -q -m "not live"
+# 曾记录 94 passed；已被本轮 138 取代，勿混用
 ```
-
-未做浏览器点击验收；前端只跑了 vitest。
 
 ## P00–P17
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
-| P00 工程与模型配置 | 落地，百炼探测未跑 | `Makefile`、`pyproject.toml`、`config/models.yaml`、`.env.example`；`check-models.py` 无密钥时打印 `no-key` |
-| P01 模式/配置/编号/转换表 | 落地 | `tests/unit/test_core_tables.py`（6） |
-| P02 事件/存储/API/SSE | 部分 | JSONL + 原子 snapshot；坏文件记 recovery.failed 并从 JSONL 回放。未进 SQLite 事件表 |
-| P03 网关与 Agent | 落地（scripted） | `tests/unit/test_tools_llm_agents.py`、`test_info_boundary.py`；工具 schema/`tool_call_id` 已校验 |
-| P04 讨论纯函数 | 落地 | `tests/unit/test_discussion_rules.py`（13），金标准 11.4 |
-| P05 想法+讨论 | 落地 | `test_m1_study_room_scripted` |
-| P06 方案/评审/SPEC/关卡 | 落地 | 同上；文档检查仍不过开「文档检查失败」关卡 |
-| P07 追溯+设计 | 落地（scripted） | `run_design` 调 `review_arch`/`review_quality`，不通过走 `route_design_review` |
-| P08 任务分解 | 落地（scripted） | `check_task_graph`、`run_plan`；`scripted_full_queue` 含分解与两任务 |
-| P09 工作区与沙箱 | 落地 | `test_git_smoke`、`command_allowed`、工作树 |
-| P10 编排 | 落地（scripted） | 状态经 `_set_state`→`apply_transition`；merge 锁包住回归回滚；冲突后 `worktree remove` |
-| P11 验收 | 函数有 | `acceptance_pass`；未通过生成缺陷变更单（最多 2 轮）；通过确认后打 `build-<版本>` 并导出 `release/` |
-| P12 控制/待办/预算 | API+函数有 | 乐观锁、待办、预算；takeover/submit-takeover；终止需 `confirm=true`；5 秒调度兜底 |
-| P13 前端基础页 | 页面有 | `App.tsx` 路由；未跑 Playwright |
-| P14 任务图/时间线 | 页面有 | `@xyflow/react` 依赖在 `package.json`；无浏览器 e2e |
-| P15 变更 | 落地（scripted） | 增量 splice 支持新增/删除；PLAN 新卡写回 stale 任务；缺 code 从关卡取 |
-| P16 监听 | 导入流水线有 | `test_import_study_room_feedback`；embedding 失败走 `cluster_fast` |
-| P17 综合/文档 | 文档补齐，E1–E10/真联调未做 | 本文件与 README / API / Acceptance / Handoff / Demo |
+| P00 工程与模型配置 | 落地 | `Makefile`、`pyproject.toml`、`config/models.yaml` |
+| P01–P12 | 见历史实现 | 既有单测/e2e |
+| P08 任务分解 | 增强 | `POST /design-runs`、`spec_importer`/`design_importer`、`check_task_graph` 空图/重复/自依赖 |
+| P10 编排 | 增强 | 调度锁、终止迟到结果、`test_schedule_dependencies` |
+| P13–P14 前端 | 增强 | 设计规格入口组件；mock 浏览器脚本 |
+| P15 变更 | 增强 | 社团审核→自动通过 scripted 对比 |
+| P17 文档 | 本文件 + Acceptance + API | 含真实性区分与限制 |
 
-## M1
+## M1（想法入口，未改）
 
-`tests/e2e/test_m1_study_room.py`：scripted 队列驱动想法检查 → 讨论（I-01/05/06/07 采纳，I-03/04 待定）→ 方案 → 四维评审 → SPEC（含 I-03/I-04 开口、功能来源含 I-02、功能标题不含「门禁」）→ `SPEC基线确认`。
-
-`tests/e2e/test_contract_must.py::test_idea_to_acceptance_exports_release`：同一夹具再批准 SPEC/DESIGN/PLAN，跑完两任务，验收导出 `code/`、`trace.json`，标签 `build-1.0`。
+`tests/e2e/test_m1_study_room.py`：scripted 想法 → 讨论 → SPEC 关卡（完整流程入口仍保留）。

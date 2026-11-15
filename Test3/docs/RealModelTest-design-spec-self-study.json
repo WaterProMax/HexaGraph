@@ -1,0 +1,24 @@
+{
+  "status": "failed",
+  "message": "设计规格整理失败: llm failed for slot flagship: Using SOCKS proxy, but the 'socksio' package is not installed. Make sure to install httpx using `pip install httpx[socks]`.",
+  "missing": [],
+  "errors": [
+    "设计规格整理失败: llm failed for slot flagship: Using SOCKS proxy, but the 'socksio' package is not installed. Make sure to install httpx using `pip install httpx[socks]`."
+  ],
+  "provenance": {
+    "generation": "model",
+    "generation_label": "真实模型生成（qwen3.8-max-0902）",
+    "execution": "real_tool",
+    "execution_label": "真实工具执行（模型驱动）",
+    "provider": "DashScopeProvider",
+    "model": "qwen3.8-max-0902"
+  },
+  "feature_codes": [],
+  "feature_titles": [],
+  "module_codes": [],
+  "module_names": [],
+  "has_gate": false,
+  "gate_kind": null,
+  "run_id": "e3e3b1c5-f457-4ac4-8b6f-3109f703caf2",
+  "generation": "model"
+}
