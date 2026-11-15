@@ -157,6 +157,11 @@ def test_task_graph_checks() -> None:
     assert any("来源" in e for e in check_task_graph(bad_src, spec, design, 40))
     bad_in = TaskGraph(tasks=[_card("T-01", inputs=["missing.py"], kind="impl"), _card("T-02", kind="test")])
     assert any("输入" in e for e in check_task_graph(bad_in, spec, design, 40))
+    assert check_task_graph(TaskGraph(tasks=[]), spec, design, 40) == ["任务图为空"]
+    dup = TaskGraph(tasks=[_card("T-01", kind="impl"), _card("T-01", kind="test"), _card("T-02", kind="test")])
+    assert any("编号重复" in e for e in check_task_graph(dup, spec, design, 40))
+    self_dep = TaskGraph(tasks=[_card("T-01", depends_on=["T-01"], kind="impl"), _card("T-02", kind="test")])
+    assert any("自依赖" in e for e in check_task_graph(self_dep, spec, design, 40))
 
 
 def test_reconcile_and_critical_path() -> None:

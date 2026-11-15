@@ -208,10 +208,19 @@ def check_design(doc: DesignDoc, spec: SpecDoc, issues: list[Issue], *, max_modu
 
 def check_task_graph(graph: TaskGraph, spec: SpecDoc, design: DesignDoc, capacity: int) -> list[str]:
     errors: list[str] = []
-    tasks = {t.code: t for t in graph.tasks}
+    if not graph.tasks:
+        return ["任务图为空"]
+    tasks: dict[str, TaskCard] = {}
+    for task in graph.tasks:
+        if task.code in tasks:
+            errors.append(f"任务编号重复: {task.code}")
+        else:
+            tasks[task.code] = task
     for task in graph.tasks:
         if not task.acceptance or any(not item.cmd for item in task.acceptance):
             errors.append(f"{task.code} 验收命令为空")
+        if task.code in task.depends_on:
+            errors.append(f"{task.code} 存在自依赖")
         if task.points > 8:
             errors.append(f"{task.code} 点数超过 8")
         if len(task.write_set) > 8:
