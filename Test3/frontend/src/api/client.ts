@@ -21,6 +21,16 @@ export const api = {
   createProject: (name: string) => req("/projects", { method: "POST", body: JSON.stringify({ name }) }),
   createRun: (projectId: string, idea: string) =>
     req(`/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify({ idea }) }),
+  createDesignRun: (
+    projectId: string,
+    text: string,
+    source: { kind: "text" | "file"; name?: string; note?: string },
+    title = "",
+  ) =>
+    req(`/projects/${projectId}/design-runs`, {
+      method: "POST",
+      body: JSON.stringify({ text, source, title }),
+    }),
   runs: () => req("/runs"),
   run: (id: string) => req(`/runs/${id}`),
   stages: (id: string) => req(`/runs/${id}/stages`),
