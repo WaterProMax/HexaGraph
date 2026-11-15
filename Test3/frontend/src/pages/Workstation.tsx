@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Empty, Input, Select, Switch, Tooltip, message } from "antd";
+import { Alert, Button, Empty, Input, Segmented, Select, Switch, Tooltip, message } from "antd";
 import {
   ArrowRightOutlined,
   CheckOutlined,
@@ -24,11 +24,15 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, controlEnabled } from "../api/client";
+import DesignSpecInput from "../components/DesignSpecInput";
+import DesignSpecPreview from "../components/DesignSpecPreview";
+import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
+import { taskWaitReason } from "../taskWaitReason";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
 
-type ItemStatus = "completed" | "in_progress" | "pending" | "error";
+type ItemStatus = "completed" | "in_progress" | "pending" | "error" | "skipped";
 
 interface PhaseTaskItem {
   id: string;
@@ -48,6 +52,7 @@ const STATUS_META: Record<ItemStatus, { label: string; edge: string }> = {
   in_progress: { label: "进行中", edge: "#0066fa" },
   pending: { label: "待开始", edge: "#d4d4d8" },
   error: { label: "需处理", edge: "#f76808" },
+  skipped: { label: "不适用", edge: "#94a3b8" },
 };
 
 const RUN_STATUS: Record<string, string> = {
@@ -72,6 +77,7 @@ const PIPELINE = ["想法", "讨论", "方案", "评审", "SPEC", "DESIGN", "PLA
 
 function mapTaskState(state: string): ItemStatus {
   if (state === "done") return "completed";
+  if (state === "skipped" || state === "cancelled") return "skipped";
   if (["running", "verifying", "ready"].includes(state)) return "in_progress";
   if (["failed", "needs_human", "blocked", "stale"].includes(state)) return "error";
   return "pending";
@@ -184,6 +190,8 @@ export default function Workstation() {
   const [supplementText, setSupplementText] = useState("");
   const [activeTab, setActiveTab] = useState("graph");
   const [autoAdvance, setAutoAdvance] = useState(false);
+  const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
+  const [designResult, setDesignResult] = useState<any>(null);
   const flowRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
@@ -229,8 +237,6 @@ export default function Workstation() {
     refetchInterval: 4000,
   });
 
-  const events = useRunEvents(activeRunId);
-
   const refreshAll = () => {
     qc.invalidateQueries({ queryKey: ["runs"] });
     if (activeRunId) {
@@ -240,6 +246,13 @@ export default function Workstation() {
       qc.invalidateQueries({ queryKey: ["budget", activeRunId] });
     }
   };
+
+  const {
+    events,
+    connection: eventConnection,
+    connectionError: eventConnectionError,
+    reconnect: reconnectEvents,
+  } = useRunEvents(activeRunId, refreshAll);
 
   const startRunMut = useMutation({
     mutationFn: async (opts: { autoToExec?: boolean }) => {
@@ -277,6 +290,18 @@ export default function Workstation() {
     () => (run?.gates || []).find((g: any) => g.status === "pending"),
     [run?.gates],
   );
+
+  const designView = designResult && designResult.run_id === activeRunId ? designResult : null;
+  const isDesignRun = run?.origin === "design_spec";
+  const showDesignPreview = Boolean(activeRunId && (isDesignRun || designView));
+
+  const handleDesignCreated = (result: any) => {
+    setDesignResult(result);
+    qc.invalidateQueries({ queryKey: ["runs"] });
+    setSelectedId(null);
+    setActiveTab("graph");
+    if (result?.run_id) nav(`/workstation/${result.run_id}`);
+  };
 
   const resolveGateMut = useMutation({
     mutationFn: async ({ decision }: { decision: "approve" | "reject" }) => {
@@ -370,15 +395,30 @@ export default function Workstation() {
     const hasSpec = Boolean(artifacts?.spec);
     const hasDesign = Boolean(artifacts?.design);
     const hasPlan = Boolean(artifacts?.plan);
+    const skipDiscussion = Boolean(isDesignRun || artifacts?.design_input);
+    const designImportStatus = artifacts?.design_input_status;
+    const designImportStopped = Boolean(
+      isDesignRun && ["needs_input", "needs_split", "failed"].includes(designImportStatus),
+    );
 
     const p1Items: PhaseTaskItem[] = [
       {
         id: "S-IDEA",
         code: "STAGE-0",
         title: "想法解析与初步做法",
-        subtitle: artifacts?.idea_card?.approach || "idea_checker / pm_draft",
-        status: !run ? "pending" : stageNum >= 1 ? "completed" : pendingGate ? "error" : "in_progress",
-        rawState: stageNum >= 1 ? "confirmed" : pendingGate?.kind || "stage-0",
+        subtitle: skipDiscussion
+          ? "设计规格入口跳过讨论"
+          : artifacts?.idea_card?.approach || "idea_checker / pm_draft",
+        status: !run
+          ? "pending"
+          : skipDiscussion
+          ? "skipped"
+          : stageNum >= 1
+          ? "completed"
+          : pendingGate
+          ? "error"
+          : "in_progress",
+        rawState: skipDiscussion ? "不适用" : stageNum >= 1 ? "confirmed" : pendingGate?.kind || "stage-0",
         phaseKey: "phase1",
         dependsOn: [],
         kind: "stage",
@@ -388,9 +428,13 @@ export default function Workstation() {
         id: "S-DISC",
         code: "STAGE-1..3",
         title: "多体讨论与方案评审",
-        subtitle: `争议 ${(artifacts?.issues || []).length} 项 · 发言 ${(artifacts?.utterances || []).length} 条`,
+        subtitle: skipDiscussion
+          ? "不适用（从设计规格开始）"
+          : `争议 ${(artifacts?.issues || []).length} 项 · 发言 ${(artifacts?.utterances || []).length} 条`,
         status: !run
           ? "pending"
+          : skipDiscussion
+          ? "skipped"
           : stageNum >= 4
           ? "completed"
           : stageNum >= 1
@@ -398,7 +442,7 @@ export default function Workstation() {
             ? "error"
             : "in_progress"
           : "pending",
-        rawState: stageNum >= 4 ? "reviewed" : stageNum >= 1 ? "discussing" : "pending",
+        rawState: skipDiscussion ? "不适用" : stageNum >= 4 ? "reviewed" : stageNum >= 1 ? "discussing" : "pending",
         phaseKey: "phase1",
         dependsOn: ["S-IDEA"],
         kind: "stage",
@@ -410,19 +454,29 @@ export default function Workstation() {
         title: "需求规格基线",
         subtitle: hasSpec
           ? `功能 ${(artifacts?.spec?.features || []).length} 项 · 基线 v${artifacts?.baseline_SPEC || "draft"}`
+          : skipDiscussion
+          ? "由设计规格整理得到"
           : "spec_writer / check_spec",
         status: !run
           ? "pending"
-          : stageNum >= 5
+          : designImportStopped
+          ? "error"
+          : stageNum >= 5 && hasSpec
           ? "completed"
           : hasSpec
           ? pendingGate?.kind === "SPEC基线确认"
             ? "error"
             : "in_progress"
           : "pending",
-        rawState: artifacts?.baseline_SPEC ? `v${artifacts.baseline_SPEC}` : hasSpec ? "await_gate" : "pending",
+        rawState: designImportStopped
+          ? designImportStatus
+          : artifacts?.baseline_SPEC
+          ? `v${artifacts.baseline_SPEC}`
+          : hasSpec
+          ? "await_gate"
+          : "pending",
         phaseKey: "phase1",
-        dependsOn: ["S-DISC"],
+        dependsOn: skipDiscussion ? [] : ["S-DISC"],
         kind: "spec",
         detail: artifacts?.spec,
       },
@@ -434,11 +488,15 @@ export default function Workstation() {
         id: "S-DESIGN",
         code: "DESIGN",
         title: "架构与设计规格",
-        subtitle: hasDesign
+        subtitle: designImportStopped
+          ? "导入未完成，未形成待确认设计"
+          : hasDesign
           ? `模块 ${designModules.length} 个 · 接口 ${(artifacts?.design?.interfaces || []).length} 个`
           : "architect + 双评审背靠背打分",
         status: !run
           ? "pending"
+          : designImportStopped
+          ? "error"
           : stageNum >= 6
           ? "completed"
           : stageNum === 5 || hasDesign
@@ -446,7 +504,13 @@ export default function Workstation() {
             ? "error"
             : "in_progress"
           : "pending",
-        rawState: artifacts?.baseline_DESIGN ? `v${artifacts.baseline_DESIGN}` : hasDesign ? "await_gate" : "pending",
+        rawState: designImportStopped
+          ? designImportStatus
+          : artifacts?.baseline_DESIGN
+          ? `v${artifacts.baseline_DESIGN}`
+          : hasDesign
+          ? "await_gate"
+          : "pending",
         phaseKey: "phase2",
         dependsOn: ["S-SPEC"],
         kind: "design",
@@ -457,8 +521,8 @@ export default function Workstation() {
         code: m.code,
         title: m.name,
         subtitle: m.responsibility || `追溯 ${(m.sources || []).join(", ") || "-"}`,
-        status: (stageNum >= 6 ? "completed" : "in_progress") as ItemStatus,
-        rawState: stageNum >= 6 ? "frozen" : "draft",
+        status: (designImportStopped ? "error" : stageNum >= 6 ? "completed" : "in_progress") as ItemStatus,
+        rawState: designImportStopped ? designImportStatus : stageNum >= 6 ? "frozen" : "draft",
         phaseKey: "phase2",
         dependsOn: ["S-DESIGN"],
         kind: "design" as const,
@@ -555,10 +619,11 @@ export default function Workstation() {
 
     const flat = phaseDefs.flatMap((p) => p.items);
     return { phases: phaseDefs, allItems: flat };
-  }, [run, artifacts, tasks, pendingGate]);
+  }, [run, artifacts, tasks, pendingGate, isDesignRun]);
 
-  const completedCount = allItems.filter((i) => i.status === "completed").length;
-  const totalCount = allItems.length || 1;
+  const progressItems = allItems.filter((i) => i.status !== "skipped");
+  const completedCount = progressItems.filter((i) => i.status === "completed").length;
+  const totalCount = progressItems.length || 1;
   const overallPercent = run ? Math.round((completedCount / totalCount) * 100) : 0;
 
   const selectedItem = useMemo(
@@ -582,7 +647,8 @@ export default function Workstation() {
     phases.forEach((phase, phaseIdx) => {
       const items = phase.items;
       const g = groups[phaseIdx];
-      const doneInPhase = items.filter((i) => i.status === "completed").length;
+      const countable = items.filter((i) => i.status !== "skipped");
+      const doneInPhase = countable.filter((i) => i.status === "completed").length;
 
       nodes.push({
         id: `group-${phase.key}`,
@@ -594,7 +660,7 @@ export default function Workstation() {
         data: {
           no: phase.no,
           title: phase.title,
-          progressText: `${doneInPhase}/${items.length}`,
+          progressText: `${doneInPhase}/${countable.length || items.length}`,
         },
       });
 
@@ -642,6 +708,18 @@ export default function Workstation() {
     [tasks],
   );
 
+  const taskByCode = useMemo(
+    () => new Map<string, any>((tasks || []).map((t: any) => [t.code, t])),
+    [tasks],
+  );
+
+  const selectedRuntime = selectedItem?.kind === "task" ? taskByCode.get(selectedItem.code) : undefined;
+
+  const selectedWaitReason = useMemo(
+    () => taskWaitReason(selectedRuntime, selectedItem || { dependsOn: [] }, taskByCode),
+    [selectedRuntime, selectedItem, taskByCode],
+  );
+
   const isTaskSelected = selectedItem?.kind === "task" && selectedItem.detail?.revision !== undefined;
   const budgetUsed = budget?.used ?? 0;
   const budgetLimit = budget?.limit ?? 0;
@@ -649,6 +727,7 @@ export default function Workstation() {
 
   const tabs = [
     { key: "graph", label: "流程图" },
+    { key: "plan", label: "任务计划", count: artifacts?.plan?.tasks?.length },
     { key: "details", label: "节点详情" },
     { key: "specs", label: "规格产物" },
     { key: "activity", label: "活动", count: events.length },
@@ -776,46 +855,71 @@ export default function Workstation() {
           <section className="composer glass-panel" aria-labelledby="composer-heading">
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
-              <h2 id="composer-heading">想法输入</h2>
+              <h2 id="composer-heading">{flowMode === "design" ? "设计规格输入" : "想法输入"}</h2>
             </div>
-            <div className="composer-fields">
-            <input
-              className="composer-name"
-              aria-label="项目名称"
-              value={projectName}
-              onChange={(e) => setProjectName(e.target.value)}
-              placeholder="项目名称"
+            <Segmented
+              block
+              size="small"
+              aria-label="选择流程入口"
+              value={flowMode}
+              onChange={(val) => setFlowMode(val as "idea" | "design")}
+              options={[
+                { label: "完整流程", value: "idea" },
+                { label: "从设计规格开始", value: "design" },
+              ]}
             />
-            <textarea
-              aria-label="产品想法"
-              rows={3}
-              value={ideaInput}
-              onChange={(e) => setIdeaInput(e.target.value)}
-              placeholder="用一两句话描述产品想法…"
-            />
-            </div>
-            <div className="composer-actions">
-              <Tooltip title="创建后逐个关卡推进到任务分解并开始执行">
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<ThunderboltOutlined />}
-                  loading={startRunMut.isPending}
-                  onClick={() => startRunMut.mutate({ autoToExec: true })}
-                >
-                  一键推进到执行
-                </Button>
-              </Tooltip>
-              <Button
-                size="small"
-                type="primary"
-                loading={startRunMut.isPending}
-                onClick={() => startRunMut.mutate({ autoToExec: false })}
-              >
-                启动 <ArrowRightOutlined />
-              </Button>
-            </div>
+            {flowMode === "design" ? (
+              <DesignSpecInput
+                projectName={projectName}
+                onProjectName={setProjectName}
+                onCreated={handleDesignCreated}
+              />
+            ) : (
+              <>
+                <div className="composer-fields">
+                  <input
+                    className="composer-name"
+                    aria-label="项目名称"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="项目名称"
+                  />
+                  <textarea
+                    aria-label="产品想法"
+                    rows={3}
+                    value={ideaInput}
+                    onChange={(e) => setIdeaInput(e.target.value)}
+                    placeholder="用一两句话描述产品想法…"
+                  />
+                </div>
+                <div className="composer-actions">
+                  <Tooltip title="创建后逐个关卡推进到任务分解并开始执行">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<ThunderboltOutlined />}
+                      loading={startRunMut.isPending}
+                      onClick={() => startRunMut.mutate({ autoToExec: true })}
+                    >
+                      一键推进到执行
+                    </Button>
+                  </Tooltip>
+                  <Button
+                    size="small"
+                    type="primary"
+                    loading={startRunMut.isPending}
+                    onClick={() => startRunMut.mutate({ autoToExec: false })}
+                  >
+                    启动 <ArrowRightOutlined />
+                  </Button>
+                </div>
+              </>
+            )}
           </section>
+
+          {showDesignPreview && (
+            <DesignSpecPreview artifacts={artifacts} result={designView} />
+          )}
 
           {pendingGate && (
             <section className="gate-card glass-panel" aria-labelledby="gate-heading">
@@ -863,7 +967,7 @@ export default function Workstation() {
                   loading={resolveGateMut.isPending}
                   onClick={() => resolveGateMut.mutate({ decision: "reject" })}
                 >
-                  驳回重写
+                  {pendingGate.kind === "DESIGN基线确认" && isDesignRun ? "驳回（需改原文重提）" : "驳回重写"}
                 </Button>
               </div>
             </section>
@@ -883,7 +987,7 @@ export default function Workstation() {
             <div className="section-title">
               <h2 id="progress-heading">进度</h2>
               <span className="hint mono">
-                {completedCount}/{allItems.length} · {overallPercent}%
+                {completedCount}/{progressItems.length} · {overallPercent}%
               </span>
             </div>
             <div className="meter brand" role="progressbar" aria-label="整体进度" aria-valuenow={overallPercent} aria-valuemin={0} aria-valuemax={100}>
@@ -893,14 +997,15 @@ export default function Workstation() {
 
             <div className="phase-list">
             {phases.map((phase) => {
-              const doneCnt = phase.items.filter((i) => i.status === "completed").length;
+              const countable = phase.items.filter((i) => i.status !== "skipped");
+              const doneCnt = countable.filter((i) => i.status === "completed").length;
               return (
                 <section className="phase glass-panel" key={phase.key} aria-labelledby={`${phase.key}-heading`}>
                   <div className="phase-head">
                     <span className="phase-no">{phase.no}</span>
                     <h3 className="phase-title" id={`${phase.key}-heading`}>{phase.title}</h3>
                     <span className="phase-pct">
-                      {doneCnt}/{phase.items.length}
+                      {doneCnt}/{countable.length || phase.items.length}
                     </span>
                   </div>
                   <div className="phase-items">
@@ -1039,6 +1144,22 @@ export default function Workstation() {
                   </div>
                 )}
 
+                {activeTab === "plan" && (
+                  <div className="canvas-scroll">
+                    <div className="stack" style={{ maxWidth: 860 }}>
+                      <TaskPlanPreview
+                        plan={artifacts?.plan}
+                        tasks={tasks || []}
+                        provenance={run?.provenance}
+                        onSelect={(code) => {
+                          setSelectedId(code);
+                          setActiveTab("details");
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {activeTab === "details" && (
                   <div className="canvas-scroll">
                     {selectedItem ? (
@@ -1063,6 +1184,26 @@ export default function Workstation() {
                             <div>{phases.find((p) => p.key === selectedItem.phaseKey)?.title}</div>
                             <div className="k">上游依赖</div>
                             <div className="mono">{selectedItem.dependsOn.join(", ") || "无"}</div>
+                            {selectedRuntime && (
+                              <>
+                                <div className="k">等待原因</div>
+                                <div data-testid="wait-reason">{selectedWaitReason || "不适用（已开始或已完成）"}</div>
+                                {selectedRuntime.last_error && (
+                                  <>
+                                    <div className="k">最近错误</div>
+                                    <div style={{ color: "var(--danger, #b42318)" }}>{selectedRuntime.last_error}</div>
+                                  </>
+                                )}
+                                {selectedRuntime.prev_output && (
+                                  <>
+                                    <div className="k">上一版产物</div>
+                                    <div className="mono muted" style={{ whiteSpace: "pre-wrap", maxHeight: 160, overflow: "auto" }}>
+                                      {selectedRuntime.prev_output}
+                                    </div>
+                                  </>
+                                )}
+                              </>
+                            )}
                             {selectedItem.detail?.card && (
                               <>
                                 <div className="k">执行角色</div>
@@ -1137,8 +1278,27 @@ export default function Workstation() {
 
                 {activeTab === "activity" && (
                   <div className="canvas-scroll">
-                    <div style={{ maxWidth: 860 }}>
-                      {events.length === 0 && <Empty description="暂无事件" />}
+                    <div style={{ maxWidth: 860 }} className="stack">
+                      {eventConnection === "error" && (
+                        <Alert
+                          type="error"
+                          showIcon
+                          data-testid="events-connection-error"
+                          message={eventConnectionError || "事件连接已断开"}
+                          description={
+                            <div>
+                              <div>实时推送已中断，下方仅为断开前已收到的事件；恢复不代表任务成功。</div>
+                              <Button size="small" icon={<ReloadOutlined />} onClick={reconnectEvents}>
+                                重新连接
+                              </Button>
+                            </div>
+                          }
+                        />
+                      )}
+                      {eventConnection === "connecting" && activeRunId && (
+                        <Alert type="info" showIcon message="正在连接事件流…" />
+                      )}
+                      {events.length === 0 && eventConnection !== "error" && <Empty description="暂无事件" />}
                       {[...events].reverse().map((ev: any) => (
                         <div className="event" key={ev.seq}>
                           <span className="seq">#{ev.seq}</span>

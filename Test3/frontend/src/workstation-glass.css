@@ -125,6 +125,7 @@
 .ws-left .row[data-status="completed"] .row-state { background: #ddf3e9; color: #21643f; }
 .ws-left .row[data-status="in_progress"] .row-state { background: #deecff; color: #0054b8; }
 .ws-left .row[data-status="error"] .row-state { background: #ffead6; color: #8d4513; }
+.ws-left .row[data-status="skipped"] .row-state { background: #e8eef3; color: #526e82; }
 .ws-left .row-title { display: block; }
 .ws-left .row-title .text { display: block; white-space: normal; overflow-wrap: anywhere; font-size: 13px; font-weight: 600; line-height: 1.55; }
 .ws-left .row-sub { display: block; margin-top: 5px; color: var(--glass-muted); font-size: 11px; line-height: 1.6; }
@@ -203,6 +204,8 @@
 .ws .flow-node[data-status="completed"] .state { background: #ddf3e9; color: #21643f; }
 .ws .flow-node[data-status="in_progress"] .state { background: #deecff; color: #0054b8; }
 .ws .flow-node[data-status="error"] .state { background: #ffead6; color: #8d4513; }
+.ws .flow-node[data-status="skipped"] .state { background: #e8eef3; color: #526e82; }
+.ws .flow-node[data-status="skipped"] { opacity: 0.72; }
 .ws .flow-node .react-flow__handle { border-color: #68869b; }
 
 .ws .dock { padding: 12px 14px; border-radius: var(--glass-radius-panel); background: #f1faffed; box-shadow: var(--glass-shadow); }
@@ -259,3 +262,16 @@
   .ws .topbar, .ws .dock { background: #edf7fe; }
   .ws-left .gate-card { background: #fff5e9; }
 }
+
+/* 设计规格输入：文件读取与文本区保持同一套玻璃输入样式 */
+.ws-left .composer > .ant-segmented { margin-bottom: 12px; background: var(--glass-field); }
+.ws-left .composer .design-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--glass-radius-field);
+  background: var(--glass-field);
+}
+.ws-left .composer .design-file > .ant-btn { min-height: 28px; padding: 3px 10px; background: #ffffffd9; color: #0054c9; }
+.ws-left .composer .design-file .mono.muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

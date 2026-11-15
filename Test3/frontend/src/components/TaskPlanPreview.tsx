@@ -1,0 +1,111 @@
+import { Tag } from "antd";
+
+interface Props {
+  plan: any;
+  tasks: any[];
+  provenance?: any;
+  onSelect?: (code: string) => void;
+}
+
+const STATE_LABEL: Record<string, string> = {
+  pending: "待开始",
+  ready: "可调度",
+  running: "执行中",
+  verifying: "验证中",
+  done: "已完成",
+  failed: "失败",
+  needs_human: "需要人工",
+  blocked: "已阻塞",
+  skipped: "已跳过",
+  cancelled: "已取消",
+  stale: "计划已变更",
+};
+
+function waitReason(card: any, runtime: any, byCode: Map<string, any>): string {
+  const deps: string[] = card?.depends_on || [];
+  const unmet = deps.filter((code) => {
+    const state = byCode.get(code)?.state ?? "pending";
+    return state !== "done" && state !== "skipped" && state !== "cancelled";
+  });
+  const state = runtime?.state ?? "pending";
+  if (state === "ready") return "依赖已满足，等待调度";
+  if (state === "running" || state === "verifying") return "";
+  if (state === "blocked") return runtime?.last_error || "上游失败，已阻塞下游";
+  if (state === "failed") return runtime?.last_error || "执行失败，等待重试";
+  if (state === "needs_human") return runtime?.last_error || "需要人工裁决";
+  if (state === "pending" && unmet.length > 0) return `等待依赖：${unmet.join("、")}`;
+  if (state === "pending") return "尚未物化为运行任务";
+  return "";
+}
+
+export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: Props) {
+  const cards: any[] = plan?.tasks || [];
+  const byCode = new Map<string, any>((tasks || []).map((t: any) => [t.code, t]));
+  const done = cards.filter((c) => byCode.get(c.code)?.state === "done").length;
+  const total = cards.length;
+
+  if (!plan) {
+    return (
+      <div className="well muted" style={{ padding: 14 }} data-testid="task-plan-preview">
+        尚未生成任务计划。设计确认后才会调用任务分解。
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="task-plan-preview">
+      <div className="section-title">
+        <span>任务计划</span>
+        <span className="hint">
+          {total} 个任务 · 已完成 {done} · 容量 {plan.capacity || 40} 点
+          {provenance?.generation_label ? ` · ${provenance.generation_label}` : ""}
+        </span>
+      </div>
+      {provenance?.execution_label && (
+        <div className="notice" style={{ marginBottom: 8 }}>
+          <span>任务执行方式：{provenance.execution_label}</span>
+        </div>
+      )}
+      {total === 0 && <div className="well muted" style={{ padding: 12 }}>任务图为空，不能开始执行</div>}
+      <div className="phase-items">
+        {cards.map((card: any) => {
+          const runtime = byCode.get(card.code);
+          const state = runtime?.state ?? "pending";
+          const reason = waitReason(card, runtime, byCode);
+          return (
+            <button
+              type="button"
+              key={card.code}
+              className="row"
+              onClick={() => onSelect?.(card.code)}
+              data-state={state}
+            >
+              <span className={`dot ${state === "done" ? "completed" : state === "ready" || state === "running" ? "in_progress" : state === "pending" ? "pending" : "error"}`} />
+              <span className="row-main">
+                <span className="row-meta">
+                  <span className="code">{card.code}</span>
+                  <span className="row-state">{STATE_LABEL[state] || state}</span>
+                  <Tag>{card.role}</Tag>
+                </span>
+                <span className="row-title">
+                  <span className="text">{card.title}</span>
+                </span>
+                <span className="row-sub">
+                  依赖 {(card.depends_on || []).join("、") || "无"} · 来源 {(card.sources || []).join("、") || "-"} · 交付物{" "}
+                  {(card.outputs || []).join("、") || "-"}
+                </span>
+                {(card.acceptance || []).length > 0 && (
+                  <span className="row-sub" title="验收条件">
+                    验收 {(card.acceptance || []).map((a: any) => (a.cmd || []).join(" ")).join("；")}
+                  </span>
+                )}
+                {reason && <span className="row-sub">等待原因：{reason}</span>}
+                {runtime?.last_error && <span className="row-sub">错误：{runtime.last_error}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

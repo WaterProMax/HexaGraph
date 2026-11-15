@@ -1,29 +1,139 @@
-# Test3 对照 ImplementationPlan 第 23 章
+# HexaGraph Test3 — 验收状态与证据边界
 
-「通过」只表示本轮有对应自动化证据。「未做」不是隐晦的通过。
+> 当前口径更新：2026-11-15，修复分支 `fix/design-spec-workflow-validation`。
+> 本页区分**页面交互验证**、**scripted 流程验证**和**真实模型能力验收**，不把前两者写成后者。
 
-| # | 标准 | 本轮 |
-|---|---|---|
-| 1 | P00–P17 验收项全过，`make lint` / `make test` / `make e2e` 成功 | `ruff check` 与 `pytest -m "not live"` 见 Progress。`make lint` 的 format/mypy 被 `\|\| true` 忽略。P07–P17 仍有缺口，见 Handoff |
-| 2 | replay 走通 E1–E10；真实联调至少一次且有记录 | 未做。无 replay JSON，无 `docs/RealModelTest-*` |
-| 3a | 讨论规则以第 11 章为金标准 | 通过。`test_select_speaker_matches_study_room_gold_standard`、`test_finalize_matches_table_a`、`test_can_finish_before_14_and_not_before_13` |
-| 3b | 评审通过与分流 | 通过（单元）。另有 e2e：`test_review_reopen_then_pass` |
-| 3c | 任务图检查 | 通过（单元）。`test_task_graph_stub_before_impl` |
-| 3d | 调度、完成条件、失败分类 | 纯函数单测仍在。编排层现有 `test_denied_acceptance_cannot_be_done`、`test_repair_round_includes_prev_output`。没有完整调度压力测试 |
-| 3e | 控制可用状态 | 后端 `test_control_table` / `test_control_actions_require_reason_by_state`；前端 `control.test.ts` 含 resume |
-| 3f | 变更分级与影响 | 单元 + `test_decide_cr_marks_applied_and_bumps_1_1` |
-| 3g | 反馈分流 | e2e 导入走 Agent；`test_listening_without_scripted_does_not_hardcode_study_room`。无 40 条 E8 全案 |
-| 4 | 信息边界、写集、命令白名单、密钥不进日志 | 通过。`test_info_boundary`、`python -c` 被拒、`sk-` 脱敏 |
-| 5 | 任务状态只有 `transition()` 一处修改 | **未满足。** 内存执行/控制直接改 `task["state"]` |
-| 6 | 控制台可演示任务图、证据、暂停、重试、变更、反馈 | 页面在（讨论页含规则列，验收未通过需理由）。无浏览器/录屏证据 |
-| 7 | 文档与实现一致，偏差已记录 | README / API / Progress / Handoff / Demo 按本轮代码写 |
-| 8 | 没有空函数冒充完成 | 执行/验收/监听不再用假输出放行。`patch` 仍拒绝，见 Handoff |
+## 1. 本轮范围
 
-## 本轮绑定命令
+目标流程：
 
-```text
-cd /agent/repos/HexaGraph/Test3/backend
-uv run ruff check app tests
+`设计规格输入 → PM Agent 分解开发任务 → 编排器按依赖安排执行 → 可视化及执行交互`
+
+本轮修正三个小范围问题：
+
+1. SSE 断线后保留提示，允许显式重新连接，并重新同步运行、任务、产物和事件。
+2. 失败或取消的依赖与普通的未完成依赖分别显示；依赖合法恢复后按真实状态解锁。
+3. 设计规格导入的缺项、需拆分、异常和成功待确认状态分别表达；失败导入不再提前写入 SPEC 确认历史。
+
+保留 PR23 的原有架构：同一份 `SpecDoc` / `DesignDoc`，DESIGN 确认后生成 PLAN，PLAN 确认后物化任务并进入既有调度器。原 idea 入口保留，没有第二套任务图。
+
+## 2. 三类证据不得混用
+
+### A. mock 浏览器交互
+
+`frontend/scripts/verify-design-spec.cjs` 拦截 `/api`，只验证页面组件、按钮、展示和交互约定。
+
+- 可证明：mock 数据下页面能完成设计规格入口、DESIGN/PLAN 确认、任务展示、缺项/异常/超长输入展示。
+- 不能证明：真实 FastAPI 路由、数据库/持久化、SSE、调度器或真实模型调用正确。
+
+### B. scripted 模型 + 真实后端 HTTP + 真实页面
+
+`frontend/scripts/verify-design-spec-http.cjs` 不拦截 `/api`。后端由 `backend/tests/e2e/design_spec_http_server.py` 启动，显式使用 `ScriptedProvider`，不运行 `app.main` 的 settings lifespan，不读取 `.env`，不发真实模型请求。
+
+浏览器实际完成：选择设计规格入口、输入示例、查看整理结果、确认 DESIGN、查看任务分解、确认 PLAN、点击调度、查看任务依赖与状态。后端 API 仅用于只读核对运行编号、任务、依赖和状态。
+
+本轮已实际通过：
+
+- 成功路径：`T-01 → T-02`，两个任务均由页面调度后到达 `done`，运行进入验收阶段。
+- 页面刷新后仍读取同一运行，显示 PLAN 已确认及相同任务状态。
+- 缺项路径：返回 `needs_input`，无 DESIGN/PLAN 关卡、无任务、无 SPEC 确认历史；刷新后仍一致。
+- 浏览器无运行时异常。
+
+证据截图：
+
+- `docs/design/screenshots/design-spec-http-happy.png`
+- `docs/design/screenshots/design-spec-http-missing.png`
+
+这项验证证明的是**预置模型结果经过真实前后端 HTTP 后的流程衔接与离线执行**，不是 PM 的泛化生成能力。
+
+### C. 真实模型生成与实际工具执行
+
+真实模型测试必须在组长另行授权后，使用组长指定的真实模型配置单独进行，并保留请求记录、产物、工具结果、退出状态和成本。
+
+本轮没有调用付费真实模型，没有修改原始探测文件，也没有生成新的真实调用记录。
+
+## 3. 真实模型当前状态：部分验证，能力尚未验收
+
+原始记录：`docs/RealModelTest-design-spec-self-study.json`。
+
+- 原始输入为自学网站设计规格。
+- 实际返回为 `needs_input`，整理阶段给出 12 条缺项。
+- 原始记录停在 `stage=5`；`DESIGN 确认 → PM 分解 → PLAN 确认 → 调度执行` 均未进入。
+- 返回缺项本身可能是模型对不完整输入的合理判断，不能为了通过验收而忽略缺项或伪造关卡。
+- 本轮没有把原始 `llm_calls` 或 `gates` 改写为成功。
+
+因此真实模型验收只能写为：
+
+> **部分验证：真实模型整理返回 needs_input；真实模型任务分解、PLAN、实际调度和真实业务产品验收尚未完成。**
+
+| 能力 | 当前真实模型证据 |
+| --- | --- |
+| 外部文档整理与字段/质量检查 | 已完成一次实际整理，结果为 `needs_input`；不等于完整入口验收 |
+| DESIGN 确认 | 未验收，原始记录未进入该关卡 |
+| PM 对设计规格的业务理解与任务分解 | 未验收 |
+| PLAN 关卡与依赖物化 | 未验收 |
+| 真实模型驱动的实际工具执行 | 未验收 |
+| 示例业务产品已开发并验收 | 否，不得作此声明 |
+
+## 4. 两产品与业务变更测试的准确含义
+
+“健康监测 + 用药提醒”和“高校社团报名与活动管理”测试使用不同的**预置 scripted 分解结果**。
+
+它们验证：
+
+- 不同预置任务内容能保留各自业务来源和依赖；
+- `管理员逐条审核 → 满足条件后自动通过` 的预置任务内容在下游计划中发生变化；
+- 涉及需求源、描述、写集和验收来源的任务内容没有被固定模板替代。
+
+它们不证明真实模型已经理解两种产品、识别业务变更或生成可验收的业务系统；系统也没有据此真实开发并验收示例产品。
+
+## 5. 页面控制与状态映射
+
+| 控制 | 调用 | 状态来源 | 主要测试 |
+| --- | --- | --- | --- |
+| 想法入口启动 | `POST /projects`、`POST /projects/{id}/runs` | `stage`、`status`、事件 | 后端 idea 回归、PR22 浏览器测试 |
+| 设计规格整理 | `POST /projects/{id}/design-runs` | `design_input_status`、`missing/errors/checks` | 导入后端测试、mock 与真实 HTTP 浏览器测试 |
+| DESIGN/PLAN 确认 | `POST /runs/{id}/gates/{gate_id}` | `gates[]`、`baseline_*`、`stage` | 重复/并发确认、真实 HTTP 页面闭环 |
+| 调度执行 | `POST /runs/{id}/schedule` | `tasks[].state`、运行事件 | 依赖、并发、重复调度、真实 HTTP 页面闭环 |
+| 暂停/恢复/终止 | `POST /runs/{id}/pause|resume|terminate` | `paused`、`status`、事件 | 后端控制与前端 control 测试 |
+| 重新连接 SSE | 新建同一运行的 SSE，并重新拉取历史及当前查询 | 连接状态与运行状态分离 | `useRunEvents` 单测 |
+| 验收 | `POST /runs/{id}/accept` | 集成回归与交付结果 | 后端验收测试 |
+
+任务阻塞文案：
+
+- 普通依赖未完成：`等待依赖：T-02`。
+- 失败/取消等依赖：`失败依赖阻塞：T-02（failed）`。
+- 合法重试成功后，`blocked_by/waiting_on` 和页面提示随刷新后的真实状态更新。
+
+## 6. 离线复现命令
+
+以下命令均不得发起真实模型请求；完整启动说明见 `frontend/tools/README.md`。
+
+```bash
+# 后端（uv 不在 PATH 时，可使用仓库已有虚拟环境）
+cd Test3/backend
 uv run pytest -q -m "not live"
-cd ../frontend && npm test
+
+# 前端
+cd Test3/frontend
+npx tsc --noEmit
+npm test
+npm run build
+
+# mock 浏览器交互
+UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
+  node scripts/verify-design-spec.cjs
+
+# 真实后端 + 真实前端 + scripted provider（需先按 README 启动两个服务）
+UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
+  node scripts/verify-design-spec-http.cjs
 ```
+
+`tests/prototype/test_dashscope_smoke.py` 整体标记为 `live`，其中会构造 `DashScopeProvider`；`-m "not live"` 用于排除它。其他测试仍须保持显式 scripted/fake provider。为避免自动读取本地 `.env`，全量后端验证应在不含 `.env` 的干净工作树执行。
+
+## 7. 当前验收边界
+
+- PR23 的离线流程和本轮三个交互修复可以继续接受代码审核。
+- mock 浏览器结果不能替代真实 HTTP 页面闭环；本轮已补齐后者。
+- scripted 离线执行成功不能替代真实模型任务分解和实际工具执行。
+- 真实模型能力仍需组长授权后另行验收，本轮不宣称通过。

@@ -75,6 +75,8 @@ async def run_command(
     if not command_allowed(cmd, whitelist, forbidden):
         raise CommandDenied(f"命令不在白名单: {cmd}")
     env = {k: os.environ[k] for k in env_allow if k in os.environ}
+    # 不把 __pycache__ 写进工作树：并发 merge 时 dirty 工作区会被误判成合并冲突。
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(cwd),

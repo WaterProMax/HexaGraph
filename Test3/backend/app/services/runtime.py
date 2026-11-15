@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -43,6 +44,7 @@ from app.orchestrator.states import can_transition
 from app.orchestrator.transition import apply_transition, restore_task_state
 from app.orchestrator.validator import judge_output
 from app.schemas.common import IdeaCheck, IdeaDraft
+from app.schemas.design_input import DesignIntake, DesignSource, SpecIntake
 from app.schemas.docs import (
     AcceptanceItem,
     AcceptanceReport,
@@ -56,6 +58,7 @@ from app.schemas.docs import (
     TaskGraph,
 )
 from app.settings import load_limits, load_models, load_profile, load_roles
+from app.services import design_input as design_input_service
 from app.stage.engine import StageEngine
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
@@ -132,6 +135,8 @@ class Workbench:
         self._loop_stop: asyncio.Event | None = None
         self.schedule_interval = 5.0
         self._merge_locks: dict[str, asyncio.Lock] = {}
+        self._gate_locks: dict[str, asyncio.Lock] = {}
+        self._schedule_locks: dict[str, asyncio.Lock] = {}
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -418,6 +423,20 @@ class Workbench:
             self._merge_locks[run.id] = lock
         return lock
 
+    def _gate_lock_for(self, run: RunState) -> asyncio.Lock:
+        lock = self._gate_locks.get(run.id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._gate_locks[run.id] = lock
+        return lock
+
+    def _schedule_lock_for(self, run: RunState) -> asyncio.Lock:
+        lock = self._schedule_locks.get(run.id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._schedule_locks[run.id] = lock
+        return lock
+
     @contextmanager
     def _usage_scope(self, run: RunState, task: dict[str, Any] | None = None):
         acc = {"tokens_in": 0, "tokens_out": 0}
@@ -450,6 +469,183 @@ class Workbench:
         run.artifacts["idea_raw"] = idea
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
+
+    def _provenance(self) -> dict[str, Any]:
+        """区分“计划/文档由谁生成”和“任务如何执行”，供页面与验收记录使用。"""
+        provider = type(self.gateway.provider).__name__
+        model = str(self.models.slots["flagship"].model)
+        if provider == "ScriptedProvider":
+            return {
+                "generation": "preset",
+                "generation_label": "预置测试输出（scripted）",
+                "execution": "simulated",
+                "execution_label": "模拟执行（预置工具调用）",
+                "provider": provider,
+            }
+        if provider == "ReplayProvider":
+            return {
+                "generation": "replay",
+                "generation_label": "回放输出（replay）",
+                "execution": "simulated",
+                "execution_label": "模拟执行（回放工具调用）",
+                "provider": provider,
+            }
+        return {
+            "generation": "model",
+            "generation_label": f"真实模型生成（{model}）",
+            "execution": "real_tool",
+            "execution_label": "真实工具执行（模型驱动）",
+            "provider": provider,
+            "model": model,
+        }
+
+    async def create_design_run(
+        self,
+        project_id: str,
+        text: str,
+        source: DesignSource,
+        title: str = "",
+    ) -> dict[str, Any]:
+        """从设计规格原文创建一次运行：整理 → 检查 → 停在 DESIGN 确认关卡。
+
+        不生成任务、不调度。校验失败时不写“已确认”的 SPEC/DESIGN，也不建关卡。
+        """
+        errors = design_input_service.validate_input(text)
+        if errors:
+            raise ValidationFailed("；".join(errors))
+        meta = design_input_service.measure_input(text, source)
+        budget_error = design_input_service.model_budget_error(meta)
+        rid = str(uuid.uuid4())
+        run = RunState(
+            id=rid,
+            project_id=project_id,
+            idea=title or source.name or "设计规格导入",
+            limits=copy.deepcopy(self.limits),
+        )
+        self.runs[rid] = run
+        # 整理期间只标记当前阶段；SPEC 的历史推进必须等导入和检查成功。
+        run.engine.current = "5"
+        run.artifacts["design_input"] = {
+            "title": title,
+            "source": source.model_dump(),
+            "bytes": meta.bytes,
+            "chars": meta.chars,
+            "sha256": meta.sha256,
+            "text": text,
+        }
+        run.artifacts["provenance"] = self._provenance()
+        run.artifacts["design_input_status"] = "importing"
+        folder = self.data_dir / "runs" / run.id
+        _atomic_write(folder / "design-input.txt", text)
+        _atomic_write(
+            folder / "design-input.json",
+            json.dumps(
+                {
+                    "title": title,
+                    "source": source.model_dump(),
+                    "bytes": meta.bytes,
+                    "chars": meta.chars,
+                    "sha256": meta.sha256,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        self.emit(
+            run,
+            "design_input.received",
+            "",
+            {"source": source.model_dump(), "chars": meta.chars, "bytes": meta.bytes, "sha256": meta.sha256},
+            "owner",
+        )
+
+        def result(status: str, **extra: Any) -> dict[str, Any]:
+            run.artifacts["design_input_status"] = status
+            return {
+                "run_id": run.id,
+                "project_id": project_id,
+                "status": status,
+                "input": meta.model_dump(),
+                "spec": run.artifacts.get("spec"),
+                "design": run.artifacts.get("design"),
+                "missing": list(run.artifacts.get("design_input_missing") or []),
+                "errors": list(run.artifacts.get("design_input_errors") or []),
+                "checks": run.artifacts.get("design_input_checks") or {},
+                "gate": extra.get("gate"),
+                "provenance": run.artifacts.get("provenance") or {},
+                "message": extra.get("message", ""),
+            }
+
+        if budget_error:
+            run.status = "stopped"
+            run.artifacts["design_input_errors"] = [budget_error]
+            self.emit(run, "design_input.rejected", "", {"reason": budget_error}, "system")
+            return result("needs_split", message=budget_error)
+
+        try:
+            with self._usage_scope(run):
+                spec_intake = await design_input_service.intake_spec(
+                    text, title, source, meta, gateway=self.gateway, registry=self.registry
+                )
+                design_intake = await design_input_service.intake_design(
+                    text, title, source, meta, spec_intake, gateway=self.gateway, registry=self.registry
+                )
+        except Exception as exc:  # noqa: BLE001
+            message = f"设计规格整理失败: {exc}"
+            run.status = "stopped"
+            run.artifacts["design_input_errors"] = [message]
+            self.emit(run, "design_input.rejected", "", {"reason": message}, "system")
+            return result("failed", message=message)
+
+        run.artifacts["spec"] = spec_intake.spec.model_dump()
+        run.artifacts["design"] = design_intake.design.model_dump()
+        run.artifacts.setdefault("issues", [])
+        missing = design_input_service.merge_missing(spec_intake.missing, design_intake.missing)
+        checks = design_input_service.cross_checks(
+            spec_intake,
+            design_intake,
+            max_modules=int((run.limits.get("design") or {}).get("max_modules") or 10),
+        )
+        run.artifacts["design_input_missing"] = missing
+        run.artifacts["design_input_checks"] = checks
+        run.artifacts["design_input_notes"] = {
+            "spec": spec_intake.notes,
+            "design": design_intake.notes,
+            "section_map": spec_intake.section_map + design_intake.section_map,
+        }
+        flat_errors = [f"SPEC: {e}" for e in checks["spec"]] + [f"DESIGN: {e}" for e in checks["design"]]
+        run.artifacts["design_input_errors"] = flat_errors
+
+        if missing or flat_errors:
+            run.status = "stopped"
+            message = "设计规格缺少必要内容，未进入任务分解" if missing else "设计规格未通过结构检查，未进入任务分解"
+            self.emit(
+                run,
+                "design_input.needs_input",
+                "",
+                {"missing": missing, "errors": flat_errors},
+                "system",
+            )
+            return result("needs_input", message=message)
+
+        # 外部文档整理成功后直接进入设计阶段，不走讨论/评审。
+        run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
+        gate = self._gate(
+            run,
+            "DESIGN基线确认",
+            {
+                "design": run.artifacts["design"],
+                "spec": run.artifacts["spec"],
+                "reviews": [],
+                "imported": True,
+                "source": run.artifacts["design_input"].get("source"),
+                "title": title,
+                "missing": [],
+                "provenance": run.artifacts["provenance"],
+            },
+        )
+        self.emit(run, "design_input.accepted", "", {"sha256": meta.sha256}, "system")
+        return result("awaiting_confirmation", gate=gate["gate"], message="设计规格已整理，等待确认")
 
     def patch_limits(self, run: RunState, body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
         before = copy.deepcopy(run.limits)
@@ -568,6 +764,20 @@ class Workbench:
         actor: str = "owner",
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
+        # 同一运行的关卡裁决串行化：并发重复点击只会有一条进入分支，
+        # 后到者看到 gate 已裁决而返回 400，不会重复生成计划/任务。
+        async with self._gate_lock_for(run):
+            return await self._resolve_gate_locked(run, gate_id, decision, payload, actor, expected_revision)
+
+    async def _resolve_gate_locked(
+        self,
+        run: RunState,
+        gate_id: str,
+        decision: str,
+        payload: dict[str, Any],
+        actor: str = "owner",
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
         gate = next(g for g in run.gates if g["id"] == gate_id)
         if gate["status"] != "pending":
             raise ValidationFailed("关卡已裁决，不能重复推进")
@@ -614,9 +824,20 @@ class Workbench:
             return await self.run_design(run)
         if kind == "DESIGN基线确认":
             if decision != "approve":
+                if run.artifacts.get("design_input"):
+                    run.status = "stopped"
+                    run.pending_human = False
+                    self.emit(run, "design_input.rejected", gate_id, {"reason": payload.get("reason") or "人工驳回"})
+                    return {
+                        "status": "rejected",
+                        "stage": run.engine.current,
+                        "hint": "请修改设计规格原文后重新创建运行；导入运行不做原地改写。",
+                    }
                 run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_design(run)
             self._freeze(run, "DESIGN")
+            if run.artifacts.get("design_input"):
+                run.artifacts["design_input_status"] = "design_confirmed"
             run.engine.apply("design_confirmed")
             return await self.run_plan(run)
         if kind == "PLAN基线确认":
@@ -624,6 +845,8 @@ class Workbench:
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
             self._freeze(run, "PLAN")
+            if run.artifacts.get("design_input"):
+                run.artifacts["design_input_status"] = "plan_confirmed"
             run.engine.apply("plan_confirmed")
             self._materialize_tasks(run)
             return {"status": "executing", "stage": run.engine.current}
@@ -947,6 +1170,14 @@ class Workbench:
 
     def _materialize_tasks(self, run: RunState) -> None:
         graph = TaskGraph.model_validate(run.artifacts["plan"])
+        fingerprint = hashlib.sha256(
+            json.dumps(graph.model_dump(), sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        if run.artifacts.get("plan_materialized") == fingerprint and run.tasks:
+            # 同一版本计划重复确认时只刷新就绪状态，不重建任务、不重置进度。
+            self._refresh_ready(run)
+            return
+        run.artifacts["plan_materialized"] = fingerprint
         for task in graph.tasks:
             existing = run.tasks.get(task.code)
             if existing and existing["state"] == "done":
@@ -973,11 +1204,28 @@ class Workbench:
 
     def _refresh_ready(self, run: RunState) -> None:
         states = {code: t["state"] for code, t in run.tasks.items()}
+        failed_deps = {"failed", "cancelled", "needs_human"}
         for code, task in run.tasks.items():
-            if task["state"] != "pending":
+            was_dependency_blocked = bool(task.get("blocked_by"))
+            if task["state"] != "pending" and not (task["state"] == "blocked" and was_dependency_blocked):
                 continue
-            deps = task["card"]["depends_on"]
-            if all(states.get(d) == "done" or (states.get(d) == "skipped" and d in run.skip_continue) for d in deps):
+            deps = list(task["card"]["depends_on"])
+            blocked_by = [d for d in deps if states.get(d) in failed_deps]
+            waiting_on = [
+                d
+                for d in deps
+                if d not in blocked_by
+                and not (states.get(d) == "done" or (states.get(d) == "skipped" and d in run.skip_continue))
+            ]
+            task["blocked_by"] = blocked_by
+            task["waiting_on"] = waiting_on
+            if blocked_by:
+                if task["state"] == "pending":
+                    self._set_state(run, task, "upstream_bad")
+                continue
+            if task["state"] == "blocked":
+                self._set_state(run, task, "upstream_ok")
+            if not waiting_on:
                 self._set_state(run, task, "deps_met")
 
     def _task_over_budget(self, run: RunState, task: dict[str, Any]) -> bool:
@@ -986,7 +1234,14 @@ class Workbench:
         return int(task.get("tokens_used") or 0) >= limit
 
     async def schedule_once(self, run: RunState) -> list[str]:
+        # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
+        async with self._schedule_lock_for(run):
+            return await self._schedule_once_locked(run)
+
+    async def _schedule_once_locked(self, run: RunState) -> list[str]:
         if run.paused:
+            return []
+        if run.status in {"done", "terminated"}:
             return []
         for task in run.tasks.values():
             if task["state"] == "stale" and not task.get("paused"):
@@ -1036,6 +1291,9 @@ class Workbench:
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
+        if run.status == "terminated":
+            self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
+            return {"state": task["state"], "kind": "已终止"}
         if task.get("locked_by") and not task.get("takeover_submit"):
             return {"state": task["state"], "kind": "locked"}
         task["revision"] = int(task.get("revision") or 1) + 1
@@ -1099,6 +1357,9 @@ class Workbench:
                     return await self._finish_failure(run, task, card, kind, str(exc), fields)
             if isinstance(result, dict) and result.get("done") is False:
                 return await self._finish_failure(run, task, card, "代码缺陷", result.get("summary") or "max tool steps", {"exit_code": 1})
+            if run.status == "terminated":
+                self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
+                return {"state": task["state"], "kind": "已终止"}
             return await self._accept_review_merge(run, code, wt, list(tools.written))
 
     async def _accept_review_merge(
@@ -1110,6 +1371,9 @@ class Workbench:
     ) -> dict[str, Any]:
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
+        if run.status == "terminated":
+            self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
+            return {"state": task["state"], "kind": "已终止"}
         repo = self.data_dir / "runs" / run.id / "repo"
         if not card.acceptance:
             return await self._finish_failure(run, task, card, "任务描述问题", "验收命令为空", {"exit_code": 1})
@@ -1295,6 +1559,9 @@ class Workbench:
         output: str,
         fields: dict[str, Any],
     ) -> dict[str, Any]:
+        if run.status == "terminated":
+            self.emit(run, "task.late_result_ignored", str(task.get("code") or ""), {"reason": "run terminated"}, "system")
+            return {"state": task["state"], "kind": "已终止"}
         sig = failure_signature(output or kind)
         if task["signatures"] and task["signatures"][-1] == sig:
             kind = "任务描述问题"
@@ -1973,6 +2240,8 @@ class Workbench:
         return self._gate(run, "文档检查失败", payload)
 
     def _maybe_tasks_complete(self, run: RunState) -> None:
+        if run.status == "terminated":
+            return
         if run.engine.current != "7" or not run.tasks:
             return
         if all(task["state"] in {"done", "skipped", "cancelled"} for task in run.tasks.values()):

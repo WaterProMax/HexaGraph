@@ -9,11 +9,12 @@ from pydantic import BaseModel, ValidationError
 from app.errors import AgentOutputError
 from app.llm.gateway import Gateway
 from app.schemas import common as common_schemas
+from app.schemas import design_input as design_input_schemas
 from app.schemas import docs as doc_schemas
 from app.settings import ROOT, RolesFile
 
 SCHEMA_MAP: dict[str, type[BaseModel]] = {}
-for module in (doc_schemas, common_schemas):
+for module in (doc_schemas, common_schemas, design_input_schemas):
     for name in dir(module):
         obj = getattr(module, name)
         if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
