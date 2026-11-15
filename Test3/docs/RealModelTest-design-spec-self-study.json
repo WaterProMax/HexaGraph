@@ -1,9 +1,23 @@
 {
-  "status": "failed",
-  "message": "设计规格整理失败: llm failed for slot flagship: Using SOCKS proxy, but the 'socksio' package is not installed. Make sure to install httpx using `pip install httpx[socks]`.",
-  "missing": [],
+  "status": "needs_input",
+  "message": "设计规格缺少必要内容，未进入任务分解",
+  "missing": [
+    "C4 开放时段维护缺少明确输入、输出和字段约束，原文仅说明 M4 提供、管理端调用。",
+    "C4 的调用方原文为“管理端”，但模块划分中未定义独立管理端模块，因此 consumers 无法指向已定义模块。",
+    "F4 我的预约缺少明确接口契约；原文仅说明模块职责与验收条件，未提供查询本人预约列表的接口。",
+    "登录态、学生身份与管理员鉴权实现未明确；F3、F4、F5 依赖当前登录学生或管理员角色。",
+    "接口字段的数据类型与必填性原文未完全明确；当前仅按原文列出字段，未新增字段。",
+    "未提供明确降级、故障、超限或失败预案，contingencies 为空。",
+    "并发冲突控制的具体实现机制未明确；原文只给出并发结果与唯一有效预约规则。",
+    "预约记录每日备份与保留 90 天的责任模块和技术机制未明确。",
+    "管理员“处理异常占用”仅出现在用户场景，未形成明确功能、接口或模块职责。"
+  ],
   "errors": [
-    "设计规格整理失败: llm failed for slot flagship: Using SOCKS proxy, but the 'socksio' package is not installed. Make sure to install httpx using `pip install httpx[socks]`."
+    "SPEC: F2 字段不齐全",
+    "SPEC: F3 字段不齐全",
+    "SPEC: F4 字段不齐全",
+    "SPEC: F5 字段不齐全",
+    "DESIGN: 接口缺少调用方: C4"
   ],
   "provenance": {
     "generation": "model",
@@ -13,12 +27,33 @@
     "provider": "DashScopeProvider",
     "model": "qwen3.8-max-0902"
   },
-  "feature_codes": [],
-  "feature_titles": [],
-  "module_codes": [],
-  "module_names": [],
+  "feature_codes": [
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5"
+  ],
+  "feature_titles": [
+    "查询可预约座位",
+    "创建预约",
+    "取消预约",
+    "我的预约",
+    "开放时段配置"
+  ],
+  "module_codes": [
+    "M1",
+    "M2",
+    "M3",
+    "M4"
+  ],
+  "module_names": [
+    "座位与时隙目录",
+    "预约服务",
+    "学生端页面",
+    "管理配置"
+  ],
   "has_gate": false,
   "gate_kind": null,
-  "run_id": "e3e3b1c5-f457-4ac4-8b6f-3109f703caf2",
   "generation": "model"
 }

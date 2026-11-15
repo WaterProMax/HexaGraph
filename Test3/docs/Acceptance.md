@@ -5,7 +5,7 @@
 | # | 标准 | 本轮 |
 |---|---|---|
 | 1 | P00–P17 验收项全过，`make lint` / `make test` / `make e2e` 成功 | `pytest -m "not live"`：**138 passed**。`make lint` 的 format/mypy 仍被 `\|\| true` 忽略 |
-| 2 | replay 走通 E1–E10；真实联调至少一次且有记录 | 设计规格真实模型探测有记录（`RealModelTest-design-spec-self-study.json`），因本机 SOCKS 代理失败；**未**声称分解成功。无 E1–E10 replay |
+| 2 | replay 走通 E1–E10；真实联调至少一次且有记录 | 设计规格真实模型探测有记录（`RealModelTest-design-spec-self-study.json`）：整理成功但 `needs_input`，未进 PLAN；**未**声称分解成功。无 E1–E10 replay |
 | 3a | 讨论规则以第 11 章为金标准 | 通过（既有单测） |
 | 3b | 评审通过与分流 | 通过（既有） |
 | 3c | 任务图检查 | 通过；本轮补空图/重复编号/自依赖 |
@@ -32,7 +32,7 @@
 | A/B/C/D 依赖与暂停/终止/去重调度 | 通过（`test_schedule_dependencies`） |
 | 审核→自动通过变更比较业务内容 | 通过（`test_design_input_change`） |
 | 浏览器：闭环 + 缺项/生成失败/任务失败 | 通过（mock API） |
-| 真实模型根据输入生成任务 | **未通过**（代理错误已暴露；见 Progress） |
+| 真实模型根据输入整理 SPEC/DESIGN | 通过（`generation=model`，F1–F5/M1–M4）；因缺项未进 PLAN，任务分解未跑 |
 
 ## 本轮绑定命令
 

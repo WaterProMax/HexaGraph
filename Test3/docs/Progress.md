@@ -42,13 +42,15 @@ PASS no browser runtime errors
 
 ### 真实模型探测
 
-环境有 `DASHSCOPE_API_KEY`。一次 `create_design_run(self-study-room.md)`：
+环境有 `DASHSCOPE_API_KEY`。对 `examples/design-specs/self-study-room.md` 调用 `create_design_run`（`qwen3.8-max-0902`）：
 
-- `provenance.generation=model`，模型 `qwen3.8-max-0902`
-- 结果 `status=failed`，错误暴露为 SOCKS 代理缺少 `socksio`（本机代理环境问题）
-- **没有**回退成 preset 任务图后显示“生成成功”
-- 记录：`docs/RealModelTest-design-spec-self-study.json`
-- 取消代理后的重试长时间无响应已中止；**不声称真实分解已成功**
+1. 首次：本机 SOCKS 代理导致 `status=failed`（缺 `socksio`），错误直接返回，未静默回退 preset  
+2. 取消代理后重试成功走到模型整理：`status=needs_input`，`generation=model`  
+   - 产出功能 F1–F5、模块 M1–M4（标题与自习室预约相关，非社团案例）  
+   - 因缺项与 SPEC/DESIGN 检查未通过，**未建 DESIGN 关卡、未进入任务分解**  
+   - 记录：`docs/RealModelTest-design-spec-self-study.json`  
+
+结论：可证明「模型确实根据输入做了整理」；因停在缺项，**不声称**已完成真实模型任务分解与调度。
 
 ### 示例输入与变更
 
