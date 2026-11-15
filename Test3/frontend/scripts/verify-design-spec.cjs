@@ -286,7 +286,7 @@ async function main() {
   await page.getByRole('textbox', { name: '设计规格原文' }).fill('目标：学生查看空位。');
   await page.getByRole('button', { name: '整理并检查', exact: true }).click();
   await page.waitForURL('**/workstation/run-missing');
-  await page.getByText('缺少必要内容', { exact: false }).waitFor();
+  await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor();
   assert.equal(await page.getByRole('heading', { name: 'DESIGN基线确认', exact: true }).count(), 0);
   await page.screenshot({ path: path.join(out, 'design-spec-missing.png') });
   console.log('PASS missing input stops before planning');

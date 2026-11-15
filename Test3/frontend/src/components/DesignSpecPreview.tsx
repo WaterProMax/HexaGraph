@@ -5,6 +5,15 @@ interface Props {
   result: any;
 }
 
+const IMPORT_STATUS: Record<string, { type: "info" | "warning" | "error"; message: string }> = {
+  needs_input: { type: "warning", message: "缺少必要内容，未进入 DESIGN 确认或任务分解" },
+  needs_split: { type: "warning", message: "输入需要拆分，未进入 DESIGN 确认或任务分解" },
+  failed: { type: "error", message: "整理失败，未进入 DESIGN 确认或任务分解" },
+  awaiting_confirmation: { type: "info", message: "整理完成，等待 DESIGN 确认；尚未进入任务分解或调度" },
+  design_confirmed: { type: "info", message: "DESIGN 已确认，等待 PLAN 确认；尚未进入调度" },
+  plan_confirmed: { type: "info", message: "PLAN 已确认，任务已建立；调度状态以任务列表为准" },
+};
+
 export default function DesignSpecPreview({ artifacts, result }: Props) {
   const spec = result?.spec ?? artifacts?.spec;
   const design = result?.design ?? artifacts?.design;
@@ -13,6 +22,7 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
   const input = result?.input ?? artifacts?.design_input;
   const provenance = result?.provenance ?? artifacts?.provenance;
   const checks = result?.checks ?? artifacts?.design_input_checks;
+  const importStatus = IMPORT_STATUS[result?.status ?? artifacts?.design_input_status];
 
   return (
     <section className="glass-panel" style={{ padding: 14 }} data-testid="design-spec-preview">
@@ -20,6 +30,16 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
         <span>设计规格整理</span>
         {provenance?.generation_label && <span className="hint">{provenance.generation_label}</span>}
       </div>
+
+      {importStatus && (
+        <Alert
+          data-testid="design-import-status"
+          style={{ marginBottom: 10 }}
+          type={importStatus.type}
+          showIcon
+          message={importStatus.message}
+        />
+      )}
 
       {input && (
         <div className="kv" style={{ marginBottom: 10 }}>

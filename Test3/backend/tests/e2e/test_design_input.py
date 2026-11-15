@@ -135,6 +135,8 @@ async def test_design_input_creates_confirmable_docs_without_tasks(tmp_path) -> 
     assert result["gate"]["kind"] == "DESIGN基线确认"
     run = bench.runs[result["run_id"]]
     assert run.engine.current == "5"
+    assert run.artifacts["design_input_status"] == "awaiting_confirmation"
+    assert run.engine.history == [{"from": "4", "event": "spec_confirmed", "to": "5"}]
     assert run.artifacts["spec"]["features"][0]["code"] == "F1"
     assert run.artifacts["design"]["modules"][0]["code"] == "M1"
     assert run.tasks == {}
@@ -156,6 +158,26 @@ async def test_design_input_missing_stops_before_planning(tmp_path) -> None:
     assert run.gates == []
     assert run.tasks == {}
     assert run.status == "stopped"
+    assert run.artifacts["design_input_status"] == "needs_input"
+    assert run.engine.history == []
+    restored = bench._deserialize_run(bench._serialize_run(run))
+    assert restored.artifacts["design_input_status"] == "needs_input"
+    assert restored.engine.history == []
+    assert restored.gates == []
+
+
+@pytest.mark.asyncio
+async def test_design_input_needs_split_does_not_confirm_spec_or_design(tmp_path) -> None:
+    bench, provider = _bench(tmp_path, _intake())
+    project = bench.create_project("p")
+    result = await bench.create_design_run(project["id"], "目标：" + "长" * 24_000, DesignSource())
+    assert result["status"] == "needs_split"
+    run = bench.runs[result["run_id"]]
+    assert run.artifacts["design_input_status"] == "needs_split"
+    assert run.engine.history == []
+    assert run.gates == []
+    assert run.tasks == {}
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio
@@ -166,6 +188,8 @@ async def test_design_input_invalid_model_output_leaves_no_confirmed_artifacts(t
     assert result["status"] == "failed"
     run = bench.runs[result["run_id"]]
     assert run.gates == []
+    assert run.artifacts["design_input_status"] == "failed"
+    assert run.engine.history == []
     assert "spec" not in run.artifacts
     assert "design" not in run.artifacts
     assert "baseline_DESIGN" not in run.artifacts
@@ -210,6 +234,7 @@ async def test_design_gate_confirm_is_idempotent_and_reaches_plan(tmp_path) -> N
 
     planned = await bench.resolve_gate(run, gate_id, "approve", {})
     assert planned["gate"]["kind"] == "PLAN基线确认"
+    assert run.artifacts["design_input_status"] == "design_confirmed"
     assert run.tasks == {}
     with pytest.raises(ValidationFailed):
         await bench.resolve_gate(run, gate_id, "approve", {})
@@ -217,6 +242,7 @@ async def test_design_gate_confirm_is_idempotent_and_reaches_plan(tmp_path) -> N
     plan_gate = planned["gate"]["id"]
     executing = await bench.resolve_gate(run, plan_gate, "approve", {})
     assert executing["status"] == "executing"
+    assert run.artifacts["design_input_status"] == "plan_confirmed"
     assert set(run.tasks) == {"T-01", "T-02"}
     assert run.tasks["T-02"]["state"] == "pending"
     with pytest.raises(ValidationFailed):

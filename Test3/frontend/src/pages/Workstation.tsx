@@ -28,6 +28,7 @@ import DesignSpecInput from "../components/DesignSpecInput";
 import DesignSpecPreview from "../components/DesignSpecPreview";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
+import { taskWaitReason } from "../taskWaitReason";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
 
@@ -236,8 +237,6 @@ export default function Workstation() {
     refetchInterval: 4000,
   });
 
-  const { events, connection: eventConnection, connectionError: eventConnectionError } = useRunEvents(activeRunId);
-
   const refreshAll = () => {
     qc.invalidateQueries({ queryKey: ["runs"] });
     if (activeRunId) {
@@ -247,6 +246,13 @@ export default function Workstation() {
       qc.invalidateQueries({ queryKey: ["budget", activeRunId] });
     }
   };
+
+  const {
+    events,
+    connection: eventConnection,
+    connectionError: eventConnectionError,
+    reconnect: reconnectEvents,
+  } = useRunEvents(activeRunId, refreshAll);
 
   const startRunMut = useMutation({
     mutationFn: async (opts: { autoToExec?: boolean }) => {
@@ -390,6 +396,10 @@ export default function Workstation() {
     const hasDesign = Boolean(artifacts?.design);
     const hasPlan = Boolean(artifacts?.plan);
     const skipDiscussion = Boolean(isDesignRun || artifacts?.design_input);
+    const designImportStatus = artifacts?.design_input_status;
+    const designImportStopped = Boolean(
+      isDesignRun && ["needs_input", "needs_split", "failed"].includes(designImportStatus),
+    );
 
     const p1Items: PhaseTaskItem[] = [
       {
@@ -449,14 +459,22 @@ export default function Workstation() {
           : "spec_writer / check_spec",
         status: !run
           ? "pending"
-          : stageNum >= 5
+          : designImportStopped
+          ? "error"
+          : stageNum >= 5 && hasSpec
           ? "completed"
           : hasSpec
           ? pendingGate?.kind === "SPEC基线确认"
             ? "error"
             : "in_progress"
           : "pending",
-        rawState: artifacts?.baseline_SPEC ? `v${artifacts.baseline_SPEC}` : hasSpec ? "await_gate" : "pending",
+        rawState: designImportStopped
+          ? designImportStatus
+          : artifacts?.baseline_SPEC
+          ? `v${artifacts.baseline_SPEC}`
+          : hasSpec
+          ? "await_gate"
+          : "pending",
         phaseKey: "phase1",
         dependsOn: skipDiscussion ? [] : ["S-DISC"],
         kind: "spec",
@@ -470,11 +488,15 @@ export default function Workstation() {
         id: "S-DESIGN",
         code: "DESIGN",
         title: "架构与设计规格",
-        subtitle: hasDesign
+        subtitle: designImportStopped
+          ? "导入未完成，未形成待确认设计"
+          : hasDesign
           ? `模块 ${designModules.length} 个 · 接口 ${(artifacts?.design?.interfaces || []).length} 个`
           : "architect + 双评审背靠背打分",
         status: !run
           ? "pending"
+          : designImportStopped
+          ? "error"
           : stageNum >= 6
           ? "completed"
           : stageNum === 5 || hasDesign
@@ -482,7 +504,13 @@ export default function Workstation() {
             ? "error"
             : "in_progress"
           : "pending",
-        rawState: artifacts?.baseline_DESIGN ? `v${artifacts.baseline_DESIGN}` : hasDesign ? "await_gate" : "pending",
+        rawState: designImportStopped
+          ? designImportStatus
+          : artifacts?.baseline_DESIGN
+          ? `v${artifacts.baseline_DESIGN}`
+          : hasDesign
+          ? "await_gate"
+          : "pending",
         phaseKey: "phase2",
         dependsOn: ["S-SPEC"],
         kind: "design",
@@ -493,8 +521,8 @@ export default function Workstation() {
         code: m.code,
         title: m.name,
         subtitle: m.responsibility || `追溯 ${(m.sources || []).join(", ") || "-"}`,
-        status: (stageNum >= 6 ? "completed" : "in_progress") as ItemStatus,
-        rawState: stageNum >= 6 ? "frozen" : "draft",
+        status: (designImportStopped ? "error" : stageNum >= 6 ? "completed" : "in_progress") as ItemStatus,
+        rawState: designImportStopped ? designImportStatus : stageNum >= 6 ? "frozen" : "draft",
         phaseKey: "phase2",
         dependsOn: ["S-DESIGN"],
         kind: "design" as const,
@@ -687,21 +715,10 @@ export default function Workstation() {
 
   const selectedRuntime = selectedItem?.kind === "task" ? taskByCode.get(selectedItem.code) : undefined;
 
-  const selectedWaitReason = useMemo(() => {
-    if (!selectedRuntime) return "";
-    const state = selectedRuntime.state;
-    if (state === "ready" || state === "stale") return "依赖已满足，等待调度";
-    if (state === "pending") {
-      const unmet = (selectedItem?.dependsOn || []).filter(
-        (code: string) => (taskByCode.get(code)?.state ?? "pending") !== "done",
-      );
-      return unmet.length ? `等待依赖：${unmet.join("、")}` : "依赖已满足，等待调度";
-    }
-    if (state === "blocked" || state === "failed") {
-      return selectedRuntime.last_error || "上游未完成，已阻塞";
-    }
-    return "";
-  }, [selectedRuntime, selectedItem, taskByCode]);
+  const selectedWaitReason = useMemo(
+    () => taskWaitReason(selectedRuntime, selectedItem || { dependsOn: [] }, taskByCode),
+    [selectedRuntime, selectedItem, taskByCode],
+  );
 
   const isTaskSelected = selectedItem?.kind === "task" && selectedItem.detail?.revision !== undefined;
   const budgetUsed = budget?.used ?? 0;
@@ -1268,7 +1285,14 @@ export default function Workstation() {
                           showIcon
                           data-testid="events-connection-error"
                           message={eventConnectionError || "事件连接已断开"}
-                          description="实时推送已中断，请刷新页面后重试；下方仅为断开前已收到的事件。"
+                          description={
+                            <div>
+                              <div>实时推送已中断，下方仅为断开前已收到的事件；恢复不代表任务成功。</div>
+                              <Button size="small" icon={<ReloadOutlined />} onClick={reconnectEvents}>
+                                重新连接
+                              </Button>
+                            </div>
+                          }
                         />
                       )}
                       {eventConnection === "connecting" && activeRunId && (

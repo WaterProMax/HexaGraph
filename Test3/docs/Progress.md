@@ -1,5 +1,21 @@
 # Test3 阶段记录
 
+## 2026-11-15 设计规格工作流修复与证据口径校正
+
+- 本轮修复分支：`fix/design-spec-workflow-validation`，基于 PR23 head `87a23cdf6606430b135725f186637726f4accb2f`。
+- Acceptance 已分开记录 mock 浏览器、scripted＋真实 HTTP、真实模型＋实际工具执行三类证据。以下历史条目只表示当时执行记录，不代表当前真实模型能力验收。
+- 原始 `RealModelTest-design-spec-self-study.json` 保持不改：真实模型整理返回 `needs_input`，停在阶段 5；真实 PM 分解、PLAN 和调度仍未验收。
+- 两产品及“管理员审核→自动通过”只验证预置不同分解结果的下游处理，不证明真实模型理解业务变更，也不证明示例业务产品已开发验收。
+- 本轮新增真实 HTTP 页面闭环已实际通过：页面完成 DESIGN/PLAN 确认与调度，T-01/T-02 到达 `done`，刷新读取一致；缺项路径无关卡、无任务且刷新一致。
+- 本轮离线复测（修复分支工作树，未调用真实模型）：
+  - 后端 `pytest -q -m "not live"`：**139 passed, 1 deselected**
+  - 前端 `npx tsc --noEmit`、`npm test`（11 passed）、`npm run build` 通过
+  - mock 浏览器 `verify-design-spec.cjs` 与真实 HTTP `verify-design-spec-http.cjs` 均通过（HTTP 成功 run `0c4557c9-…`，缺项 run `065efe6b-…`）
+  - 合成版本（teamwork-001 + 本修复 + PR22）结果见最终提交报告
+- 没有运行付费真实模型，没有伪造 DESIGN/PLAN 或真实调用记录。
+
+---
+
 证据只记本轮实际跑过的命令。未跑的项标「未跑」。
 
 ## 设计规格工作流（本轮）

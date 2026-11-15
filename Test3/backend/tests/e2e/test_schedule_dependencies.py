@@ -106,14 +106,29 @@ async def test_downstream_does_not_start_before_dependency(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_b_failure_blocks_d_but_does_not_cancel_c(tmp_path: Path) -> None:
-    bench, run = _dag(tmp_path, _ByTaskProvider({}))
+    bench, run = _dag(tmp_path, _ByTaskProvider({"C": _queue("C", "tests/test_c.py")}))
+    _seed_repo(bench, run)
     run.tasks["A"]["state"] = "done"
-    run.tasks["C"]["state"] = "done"
     run.tasks["B"]["state"] = "failed"
     bench._refresh_ready(run)
-    assert _states(run)["D"] == "pending"
-    assert await bench.schedule_once(run) == []
+    assert _states(run)["C"] == "ready"
+    assert _states(run)["D"] == "blocked"
+    assert run.tasks["D"]["blocked_by"] == ["B"]
+    assert run.tasks["D"]["waiting_on"] == ["C"]
+
+    # 无关失败不取消 C；C 完成后仍只因 B 的失败而阻塞 D。
+    assert await bench.schedule_once(run) == ["C"]
     assert run.tasks["C"]["state"] == "done"
+    assert run.tasks["D"]["state"] == "blocked"
+    assert run.tasks["D"]["blocked_by"] == ["B"]
+    assert run.tasks["D"]["waiting_on"] == []
+
+    # 模拟合法重试成功后的真实状态，D 必须重新就绪。
+    run.tasks["B"]["state"] = "done"
+    bench._refresh_ready(run)
+    assert run.tasks["D"]["state"] == "ready"
+    assert run.tasks["D"]["blocked_by"] == []
+    assert run.tasks["D"]["waiting_on"] == []
 
 
 @pytest.mark.asyncio

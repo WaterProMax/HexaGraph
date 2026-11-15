@@ -523,8 +523,7 @@ class Workbench:
             limits=copy.deepcopy(self.limits),
         )
         self.runs[rid] = run
-        # 外部文档直接进入设计阶段；SPEC 由同一份文档整理得到，不走讨论/评审。
-        run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
+        # 整理期间只标记当前阶段；SPEC 的历史推进必须等导入和检查成功。
         run.engine.current = "5"
         run.artifacts["design_input"] = {
             "title": title,
@@ -535,6 +534,7 @@ class Workbench:
             "text": text,
         }
         run.artifacts["provenance"] = self._provenance()
+        run.artifacts["design_input_status"] = "importing"
         folder = self.data_dir / "runs" / run.id
         _atomic_write(folder / "design-input.txt", text)
         _atomic_write(
@@ -560,6 +560,7 @@ class Workbench:
         )
 
         def result(status: str, **extra: Any) -> dict[str, Any]:
+            run.artifacts["design_input_status"] = status
             return {
                 "run_id": run.id,
                 "project_id": project_id,
@@ -627,6 +628,8 @@ class Workbench:
             )
             return result("needs_input", message=message)
 
+        # 外部文档整理成功后直接进入设计阶段，不走讨论/评审。
+        run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
         gate = self._gate(
             run,
             "DESIGN基线确认",
@@ -833,6 +836,8 @@ class Workbench:
                 run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_design(run)
             self._freeze(run, "DESIGN")
+            if run.artifacts.get("design_input"):
+                run.artifacts["design_input_status"] = "design_confirmed"
             run.engine.apply("design_confirmed")
             return await self.run_plan(run)
         if kind == "PLAN基线确认":
@@ -840,6 +845,8 @@ class Workbench:
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
             self._freeze(run, "PLAN")
+            if run.artifacts.get("design_input"):
+                run.artifacts["design_input_status"] = "plan_confirmed"
             run.engine.apply("plan_confirmed")
             self._materialize_tasks(run)
             return {"status": "executing", "stage": run.engine.current}
@@ -1197,11 +1204,28 @@ class Workbench:
 
     def _refresh_ready(self, run: RunState) -> None:
         states = {code: t["state"] for code, t in run.tasks.items()}
+        failed_deps = {"failed", "cancelled", "needs_human"}
         for code, task in run.tasks.items():
-            if task["state"] != "pending":
+            was_dependency_blocked = bool(task.get("blocked_by"))
+            if task["state"] != "pending" and not (task["state"] == "blocked" and was_dependency_blocked):
                 continue
-            deps = task["card"]["depends_on"]
-            if all(states.get(d) == "done" or (states.get(d) == "skipped" and d in run.skip_continue) for d in deps):
+            deps = list(task["card"]["depends_on"])
+            blocked_by = [d for d in deps if states.get(d) in failed_deps]
+            waiting_on = [
+                d
+                for d in deps
+                if d not in blocked_by
+                and not (states.get(d) == "done" or (states.get(d) == "skipped" and d in run.skip_continue))
+            ]
+            task["blocked_by"] = blocked_by
+            task["waiting_on"] = waiting_on
+            if blocked_by:
+                if task["state"] == "pending":
+                    self._set_state(run, task, "upstream_bad")
+                continue
+            if task["state"] == "blocked":
+                self._set_state(run, task, "upstream_ok")
+            if not waiting_on:
                 self._set_state(run, task, "deps_met")
 
     def _task_over_budget(self, run: RunState, task: dict[str, Any]) -> bool:
