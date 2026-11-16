@@ -13,6 +13,11 @@ npm run dev -- --host 127.0.0.1 --port 5173
 UI_PLAYWRIGHT_MODULE=$PWD/tools/node_modules/playwright \
   UI_BASE_URL=http://127.0.0.1:5173 \
   node scripts/verify-design-spec.cjs
+
+# 计划「六」逐按钮表（mock /api，写截图与 docs/superpowers/evidence/task-5-click-log.md）
+UI_PLAYWRIGHT_MODULE=$PWD/tools/node_modules/playwright \
+  UI_BASE_URL=http://127.0.0.1:5173 \
+  node scripts/verify-design-spec-acceptance.cjs
 ```
 
 可选：`UI_BROWSER_PATH` 指定浏览器可执行文件；`UI_SCREENSHOT_DIR` 指定截图目录。

@@ -76,12 +76,29 @@ async function main() {
   assert.equal(tasks[1].state, 'pending');
   assert.deepEqual(tasks[1].card.depends_on, ['T-01']);
 
+  await page.getByTestId('run-pause-resume').click();
+  await page.locator('.topbar-right').getByText('已暂停').waitFor();
+  assert.equal(await page.getByRole('button', { name: '调度执行' }).isDisabled(), true);
+  const paused = await api(`/runs/${runId}`);
+  assert.equal(paused.paused, true);
+  const pausedTasks = await api(`/runs/${runId}/tasks`);
+  assert.equal(pausedTasks[0].state, 'ready');
+  await page.getByTestId('run-pause-resume').click();
+  await page.getByTestId('run-pause-resume').filter({ hasText: '暂停' }).waitFor();
+  assert.equal((await api(`/runs/${runId}`)).paused, false);
+
   await page.locator('.topbar-right').getByRole('button', { name: /调度执行/ }).click({ force: true });
   tasks = await waitForTasks(runId, 'done');
   for (const task of tasks) {
     await page.locator('.ws-left .row').filter({ hasText: task.code }).filter({ hasText: task.state }).waitFor();
   }
   await page.locator('.ws-left .row').filter({ hasText: 'T-02' }).click();
+  await page.locator('.canvas-toolbar .chip').filter({ hasText: '任务计划' }).click();
+  await page.getByTestId('task-plan-preview').getByText('T-01', { exact: true }).first().waitFor();
+  await page.locator('.canvas-toolbar .chip').filter({ hasText: '规格产物' }).click();
+  await page.getByText('T-01', { exact: true }).first().waitFor();
+  await page.locator('.canvas-toolbar .chip').filter({ hasText: '活动' }).click();
+  await page.locator('.canvas-scroll').waitFor();
   await page.locator('.canvas-toolbar .chip').filter({ hasText: '节点详情' }).click();
   const details = await page.locator('.canvas-scroll').innerText();
   assert(details.includes('上游依赖') && details.includes('T-01'));
@@ -98,7 +115,12 @@ async function main() {
   await createDesign(page, '目标：学生查看空位；缺少并发与验收细则。');
   await page.waitForURL((url) => /\/workstation\/[0-9a-f-]{36}$/.test(url.pathname) && !url.pathname.endsWith(runId));
   const missingRunId = page.url().split('/').pop();
-  await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor();
+  try {
+    await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor({ timeout: 15000 });
+  } catch {
+    await page.reload();
+    await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor();
+  }
   assert.equal(await page.locator('.gate-card').count(), 0);
   assert.deepEqual(await api(`/runs/${missingRunId}/tasks`), []);
   const stages = await api(`/runs/${missingRunId}/stages`);

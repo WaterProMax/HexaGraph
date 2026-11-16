@@ -126,6 +126,10 @@ npm run build
 UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
   node scripts/verify-design-spec.cjs
 
+# mock 逐按钮表（操作 / 请求 / 反馈 / 状态 / 截图）
+UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
+  node scripts/verify-design-spec-acceptance.cjs
+
 # 真实后端 + 真实前端 + scripted provider（需先按 README 启动两个服务）
 UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
   node scripts/verify-design-spec-http.cjs
@@ -139,3 +143,9 @@ UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
 - mock 浏览器结果不能替代真实 HTTP 页面闭环；本轮已补齐后者。
 - scripted 离线执行成功不能替代真实模型任务分解和实际工具执行。
 - 真实模型能力仍需组长授权后另行验收，本轮不宣称通过。
+
+## 8. 2026-11-16 展示稳定性 Task 5
+
+计划写下的 pre-fix 基线（前端 11 测 + tsc；后端 138 过 / 1 失败）**不是**本轮结果。空队列失败用 `TEST3_SCRIPTED_FIXTURE=none` 复现为 `POST /runs` 400，已在测试夹具灌入 `scripted_m1_queue()`，断言未删。
+
+本轮未沙箱回归：后端 `179 passed, 1 deselected`；前端 `tsc` + `89 passed / 11 files`。逐按钮 mock 表 10 行见 `docs/superpowers/evidence/task-5-click-log.md`。真实 HTTP scripted 覆盖成功路径的暂停/恢复/调度与缺项刷新；驳回 DESIGN 因离线队列只有一次成功导入，只在 mock 点击。离线成功 ≠ 真实模型通过。

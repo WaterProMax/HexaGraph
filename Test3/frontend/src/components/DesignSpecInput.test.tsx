@@ -31,6 +31,12 @@ function fillAndSubmit(text = "目标：学生查看空闲座位。") {
   fireEvent.click(screen.getByRole("button", { name: "整理并检查" }));
 }
 
+function markdownFile(contents: string, name: string) {
+  const file = new File([contents], name, { type: "text/markdown" });
+  Object.defineProperty(file, "text", { value: async () => contents });
+  return file;
+}
+
 describe("DesignSpecInput import wait", () => {
   it("shows elapsed wait copy, disables resubmit, and polls while importing", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
@@ -300,6 +306,73 @@ describe("DesignSpecInput restore and resubmit", () => {
     fillAndSubmit();
     await waitFor(() => expect(api.createProject).toHaveBeenCalledWith("p"));
     await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
+  });
+});
+
+describe("DesignSpecInput upload and local validation", () => {
+  it("loads a markdown file name, full text, and byte count without creating a run", async () => {
+    const body = "# 自习室\n目标：学生查看空闲座位。\n";
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("读取设计规格文件"), {
+      target: { files: [markdownFile(body, "self-study-room.md")] },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("读取设计规格文件").closest("label")?.textContent).toMatch(/self-study-room\.md/),
+    );
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe(body);
+    expect((screen.getByLabelText("设计规格标题") as HTMLInputElement).value).toBe("self-study-room");
+    const encoded = new TextEncoder().encode(body).length;
+    expect(document.body.textContent).toMatch(new RegExp(String(encoded)));
+    expect(document.body.textContent).toMatch(/字节/);
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.createDesignRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects empty organize locally and does not create a run", async () => {
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "整理并检查" }));
+    await waitFor(() => expect(screen.getByText("设计规格为空")).toBeTruthy());
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.createDesignRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversize organize locally and does not create a run", async () => {
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("设计规格原文"), { target: { value: "x".repeat(100 * 1024 + 1) } });
+    fireEvent.click(screen.getByRole("button", { name: "整理并检查" }));
+    await waitFor(() => expect(screen.getByText("设计规格超过 100 KiB 上限")).toBeTruthy());
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.createDesignRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversize markdown file and keeps the previous text", async () => {
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("设计规格原文"), { target: { value: "保留原文" } });
+    fireEvent.change(screen.getByLabelText("读取设计规格文件"), {
+      target: { files: [markdownFile("y".repeat(100 * 1024 + 1), "too-big.md")] },
+    });
+    await waitFor(() => expect(screen.getByText(/文件超过 100 KiB 上限：too-big\.md/)).toBeTruthy());
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("保留原文");
+    expect(api.createDesignRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores a second organize click while the first import is in flight", async () => {
+    let resolveCreate: ((value: unknown) => void) | undefined;
+    api.createDesignRun.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        }),
+    );
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fillAndSubmit();
+    await waitFor(() => expect(api.createDesignRun).toHaveBeenCalledTimes(1));
+    expect((screen.getByRole("button", { name: /整理并检查/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /整理并检查/ }));
+    expect(api.createDesignRun).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveCreate?.({ run_id: "run-1", status: "importing", project_id: "proj-1" });
+    });
   });
 });
 

@@ -2,6 +2,7 @@
  * 设计规格入口浏览器回归（mock /api/，不打真实模型）。
  *
  * 覆盖：完整闭环；输入缺项；生成失败；任务失败。
+ * 逐按钮表见 scripts/verify-design-spec-acceptance.cjs。
  * 依赖：本机 Vite + 可选 Playwright（UI_PLAYWRIGHT_MODULE / UI_BROWSER_PATH）。
  */
 const { chromium } = require(process.env.UI_PLAYWRIGHT_MODULE || 'playwright');

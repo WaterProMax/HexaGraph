@@ -360,6 +360,53 @@ describe("Workstation buttons follow backend status", () => {
     expect(screen.queryByText("请点击调度执行")).toBeNull();
   });
 
+  it("shows failure feedback for resume and does not pretend the run resumed", async () => {
+    const errorSpy = vi.spyOn(message, "error");
+    const successSpy = vi.spyOn(message, "success");
+    api.run.mockResolvedValue(designRun({ paused: true }));
+    api.resumeRun.mockRejectedValue(new Error("恢复被拒绝"));
+    renderWorkstation();
+    await waitFor(() => expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复"));
+    fireEvent.click(runPauseResume()!);
+    await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(String(errorSpy.mock.calls[0][0])).toMatch(/恢复失败|恢复被拒绝/);
+    expect(successSpy).not.toHaveBeenCalled();
+    expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复");
+    expect(screen.getByText("已暂停")).toBeTruthy();
+  });
+
+  it("rejects DESIGN with success feedback and keeps the original text for resubmit", async () => {
+    const successSpy = vi.spyOn(message, "success");
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("button", { name: "驳回（需改原文重提）" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "驳回（需改原文重提）" }));
+    await waitFor(() => expect(api.resolveGate).toHaveBeenCalledWith("gate-1", "reject", {}));
+    expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已驳回"))).toBe(true);
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("目标：学生查看空闲座位。");
+  });
+
+  it("opens plan, specs, and activity tabs with content from the current run", async () => {
+    api.artifacts.mockResolvedValue(
+      designArtifacts({
+        spec: { features: [{ code: "F1", title: "查看空闲座位" }] },
+        design: { modules: [{ code: "M1", name: "座位查询" }] },
+        plan: { tasks: [{ code: "T-01", title: "实现座位查询", depends_on: [] }] },
+      }),
+    );
+    api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1, card: { depends_on: [] } }]);
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("button", { name: /任务计划/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /任务计划/ }));
+    await waitFor(() => expect(screen.getByTestId("task-plan-preview").textContent).toMatch(/T-01|实现座位查询/));
+    fireEvent.click(screen.getByRole("button", { name: /规格产物/ }));
+    await waitFor(() => expect(screen.getByText("查看空闲座位")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /活动/ }));
+    await waitFor(() => expect(screen.getByText("暂无事件")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /节点详情/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /节点详情/ }).getAttribute("aria-pressed")).toBe("true"));
+    expect(document.body.textContent).toMatch(/选择一个节点|节点详情/);
+  }, 15000);
+
   it("shows failure feedback for approve and keeps the gate actionable", async () => {
     const errorSpy = vi.spyOn(message, "error");
     const successSpy = vi.spyOn(message, "success");

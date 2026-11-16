@@ -4,17 +4,26 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry
+from app.fixtures.study_room import scripted_m1_queue
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
 from app.services.runtime import Workbench
-from app.settings import load_models, load_roles
+from app.settings import get_settings, load_models, load_roles
 
 
 @pytest.mark.asyncio
-async def test_health_and_project_flow(tmp_path) -> None:
+async def test_health_and_project_flow(tmp_path, monkeypatch) -> None:
+    # Empty ScriptedProvider() + start_idea used to 400 with
+    # "scripted queue empty for slot=..." whenever study-room auto-fill is off.
+    # Seed the fixture here; do not drop the 200 / one-run assertions.
+    monkeypatch.setattr(get_settings(), "test3_scripted_fixture", "")
     app = create_app()
-    app.state.workbench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path)
+    app.state.workbench = Workbench(
+        Gateway(load_models(), ScriptedProvider(scripted_m1_queue())),
+        RoleRegistry(load_roles()),
+        tmp_path,
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         health = await client.get("/api/health")
