@@ -48,6 +48,7 @@ describe("designComposerForced", () => {
   it("keeps the design composer visible while importing even if local flowMode reset", () => {
     expect(designComposerForced({ design_input_status: "importing" }, null)).toBe(true);
     expect(designComposerForced(null, { origin: "design_spec" })).toBe(true);
+    expect(designComposerForced({ design_input: { text: "目标：座位" } }, null)).toBe(true);
     expect(designComposerForced(null, { origin: "idea" })).toBe(false);
   });
 });

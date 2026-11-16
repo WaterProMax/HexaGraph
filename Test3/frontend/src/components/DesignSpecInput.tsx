@@ -7,6 +7,14 @@ import { UX_TIMEOUT_MS, startedAtMs, useImportWaitText } from "./designImportWai
 const MAX_BYTES = 100 * 1024;
 const POLL_MS = 1000;
 
+const RETRY_STATUSES = new Set(["failed", "needs_input", "needs_split", "timeout"]);
+
+interface DesignInputFields {
+  title?: string;
+  text?: string;
+  source?: { kind?: string; name?: string };
+}
+
 interface Props {
   projectName: string;
   onProjectName: (value: string) => void;
@@ -16,7 +24,19 @@ interface Props {
     design_input_status?: string;
     design_input_step?: string;
     design_input_started_at?: string;
+    design_input?: DesignInputFields;
   } | null;
+  projectId?: string;
+  onProjectId?: (id: string) => void;
+  runId?: string;
+}
+
+function fieldsFromInput(input?: DesignInputFields | null): { title: string; text: string; fileName: string } {
+  return {
+    title: input?.title || "",
+    text: input?.text || "",
+    fileName: input?.source?.name || "",
+  };
 }
 
 function byteLength(text: string): number {
@@ -48,16 +68,22 @@ export default function DesignSpecInput({
   onCreated,
   watchingImport = false,
   importArtifacts = null,
+  projectId,
+  onProjectId,
+  runId,
 }: Props) {
-  const [title, setTitle] = useState("");
-  const [text, setText] = useState("");
-  const [fileName, setFileName] = useState("");
+  const initial = fieldsFromInput(importArtifacts?.design_input);
+  const [title, setTitle] = useState(initial.title);
+  const [text, setText] = useState(initial.text);
+  const [fileName, setFileName] = useState(initial.fileName);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pollStep, setPollStep] = useState("");
   const [pollStartedAt, setPollStartedAt] = useState<string | undefined>();
   const fileRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const dirtyRef = useRef(false);
+  const lastRunIdRef = useRef(runId);
 
   const waitText = useImportWaitText({
     active: busy || watchingImport,
@@ -73,6 +99,23 @@ export default function DesignSpecInput({
     [],
   );
 
+  useEffect(() => {
+    if (lastRunIdRef.current !== runId) {
+      lastRunIdRef.current = runId;
+      dirtyRef.current = false;
+    }
+    if (dirtyRef.current) return;
+    const next = fieldsFromInput(importArtifacts?.design_input);
+    if (!importArtifacts?.design_input) return;
+    setTitle(next.title);
+    setText(next.text);
+    setFileName(next.fileName);
+  }, [runId, importArtifacts]);
+
+  const markDirty = () => {
+    dirtyRef.current = true;
+  };
+
   const loadFile = async (file: File) => {
     setError("");
     if (byteLength(await file.text()) > MAX_BYTES) {
@@ -80,6 +123,7 @@ export default function DesignSpecInput({
       return;
     }
     const body = await file.text();
+    markDirty();
     setText(body);
     setFileName(file.name);
     if (!title.trim()) setTitle(file.name.replace(/\.(md|txt)$/i, ""));
@@ -148,9 +192,15 @@ export default function DesignSpecInput({
     setPollStartedAt(undefined);
     try {
       const name = projectName.trim() || title.trim() || "设计规格导入";
-      const project = await api.createProject(name);
+      let pid = projectId?.trim() || "";
+      if (!pid) {
+        const project = await api.createProject(name);
+        pid = String(project.id || "");
+        if (pid) onProjectId?.(pid);
+      }
+      if (!pid) throw new Error("未能创建或复用项目");
       const result = await api.createDesignRun(
-        project.id,
+        pid,
         text,
         { kind: fileName ? "file" : "text", name: fileName, note: "" },
         title.trim(),
@@ -185,6 +235,8 @@ export default function DesignSpecInput({
   };
 
   const disabled = busy || watchingImport;
+  const retryable = RETRY_STATUSES.has(importArtifacts?.design_input_status || "");
+  const submitLabel = retryable ? "修改原文后重新提交" : "整理并检查";
 
   return (
     <div className="composer-fields" data-testid="design-spec-input">
@@ -199,7 +251,10 @@ export default function DesignSpecInput({
         className="composer-name"
         aria-label="设计规格标题"
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => {
+          markDirty();
+          setTitle(e.target.value);
+        }}
         placeholder="设计规格标题（可选）"
       />
       <label className="design-file">
@@ -228,7 +283,10 @@ export default function DesignSpecInput({
         aria-label="设计规格原文"
         rows={10}
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          markDirty();
+          setText(e.target.value);
+        }}
         placeholder="粘贴设计规格：目标、功能、模块、接口或数据要求、业务规则、约束与验收条件…"
       />
       <div className="composer-actions" style={{ justifyContent: "space-between" }}>
@@ -236,7 +294,7 @@ export default function DesignSpecInput({
           {byteLength(text).toLocaleString()} / {MAX_BYTES.toLocaleString()} 字节
         </span>
         <Button size="small" type="primary" loading={busy} disabled={disabled} onClick={submit}>
-          整理并检查
+          {submitLabel}
         </Button>
       </div>
       {waitText && (

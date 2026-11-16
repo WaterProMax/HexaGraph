@@ -30,6 +30,12 @@ import { designComposerForced } from "../components/designImportWait";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
+import {
+  gateActionsLocked,
+  pauseResumeEnabled,
+  pauseResumeKind,
+  scheduleEnabled,
+} from "./workstationControls";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
 
@@ -193,6 +199,7 @@ export default function Workstation() {
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
   const [designResult, setDesignResult] = useState<any>(null);
+  const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
   const flowRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
@@ -210,7 +217,12 @@ export default function Workstation() {
     return undefined;
   }, [routeRunId, runsList]);
 
-  const { data: run } = useQuery({
+  const {
+    data: run,
+    isPending: runPending,
+    isError: runQueryFailed,
+    error: runQueryError,
+  } = useQuery({
     queryKey: ["run", activeRunId],
     queryFn: () => api.run(activeRunId!),
     enabled: !!activeRunId,
@@ -295,12 +307,19 @@ export default function Workstation() {
   const designView = designResult && designResult.run_id === activeRunId ? designResult : null;
   const isDesignRun = run?.origin === "design_spec";
   const importingDesign = artifacts?.design_input_status === "importing";
+  const waitingForRun = Boolean(activeRunId) && runPending && !run;
   const composerMode: "idea" | "design" = designComposerForced(artifacts, run) ? "design" : flowMode;
   const showDesignPreview = Boolean(
     activeRunId && (isDesignRun || designView || artifacts?.design_input_status),
   );
+  const designProjectId = run?.project_id || sessionProjectId;
+  const controlOpts = { importing: importingDesign, statusQueryFailed: runQueryFailed };
+  const runPauseKind = pauseResumeKind(run);
+  const runPauseEnabled = pauseResumeEnabled(run, controlOpts);
+  const canSchedule = scheduleEnabled(run, controlOpts);
 
   const handleDesignCreated = (result: any) => {
+    if (result?.project_id) setSessionProjectId(result.project_id);
     setDesignResult(result);
     qc.invalidateQueries({ queryKey: ["runs"] });
     setSelectedId(null);
@@ -310,7 +329,7 @@ export default function Workstation() {
 
   const resolveGateMut = useMutation({
     mutationFn: async ({ decision }: { decision: "approve" | "reject" }) => {
-      if (!pendingGate) return;
+      if (!pendingGate) throw new Error("没有待确认关卡");
       const payload: Record<string, any> = {};
       if (gateReason.trim()) payload.reason = gateReason.trim();
       if (pendingGate.kind === "想法补充" && supplementText.trim()) {
@@ -318,7 +337,8 @@ export default function Workstation() {
       }
       return api.resolveGate(pendingGate.id, decision, payload);
     },
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
+      message.success(vars.decision === "approve" ? "已批准并推进" : "已驳回");
       setGateReason("");
       setSupplementText("");
       refreshAll();
@@ -365,12 +385,26 @@ export default function Workstation() {
 
   const runCtrlMut = useMutation({
     mutationFn: (action: "pause" | "resume" | "terminate") => {
-      if (!activeRunId) return Promise.resolve();
+      if (!activeRunId) return Promise.reject(new Error("没有运行"));
       if (action === "pause") return api.pauseRun(activeRunId);
       if (action === "resume") return api.resumeRun(activeRunId);
       return api.terminate(activeRunId);
     },
-    onSuccess: () => refreshAll(),
+    onSuccess: (_data, action) => {
+      const ok = { pause: "已暂停", resume: "已恢复", terminate: "已终止" };
+      message.success(ok[action] || "操作成功");
+      refreshAll();
+    },
+    onError: (err: any, action) => {
+      const fail = { pause: "暂停失败", resume: "恢复失败", terminate: "终止失败" };
+      message.error(`${fail[action] || "操作失败"}: ${err?.message || String(err)}`);
+    },
+  });
+
+  const gatesLocked = gateActionsLocked({
+    resolving: resolveGateMut.isPending,
+    importing: importingDesign,
+    statusQueryFailed: runQueryFailed,
   });
 
   useEffect(() => {
@@ -822,8 +856,10 @@ export default function Workstation() {
               <Button
                 size="small"
                 type="primary"
+                aria-label="调度执行"
                 icon={<PlayCircleOutlined />}
                 loading={scheduleMut.isPending}
+                disabled={!canSchedule}
                 onClick={() => scheduleMut.mutate()}
               >
                 调度执行
@@ -835,19 +871,25 @@ export default function Workstation() {
                 type="primary"
                 icon={<CheckOutlined />}
                 loading={acceptMut.isPending}
+                disabled={runQueryFailed || importingDesign}
                 onClick={() => acceptMut.mutate()}
               >
                 生成验收报告
               </Button>
             )}
-            <Button
-              size="small"
-              icon={run.paused ? <CaretRightOutlined /> : <PauseOutlined />}
-              aria-label={run.paused ? "恢复" : "暂停"}
-              onClick={() => runCtrlMut.mutate(run.paused ? "resume" : "pause")}
-            >
-              {run.paused ? "恢复" : "暂停"}
-            </Button>
+            {runPauseKind && (
+              <Button
+                size="small"
+                icon={runPauseKind === "resume" ? <CaretRightOutlined /> : <PauseOutlined />}
+                aria-label={runPauseKind === "resume" ? "恢复" : "暂停"}
+                data-testid="run-pause-resume"
+                disabled={!runPauseEnabled || runCtrlMut.isPending}
+                loading={runCtrlMut.isPending}
+                onClick={() => runCtrlMut.mutate(runPauseKind)}
+              >
+                {runPauseKind === "resume" ? "恢复" : "暂停"}
+              </Button>
+            )}
             <Tooltip title="刷新">
               <Button size="small" type="text" aria-label="刷新" icon={<ReloadOutlined />} onClick={refreshAll} />
             </Tooltip>
@@ -860,26 +902,34 @@ export default function Workstation() {
           <section className="composer glass-panel" aria-labelledby="composer-heading">
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
-              <h2 id="composer-heading">{composerMode === "design" ? "设计规格输入" : "想法输入"}</h2>
+              <h2 id="composer-heading">
+                {waitingForRun ? "运行加载中" : composerMode === "design" ? "设计规格输入" : "想法输入"}
+              </h2>
             </div>
             <Segmented
               block
               size="small"
               aria-label="选择流程入口"
               value={composerMode}
+              disabled={waitingForRun}
               onChange={(val) => setFlowMode(val as "idea" | "design")}
               options={[
                 { label: "完整流程", value: "idea" },
                 { label: "从设计规格开始", value: "design" },
               ]}
             />
-            {composerMode === "design" ? (
+            {waitingForRun ? (
+              <div className="mono muted">正在加载运行…</div>
+            ) : composerMode === "design" ? (
               <DesignSpecInput
                 projectName={projectName}
                 onProjectName={setProjectName}
                 onCreated={handleDesignCreated}
                 watchingImport={importingDesign}
                 importArtifacts={artifacts}
+                projectId={designProjectId}
+                onProjectId={setSessionProjectId}
+                runId={activeRunId}
               />
             ) : (
               <>
@@ -924,11 +974,25 @@ export default function Workstation() {
             )}
           </section>
 
+          {runQueryFailed && (
+            <Alert
+              type="warning"
+              showIcon
+              data-testid="run-status-error"
+              message="状态查询失败"
+              description={
+                (runQueryError as Error)?.message
+                  ? `未能读取运行状态：${(runQueryError as Error).message}。未开放暂停、批准或调度。`
+                  : "未能读取运行状态，未开放暂停、批准或调度。"
+              }
+            />
+          )}
+
           {showDesignPreview && (
             <DesignSpecPreview artifacts={artifacts} result={designView} />
           )}
 
-          {pendingGate && (
+          {pendingGate && !runQueryFailed && (
             <section className="gate-card glass-panel" aria-labelledby="gate-heading">
               <div>
                 <div className="gate-kicker">等待你确认</div>
@@ -961,8 +1025,12 @@ export default function Workstation() {
                 <Button
                   type="primary"
                   size="small"
-                  loading={resolveGateMut.isPending}
-                  disabled={pendingGate.kind === "验收确认" && !pendingGate.payload?.pass && !gateReason.trim()}
+                  aria-label="批准并推进"
+                  loading={resolveGateMut.isPending && resolveGateMut.variables?.decision === "approve"}
+                  disabled={
+                    gatesLocked ||
+                    (pendingGate.kind === "验收确认" && !pendingGate.payload?.pass && !gateReason.trim())
+                  }
                   onClick={() => resolveGateMut.mutate({ decision: "approve" })}
                 >
                   批准并推进
@@ -971,7 +1039,9 @@ export default function Workstation() {
                   size="small"
                   danger
                   type="text"
-                  loading={resolveGateMut.isPending}
+                  aria-label={pendingGate.kind === "DESIGN基线确认" && isDesignRun ? "驳回（需改原文重提）" : "驳回重写"}
+                  loading={resolveGateMut.isPending && resolveGateMut.variables?.decision === "reject"}
+                  disabled={gatesLocked}
                   onClick={() => resolveGateMut.mutate({ decision: "reject" })}
                 >
                   {pendingGate.kind === "DESIGN基线确认" && isDesignRun ? "驳回（需改原文重提）" : "驳回重写"}
@@ -983,7 +1053,13 @@ export default function Workstation() {
           {hasReadyTasks && !pendingGate && (
             <div className="notice">
               <span>有就绪任务，编排器每 5 秒自动调度一次。</span>
-              <Button size="small" type="primary" loading={scheduleMut.isPending} onClick={() => scheduleMut.mutate()}>
+              <Button
+                size="small"
+                type="primary"
+                loading={scheduleMut.isPending}
+                disabled={!canSchedule}
+                onClick={() => scheduleMut.mutate()}
+              >
                 立即调度
               </Button>
             </div>

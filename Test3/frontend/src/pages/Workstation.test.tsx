@@ -1,0 +1,281 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { message } from "antd";
+import Workstation from "./Workstation";
+
+const api = vi.hoisted(() => ({
+  runs: vi.fn(),
+  run: vi.fn(),
+  artifacts: vi.fn(),
+  tasks: vi.fn(),
+  budget: vi.fn(),
+  pauseRun: vi.fn(),
+  resumeRun: vi.fn(),
+  resolveGate: vi.fn(),
+  schedule: vi.fn(),
+  createProject: vi.fn(),
+  createDesignRun: vi.fn(),
+  terminate: vi.fn(),
+}));
+
+vi.mock("../api/client", () => ({
+  api,
+  controlEnabled: () => true,
+}));
+
+vi.mock("../hooks/useRunEvents", () => ({
+  useRunEvents: () => ({
+    events: [],
+    connection: "live",
+    connectionError: "",
+    reconnect: vi.fn(),
+  }),
+}));
+
+vi.mock("@xyflow/react", () => ({
+  ReactFlow: ({ children }: { children?: ReactNode }) => <div data-testid="flow">{children}</div>,
+  Background: () => null,
+  BackgroundVariant: { Dots: "dots" },
+  Controls: () => null,
+  Handle: () => null,
+  MarkerType: { ArrowClosed: "arrow" },
+  Position: { Left: "left", Right: "right" },
+  useReactFlow: () => ({ fitView: vi.fn() }),
+}));
+
+const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
+
+function designRun(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "run-1",
+    project_id: "proj-1",
+    origin: "design_spec",
+    status: "waiting",
+    stage: "5",
+    paused: false,
+    idea: "自习室规格",
+    gates: [{ id: "gate-1", kind: "DESIGN基线确认", status: "pending", payload: {} }],
+    ...overrides,
+  };
+}
+
+function designArtifacts(overrides: Record<string, unknown> = {}) {
+  return {
+    design_input_status: "awaiting_confirmation",
+    design_input: {
+      title: "自习室规格",
+      text: "目标：学生查看空闲座位。",
+      source: { kind: "file", name: "study.md" },
+    },
+    ...overrides,
+  };
+}
+
+function renderWorkstation(path = "/workstation/run-1") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/workstation/:id?" element={<Workstation />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function hiddenOrDisabled(name: string) {
+  const el = screen.queryByRole("button", { name, hidden: true });
+  return el == null || (el as HTMLButtonElement).disabled;
+}
+
+function runPauseResume() {
+  return screen.queryByTestId("run-pause-resume");
+}
+
+beforeEach(() => {
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+  api.runs.mockReset().mockResolvedValue([]);
+  api.run.mockReset().mockResolvedValue(designRun());
+  api.artifacts.mockReset().mockResolvedValue(designArtifacts());
+  api.tasks.mockReset().mockResolvedValue([]);
+  api.budget.mockReset().mockResolvedValue({ used: 0, limit: 1 });
+  api.pauseRun.mockReset().mockResolvedValue({ paused: true });
+  api.resumeRun.mockReset().mockResolvedValue({ paused: false });
+  api.resolveGate.mockReset().mockResolvedValue({ ok: true });
+  api.schedule.mockReset().mockResolvedValue({ started: [] });
+  api.createProject.mockReset().mockResolvedValue({ id: "proj-new" });
+  api.createDesignRun.mockReset().mockResolvedValue({ run_id: "run-2", status: "importing", project_id: "proj-1" });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("Workstation design-spec entry", () => {
+  it("opens a design_spec run on 从设计规格开始 without the idea-composer default", async () => {
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("design-spec-input")).toBeTruthy());
+    expect(screen.getByRole("heading", { name: "设计规格输入" })).toBeTruthy();
+    expect(screen.queryByLabelText("产品想法")).toBeNull();
+    expect(screen.queryByDisplayValue(DEFAULT_IDEA)).toBeNull();
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("目标：学生查看空闲座位。");
+    expect((screen.getByLabelText("设计规格标题") as HTMLInputElement).value).toBe("自习室规格");
+  });
+
+  it("does not flash the idea composer while a design_spec run is still loading", async () => {
+    let resolveRun: ((value: unknown) => void) | undefined;
+    api.run.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRun = resolve;
+      }),
+    );
+    renderWorkstation();
+    expect(screen.queryByLabelText("产品想法")).toBeNull();
+    expect(screen.queryByDisplayValue(DEFAULT_IDEA)).toBeNull();
+    await act(async () => {
+      resolveRun?.(designRun());
+    });
+    await waitFor(() => expect(screen.getByTestId("design-spec-input")).toBeTruthy());
+    expect(screen.queryByDisplayValue(DEFAULT_IDEA)).toBeNull();
+  });
+
+  it("reuses the current project when resubmitting a failed design-spec run", async () => {
+    api.artifacts.mockResolvedValue(
+      designArtifacts({ design_input_status: "failed", design_input_error_category: "timeout" }),
+    );
+    api.run.mockResolvedValue(designRun({ status: "stopped", gates: [] }));
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("button", { name: "修改原文后重新提交" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "修改原文后重新提交" }));
+    await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.createDesignRun.mock.calls[0][0]).toBe("proj-1");
+  });
+});
+
+describe("Workstation buttons follow backend status", () => {
+  it.each(["stopped", "terminated", "done"])("does not offer pause or resume when the run is %s", async (status) => {
+    api.run.mockResolvedValue(designRun({ status, gates: [], paused: false }));
+    renderWorkstation();
+    await waitFor(() => expect(document.querySelector(".topbar-right")).toBeTruthy());
+    expect(document.querySelector(".topbar-right")?.textContent).toMatch(
+      status === "done" ? /已完成/ : status === "stopped" ? /已停止/ : /已终止/,
+    );
+    expect(runPauseResume()).toBeNull();
+    expect(hiddenOrDisabled("暂停")).toBe(true);
+    expect(hiddenOrDisabled("恢复")).toBe(true);
+  });
+
+  it("shows resume and keeps schedule disabled while paused", async () => {
+    api.run.mockResolvedValue(designRun({ paused: true, stage: "7", gates: [] }));
+    api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1 }]);
+    renderWorkstation();
+    await waitFor(() => expect(runPauseResume()).toBeTruthy());
+    expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复");
+    expect((runPauseResume() as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("run-pause-resume")?.textContent).toContain("恢复");
+    const schedule = screen.getByRole("button", { name: "调度执行" });
+    expect((schedule as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "立即调度" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("locks approve and reject together while a gate request is pending", async () => {
+    let finish: ((value: unknown) => void) | undefined;
+    api.resolveGate.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("button", { name: "批准并推进" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "批准并推进" }));
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: "批准并推进" }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole("button", { name: /驳回/ }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    await act(async () => {
+      finish?.({ ok: true });
+    });
+  });
+
+  it("does not allow approve or schedule while importing", async () => {
+    api.run.mockResolvedValue(designRun({ stage: "7" }));
+    api.artifacts.mockResolvedValue(designArtifacts({ design_input_status: "importing" }));
+    api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1 }]);
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("design-spec-input")).toBeTruthy());
+    expect((screen.getByRole("button", { name: "批准并推进" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /驳回/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /调度执行/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "整理并检查" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("warns when the run status query fails and does not offer pause or approve", async () => {
+    api.run.mockRejectedValue(new Error("状态不可用"));
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("run-status-error")).toBeTruthy());
+    expect(screen.getByTestId("run-status-error").textContent).toMatch(/状态查询失败/);
+    expect(runPauseResume()).toBeNull();
+    expect(hiddenOrDisabled("暂停")).toBe(true);
+    expect(hiddenOrDisabled("恢复")).toBe(true);
+    expect(screen.queryByRole("button", { name: "批准并推进" })).toBeNull();
+  });
+
+  it("shows failure feedback for pause and does not pretend the run paused", async () => {
+    const errorSpy = vi.spyOn(message, "error");
+    const successSpy = vi.spyOn(message, "success");
+    api.pauseRun.mockRejectedValue(new Error("暂停被拒绝"));
+    renderWorkstation();
+    await waitFor(() => expect(runPauseResume()).toBeTruthy());
+    fireEvent.click(runPauseResume()!);
+    await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(String(errorSpy.mock.calls[0][0])).toMatch(/暂停失败|暂停被拒绝/);
+    expect(successSpy).not.toHaveBeenCalled();
+    expect(screen.queryByText("已暂停")).toBeNull();
+  });
+
+  it("shows success feedback for pause, resume, approve, and reject", async () => {
+    const successSpy = vi.spyOn(message, "success");
+    renderWorkstation();
+    await waitFor(() => expect(runPauseResume()).toBeTruthy());
+    fireEvent.click(runPauseResume()!);
+    await waitFor(() => expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已暂停"))).toBe(true));
+
+    api.run.mockResolvedValue(designRun({ paused: true }));
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复"));
+    fireEvent.click(runPauseResume()!);
+    await waitFor(() => expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已恢复"))).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "批准并推进" }));
+    await waitFor(() => expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已批准"))).toBe(true));
+
+    successSpy.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /驳回/ }));
+    await waitFor(() => expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已驳回"))).toBe(true));
+  });
+
+  it("shows failure feedback for approve and keeps the gate actionable", async () => {
+    const errorSpy = vi.spyOn(message, "error");
+    const successSpy = vi.spyOn(message, "success");
+    api.resolveGate.mockRejectedValue(new Error("关卡冲突"));
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("button", { name: "批准并推进" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "批准并推进" }));
+    await waitFor(() => expect(errorSpy).toHaveBeenCalled());
+    expect(String(errorSpy.mock.calls[0][0])).toMatch(/关卡处理失败|关卡冲突/);
+    expect(successSpy).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: "批准并推进" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});

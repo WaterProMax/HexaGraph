@@ -30,10 +30,14 @@ export function importWaitText(args: {
 }
 
 export function designComposerForced(
-  artifacts?: { design_input_status?: string } | null,
+  artifacts?: { design_input_status?: string; design_input?: unknown } | null,
   run?: { origin?: string } | null,
 ): boolean {
-  return artifacts?.design_input_status === "importing" || run?.origin === "design_spec";
+  return (
+    artifacts?.design_input_status === "importing" ||
+    run?.origin === "design_spec" ||
+    Boolean(artifacts?.design_input)
+  );
 }
 
 export function useImportWaitText(opts: {

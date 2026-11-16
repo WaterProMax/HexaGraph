@@ -149,3 +149,156 @@ describe("DesignSpecInput import wait", () => {
     );
   });
 });
+
+describe("DesignSpecInput restore and resubmit", () => {
+  const restored = {
+    design_input_status: "failed",
+    design_input: {
+      title: "自习室规格",
+      text: "目标：学生查看空闲座位。",
+      source: { kind: "file", name: "study.md" },
+    },
+  };
+
+  it("restores title, source file name, and text from design_input after refresh", () => {
+    render(
+      <DesignSpecInput
+        projectName="p"
+        onProjectName={() => undefined}
+        onCreated={() => undefined}
+        importArtifacts={restored}
+      />,
+    );
+    expect((screen.getByLabelText("设计规格标题") as HTMLInputElement).value).toBe("自习室规格");
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe(
+      "目标：学生查看空闲座位。",
+    );
+    expect(screen.getByText(/study\.md/)).toBeTruthy();
+  });
+
+  it("does not clobber in-progress user edits when importing artifacts refresh", () => {
+    const artifacts = {
+      design_input_status: "importing",
+      design_input: { title: "旧标题", text: "旧原文", source: { kind: "text", name: "" } },
+    };
+    const { rerender } = render(
+      <DesignSpecInput
+        projectName="p"
+        onProjectName={() => undefined}
+        onCreated={() => undefined}
+        watchingImport
+        importArtifacts={artifacts}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("设计规格原文"), { target: { value: "用户正在改的原文" } });
+    fireEvent.change(screen.getByLabelText("设计规格标题"), { target: { value: "用户标题" } });
+    rerender(
+      <DesignSpecInput
+        projectName="p"
+        onProjectName={() => undefined}
+        onCreated={() => undefined}
+        watchingImport
+        importArtifacts={{
+          ...artifacts,
+          design_input_step: "design",
+          design_input: { title: "旧标题", text: "服务端仍是旧原文", source: { kind: "text", name: "" } },
+        }}
+      />,
+    );
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("用户正在改的原文");
+    expect((screen.getByLabelText("设计规格标题") as HTMLInputElement).value).toBe("用户标题");
+  });
+
+  it("restores the next run original text when the run id changes", () => {
+    const { rerender } = render(
+      <DesignSpecInput
+        projectName="p"
+        runId="run-a"
+        onProjectName={() => undefined}
+        onCreated={() => undefined}
+        importArtifacts={{
+          design_input_status: "failed",
+          design_input: { title: "A", text: "A原文", source: { kind: "text" } },
+        }}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("设计规格原文"), { target: { value: "改过的A" } });
+    rerender(
+      <DesignSpecInput
+        projectName="p"
+        runId="run-b"
+        onProjectName={() => undefined}
+        onCreated={() => undefined}
+        importArtifacts={{
+          design_input_status: "failed",
+          design_input: { title: "B", text: "B原文", source: { kind: "text" } },
+        }}
+      />,
+    );
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("B原文");
+    expect((screen.getByLabelText("设计规格标题") as HTMLInputElement).value).toBe("B");
+  });
+
+  it.each(["failed", "needs_input", "timeout"])(
+    "offers 修改原文后重新提交 after %s and starts a new run on the same project",
+    async (status) => {
+      api.createDesignRun.mockResolvedValue({ run_id: "run-2", status: "importing", project_id: "proj-1" });
+      const onCreated = vi.fn();
+      render(
+        <DesignSpecInput
+          projectName="p"
+          projectId="proj-1"
+          onProjectName={() => undefined}
+          onCreated={onCreated}
+          importArtifacts={{
+            design_input_status: status,
+            design_input: restored.design_input,
+          }}
+        />,
+      );
+      const button = screen.getByRole("button", { name: "修改原文后重新提交" });
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(button);
+      await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
+      expect(api.createProject).not.toHaveBeenCalled();
+      expect(api.createDesignRun.mock.calls[0][0]).toBe("proj-1");
+      expect(api.createDesignRun.mock.calls[0][1]).toBe("目标：学生查看空闲座位。");
+      await waitFor(() =>
+        expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ run_id: "run-2" })),
+      );
+    },
+  );
+
+  it("reuses the session project on organize so same-project 409 can fire", async () => {
+    const conflict = Object.assign(new Error("该项目已有正在整理的设计规格"), {
+      status: 409,
+      category: "import_in_progress",
+      summary: "该项目已有正在整理的设计规格",
+      run_id: "run-existing",
+    });
+    api.createDesignRun.mockRejectedValue(conflict);
+    const onCreated = vi.fn();
+    render(
+      <DesignSpecInput
+        projectName="p"
+        projectId="proj-keep"
+        onProjectName={() => undefined}
+        onCreated={onCreated}
+      />,
+    );
+    fillAndSubmit();
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ run_id: "run-existing" })),
+    );
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.createDesignRun.mock.calls[0][0]).toBe("proj-keep");
+  });
+
+  it("still creates a project on the first organize when no project id exists", async () => {
+    api.createDesignRun.mockResolvedValue({ run_id: "run-1", status: "importing", project_id: "proj-1" });
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    fillAndSubmit();
+    await waitFor(() => expect(api.createProject).toHaveBeenCalledWith("p"));
+    await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
+  });
+});
