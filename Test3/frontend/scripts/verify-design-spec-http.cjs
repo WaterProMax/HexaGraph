@@ -115,12 +115,7 @@ async function main() {
   await createDesign(page, '目标：学生查看空位；缺少并发与验收细则。');
   await page.waitForURL((url) => /\/workstation\/[0-9a-f-]{36}$/.test(url.pathname) && !url.pathname.endsWith(runId));
   const missingRunId = page.url().split('/').pop();
-  try {
-    await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor({ timeout: 15000 });
-  } catch {
-    await page.reload();
-    await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor();
-  }
+  await page.getByTestId('design-import-status').filter({ hasText: '缺少必要内容' }).waitFor();
   assert.equal(await page.locator('.gate-card').count(), 0);
   assert.deepEqual(await api(`/runs/${missingRunId}/tasks`), []);
   const stages = await api(`/runs/${missingRunId}/stages`);

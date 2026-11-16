@@ -11,6 +11,6 @@
 | 驳回 DESIGN | POST /gates/.../resolve decision=reject → 200 rejected | toast「已驳回」 | 运行已停止，原文仍在，可再点整理 | `design-spec-accept-reject-design.png` |
 | 批准 DESIGN | POST /gates/.../resolve decision=approve → PLAN 关卡 | toast「已批准并推进」 | 出现 PLAN 确认，尚未调度 | `design-spec-accept-approve-design.png` |
 | 批准 PLAN | POST /gates/.../resolve → 任务物化 | 阶段 7，T-01 ready / T-02 pending | 任务和依赖可见，尚未执行 | `design-spec-accept-approve-plan.png` |
-| 暂停、调度、恢复 | pause → 调度按钮禁用；resume → schedule 先 400 后 200 started=[T-01] | 失败留下「调度失败」；成功 toast 显示已调度任务 | 暂停不派发；恢复后 T-01 done | `design-spec-accept-pause-schedule-resume.png` |
-| 查看节点、任务计划、产物、活动 | 只读 GET run/artifacts/tasks（mock 200） | 各页签有当前运行内容，空活动显示占位而非空白无反馈 | 与 run-happy 一致 | `design-spec-accept-tabs.png` |
-| 操作失败 | POST /schedule 第一次 400 offline schedule failure | 「调度失败」错误提示，未显示成功 | 任务未因失败请求被标成成功；随后成功调度才更新 | `design-spec-accept-pause-schedule-resume.png` |
+| 暂停、调度、恢复 | pause → 调度按钮禁用；resume → schedule 先 400 后 200 started=[T-01] | 暂停后调度禁用；成功 toast「已调度执行任务」 | 暂停不派发；恢复后 T-01 done | `design-spec-accept-pause-schedule-resume.png` |
+| 查看节点、任务计划、产物、活动 | 只读 GET run/artifacts/tasks（mock 200） | 各页签有当前运行内容，空活动显示占位「暂无事件」 | 与 run-happy 一致 | `design-spec-accept-tabs.png` |
+| 操作失败 | POST /schedule 第一次 400 offline schedule failure | 「调度失败」错误提示，未显示成功 | 任务未因失败请求被标成成功；随后成功调度才更新 | `design-spec-accept-schedule-failure.png` |

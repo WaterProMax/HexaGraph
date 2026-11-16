@@ -122,6 +122,22 @@ describe("DesignSpecPreview error taxonomy", () => {
     }
   });
 
+  it("does not keep an in-flight importing result over refreshed needs_input artifacts", () => {
+    render(
+      <DesignSpecPreview
+        result={{ run_id: "run-missing", status: "importing", message: "正在整理" }}
+        artifacts={{
+          design_input_status: "needs_input",
+          design_input_error_category: "missing_fields",
+          design_input_missing: ["未给出并发上限"],
+          design_input: { source: { kind: "text" }, chars: 10, sha256: "abc" },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("design-import-status").textContent).toContain("缺少必要内容");
+    expect(screen.getByTestId("design-import-status").textContent).not.toContain("正在整理");
+  });
+
   it("reads error_category from the live result as well as artifacts", () => {
     render(
       <DesignSpecPreview

@@ -339,6 +339,10 @@ export default function Workstation() {
     if (result?.project_id) setSessionProjectId(result.project_id);
     setDesignResult(result);
     qc.invalidateQueries({ queryKey: ["runs"] });
+    if (result?.run_id) {
+      qc.invalidateQueries({ queryKey: ["arts", result.run_id] });
+      qc.invalidateQueries({ queryKey: ["run", result.run_id] });
+    }
     setSelectedId(null);
     setActiveTab("graph");
     if (result?.run_id && result.run_id !== routeRunId) nav(`/workstation/${result.run_id}`);

@@ -102,6 +102,27 @@ async function main() {
   else launchOpts.channel = process.env.UI_BROWSER_CHANNEL || 'chrome';
   const browser = await chromium.launch(launchOpts);
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+  // Keep EventSource from erroring when the mock fulfills a short SSE body and closes.
+  // Empty events + live connection is what shows the 「暂无事件」 placeholder.
+  await context.addInitScript(() => {
+    class StubEventSource {
+      constructor() {
+        this.readyState = 1;
+        queueMicrotask(() => {
+          if (typeof this.onopen === 'function') this.onopen(new Event('open'));
+        });
+      }
+      close() {
+        this.readyState = 2;
+      }
+      addEventListener() {}
+      removeEventListener() {}
+    }
+    StubEventSource.CONNECTING = 0;
+    StubEventSource.OPEN = 1;
+    StubEventSource.CLOSED = 2;
+    window.EventSource = StubEventSource;
+  });
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (err) => errors.push(err.message));
@@ -116,7 +137,8 @@ async function main() {
 
   async function shot(name) {
     const file = `design-spec-accept-${name}.png`;
-    await page.screenshot({ path: path.join(out, file), fullPage: true });
+    // Viewport capture keeps position:fixed toasts; nested .ws-left scroll is already set by the wait.
+    await page.screenshot({ path: path.join(out, file), fullPage: false, animations: 'disabled' });
     return file;
   }
 
@@ -131,6 +153,20 @@ async function main() {
 
   function organizeButton() {
     return page.getByRole('button', { name: /整理并检查|修改原文后重新提交/ });
+  }
+
+  function toast(pattern) {
+    return page.locator('.ant-message').getByText(pattern);
+  }
+
+  async function showComposer() {
+    await page.locator('.ws-left').evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    const organize = organizeButton();
+    await organize.scrollIntoViewIfNeeded();
+    await organize.waitFor();
+    return organize;
   }
 
   await page.route(/https:\/\/fonts\.(googleapis|gstatic)\.com\//, (route) =>
@@ -394,8 +430,13 @@ async function main() {
   await page.waitForURL('**/workstation/run-reject');
   await page.locator('.ant-message').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
   await page.getByRole('button', { name: '驳回（需改原文重提）' }).click({ force: true });
-  await page.getByText('已驳回').waitFor();
-  await page.locator('.topbar-right').getByText('已停止').waitFor();
+  await Promise.all([
+    toast('已驳回').waitFor(),
+    page.locator('.topbar-right').getByText('已停止').waitFor(),
+  ]);
+  const retryOrganize = await showComposer();
+  assert.equal(await retryOrganize.isEnabled(), true);
+  await toast('已驳回').waitFor();
   assert.equal(await page.getByRole('textbox', { name: '设计规格原文' }).inputValue(), uploadBody);
   assert(posts.some((x) => x.p.includes('/gates/') && x.body.decision === 'reject'));
   const rejectShot = await shot('reject-design');
@@ -418,9 +459,12 @@ async function main() {
   await page.locator('.gate-card .gate-head').filter({ hasText: 'DESIGN基线确认' }).waitFor();
   await page.locator('.ant-message').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
   await page.getByRole('button', { name: '批准并推进' }).click({ force: true });
-  await page.locator('.gate-card .gate-head').filter({ hasText: 'PLAN基线确认' }).waitFor();
-  assert.equal(await page.locator('.topbar-right').getByRole('button', { name: /调度执行/ }).count(), 0);
+  await Promise.all([
+    toast('已批准并推进').waitFor(),
+    page.locator('.gate-card .gate-head').filter({ hasText: 'PLAN基线确认' }).waitFor(),
+  ]);
   const designShot = await shot('approve-design');
+  assert.equal(await page.locator('.topbar-right').getByRole('button', { name: /调度执行/ }).count(), 0);
   evidence.push({
     op: '批准 DESIGN',
     request: 'POST /gates/.../resolve decision=approve → PLAN 关卡',
@@ -451,17 +495,27 @@ async function main() {
   assert.equal(posts.filter((x) => x.p.endsWith('/schedule')).length, pausePosts);
   await page.getByTestId('run-pause-resume').click();
   await page.getByTestId('run-pause-resume').filter({ hasText: '暂停' }).waitFor();
+  await page.locator('.ant-message').waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
   failSchedule = true;
   await page.getByRole('button', { name: '调度执行' }).click({ force: true });
-  await page.getByText(/调度失败/).waitFor();
+  await toast(/调度失败/).waitFor();
+  const failShot = await shot('schedule-failure');
+  assert.equal(await page.locator('.ant-message').getByText(/已调度执行任务/).count(), 0);
+  const t01AfterFail = await page.locator('.ws-left .row').filter({ hasText: 'T-01' }).innerText();
+  assert(!/\bdone\b/i.test(t01AfterFail), `failure must not mark T-01 done: ${t01AfterFail}`);
   failSchedule = false;
+  await page.locator('.ant-message').waitFor({ state: 'detached', timeout: 8000 }).catch(() => {});
   await page.getByRole('button', { name: '调度执行' }).click({ force: true });
-  await page.getByText(/已调度执行任务/).waitFor();
+  await Promise.all([
+    toast(/已调度执行任务/).waitFor(),
+    page.locator('.ws-left .row').filter({ hasText: 'T-01' }).filter({ hasText: 'done' }).waitFor(),
+  ]);
   const scheduleShot = await shot('pause-schedule-resume');
+  assert.equal(await page.locator('.ant-message').getByText(/调度失败/).count(), 0);
   evidence.push({
     op: '暂停、调度、恢复',
     request: 'pause → 调度按钮禁用；resume → schedule 先 400 后 200 started=[T-01]',
-    feedback: '失败留下「调度失败」；成功 toast 显示已调度任务',
+    feedback: '暂停后调度禁用；成功 toast「已调度执行任务」',
     state: '暂停不派发；恢复后 T-01 done',
     screenshot: scheduleShot,
   });
@@ -471,15 +525,15 @@ async function main() {
   await page.locator('.canvas-toolbar .chip').filter({ hasText: '规格产物' }).click();
   await page.getByText('查看空闲座位').first().waitFor();
   await page.locator('.canvas-toolbar .chip').filter({ hasText: '活动' }).click();
-  await page.locator('.canvas-scroll').waitFor();
+  await page.locator('.ant-empty-description').filter({ hasText: '暂无事件' }).waitFor();
+  const tabsShot = await shot('tabs');
   await page.locator('.ws-left .row').filter({ hasText: 'T-02' }).click();
   await page.locator('.canvas-toolbar .chip').filter({ hasText: '节点详情' }).click();
   await page.getByText('上游依赖').waitFor();
-  const tabsShot = await shot('tabs');
   evidence.push({
     op: '查看节点、任务计划、产物、活动',
     request: '只读 GET run/artifacts/tasks（mock 200）',
-    feedback: '各页签有当前运行内容，空活动显示占位而非空白无反馈',
+    feedback: '各页签有当前运行内容，空活动显示占位「暂无事件」',
     state: '与 run-happy 一致',
     screenshot: tabsShot,
   });
@@ -488,7 +542,7 @@ async function main() {
     request: 'POST /schedule 第一次 400 offline schedule failure',
     feedback: '「调度失败」错误提示，未显示成功',
     state: '任务未因失败请求被标成成功；随后成功调度才更新',
-    screenshot: scheduleShot,
+    screenshot: failShot,
   });
   console.log('PASS approve / pause / schedule / tabs / failure reason');
 

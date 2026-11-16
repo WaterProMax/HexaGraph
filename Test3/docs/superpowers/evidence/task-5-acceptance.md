@@ -6,7 +6,7 @@
 
 计划原文：前端 11 项测试 + `tsc` 通过；后端 138 通过 / 1 失败。那是 Tasks 1–4 之前的基线，不能当成修复后数字。
 
-`test_health_and_project_flow` 的空队列失败在默认 `TEST3_SCRIPTED_FIXTURE=study-room` 下会被 `_prepare_scripted` 自动灌队列掩盖。本轮用 `TEST3_SCRIPTED_FIXTURE=none` 复现：
+`test_health_and_project_flow` 的空队列失败在默认 `TEST3_SCRIPTED_FIXTURE=study-room` 下会被 `_prepare_scripted` 自动灌队列掩盖。本轮用测试夹具 `test3_scripted_fixture=""`（空字符串，关闭 study-room 自动灌队列；不是环境值 `none`）复现：
 
 - 断言仍在：`assert run_res.status_code == 200`
 - 实际：`400 != 200`（`start_idea` 碰到空 `ScriptedProvider`）

@@ -23,6 +23,8 @@
 - Range: `7f27cdd` → `8501d11`
 - Minors for final review: always-on offline composer hint; two-reset test first-import only; queue-exhaust needs worktrees; weak scheduleNotice unit arity check.
 
-## Task 5 — Pass
+## Task 5 — Open
 - Range: `8501d11` → (this commit)
+- Not Pass: review gate is still open.
+- Evidence waits/screenshots must match the claimed row (failure toast, empty activity, organize after reject). HTTP missing-input must fail if the first 「缺少必要内容」 wait times out; reload is only the later refresh case.
 - Minors: DESIGN reject HTTP not in one-shot offline queue; mock timeout is artifact flip not wall-clock 600s; git worktree pytest needs unsandboxed; human Demo.md pass still useful for toast timing.

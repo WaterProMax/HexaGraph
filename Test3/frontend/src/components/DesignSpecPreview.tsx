@@ -36,8 +36,8 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
   const provenance = result?.provenance ?? artifacts?.provenance;
   const provenanceText = [provenance?.generation_label, provenance?.execution_label].filter(Boolean).join("／");
   const checks = result?.checks ?? artifacts?.design_input_checks;
-  const status = result?.status ?? artifacts?.design_input_status;
-  const errorCategory = result?.error_category ?? artifacts?.design_input_error_category;
+  const status = artifacts?.design_input_status ?? result?.status;
+  const errorCategory = artifacts?.design_input_error_category ?? result?.error_category;
   const hint = designErrorHint({ errorCategory, missing, errors });
   const importStatus = importStatusView(status, errorCategory);
   const waitText = useImportWaitText({
