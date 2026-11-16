@@ -713,7 +713,9 @@ class Workbench:
             await asyncio.sleep(max(0.0, timeout_s))
         except asyncio.CancelledError:
             raise
-        self._fail_import(run, generation, "设计规格整理超时")
+        # Mark terminal first, then cancel the local import task. Provider may still bill.
+        self._fail_import(run, generation, "设计规格整理超时。供应商可能仍会计费。")
+        self._cancel_import_task(run.id)
 
     async def _import_intakes(
         self,
