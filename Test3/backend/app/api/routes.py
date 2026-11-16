@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.errors import AgentOutputError, IllegalTransition, RevisionConflict, ValidationFailed
+from app.errors import AgentOutputError, IllegalTransition, ImportInProgress, RevisionConflict, ValidationFailed
 from app.events.bus import BUS
 from app.schemas.design_input import DesignRunCreate
 from app.services.runtime import Workbench
@@ -84,6 +84,11 @@ async def create_design_run(project_id: str, body: DesignRunCreate, request: Req
         raise HTTPException(404, "project not found")
     try:
         return await bench.create_design_run(project_id, body.text, body.source, body.title)
+    except ImportInProgress as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"category": exc.category, "summary": exc.message, "run_id": exc.run_id},
+        ) from exc
     except ValidationFailed as exc:
         raise HTTPException(400, str(exc)) from exc
 

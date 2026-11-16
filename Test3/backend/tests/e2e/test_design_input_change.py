@@ -258,6 +258,8 @@ def _queue(spec: dict, design: dict, plan: dict) -> list[dict]:
 async def _to_plan(bench, text: str, queue: list[dict]) -> dict:
     project = bench.create_project("club")
     created = await bench.create_design_run(project["id"], text, DesignSource(kind="text", name="club.md"), title="社团报名")
+    if created["status"] == "importing":
+        created = await bench.wait_design_import(created["run_id"])
     assert created["status"] == "awaiting_confirmation"
     run = bench.runs[created["run_id"]]
     planned = await bench.resolve_gate(run, created["gate"]["id"], "approve", {})

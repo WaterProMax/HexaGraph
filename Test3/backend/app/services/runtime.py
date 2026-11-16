@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,7 +27,7 @@ from app.docs.checks import (
     route_design_review,
     route_review,
 )
-from app.errors import AgentOutputError, CommandDenied, IllegalTransition, RevisionConflict, ValidationFailed
+from app.errors import AgentOutputError, CommandDenied, IllegalTransition, ImportInProgress, RevisionConflict, ValidationFailed
 from app.events.bus import BUS, rebuild_task_states
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
@@ -44,7 +46,7 @@ from app.orchestrator.states import can_transition
 from app.orchestrator.transition import apply_transition, restore_task_state
 from app.orchestrator.validator import judge_output
 from app.schemas.common import IdeaCheck, IdeaDraft
-from app.schemas.design_input import DesignIntake, DesignSource, SpecIntake
+from app.schemas.design_input import DesignSource
 from app.schemas.docs import (
     AcceptanceItem,
     AcceptanceReport,
@@ -57,8 +59,8 @@ from app.schemas.docs import (
     TaskCard,
     TaskGraph,
 )
-from app.settings import load_limits, load_models, load_profile, load_roles
 from app.services import design_input as design_input_service
+from app.settings import load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
@@ -110,7 +112,17 @@ _SNAPSHOT_KINDS = {
     "stage.changed",
     "budget.exceeded",
     "runtime.recovery_failed",
+    "design_input.received",
+    "design_input.rejected",
+    "design_input.needs_input",
+    "design_input.accepted",
 }
+
+DEFAULT_IMPORT_TIMEOUT_S = 600.0
+
+
+def _iso_utc(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -137,6 +149,9 @@ class Workbench:
         self._merge_locks: dict[str, asyncio.Lock] = {}
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._schedule_locks: dict[str, asyncio.Lock] = {}
+        self._import_tasks: dict[str, asyncio.Task[None]] = {}
+        self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
+        self.clock = time.time
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -148,6 +163,8 @@ class Workbench:
     async def stop_loop(self) -> None:
         if self._loop_stop:
             self._loop_stop.set()
+        for import_task in list(self._import_tasks.values()):
+            import_task.cancel()
         if self._loop_task:
             self._loop_task.cancel()
             try:
@@ -289,6 +306,7 @@ class Workbench:
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
+            self._interrupt_stale_import(run)
             self._persist_snapshot(run)
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
@@ -499,6 +517,87 @@ class Workbench:
             "model": model,
         }
 
+    def _active_import_run(self, project_id: str) -> RunState | None:
+        for run in self.runs.values():
+            if run.project_id == project_id and run.artifacts.get("design_input_status") == "importing":
+                return run
+        return None
+
+    def _design_run_result(self, run: RunState, *, meta: Any | None = None, message: str = "") -> dict[str, Any]:
+        raw = run.artifacts.get("design_input") or {}
+        source = raw.get("source") or {}
+        if meta is None:
+            input_meta = {
+                "kind": source.get("kind") or "text",
+                "name": source.get("name") or "",
+                "note": source.get("note") or "",
+                "bytes": raw.get("bytes") or 0,
+                "chars": raw.get("chars") or 0,
+                "sha256": raw.get("sha256") or "",
+            }
+        else:
+            input_meta = meta.model_dump() if hasattr(meta, "model_dump") else meta
+        pending = next((g for g in run.gates if g.get("status") == "pending"), None)
+        return {
+            "run_id": run.id,
+            "project_id": run.project_id,
+            "status": run.artifacts.get("design_input_status") or "importing",
+            "input": input_meta,
+            "spec": run.artifacts.get("spec"),
+            "design": run.artifacts.get("design"),
+            "missing": list(run.artifacts.get("design_input_missing") or []),
+            "errors": list(run.artifacts.get("design_input_errors") or []),
+            "checks": run.artifacts.get("design_input_checks") or {},
+            "gate": pending,
+            "provenance": run.artifacts.get("provenance") or {},
+            "message": message or run.artifacts.get("design_input_message") or "",
+        }
+
+    def _import_writable(self, run: RunState, generation: int) -> bool:
+        if run.status in {"terminated", "done"}:
+            return False
+        if run.artifacts.get("design_input_status") != "importing":
+            return False
+        return int(run.artifacts.get("design_input_generation") or 0) == generation
+
+    def _fail_import(self, run: RunState, generation: int, message: str) -> None:
+        if run.artifacts.get("design_input_status") != "importing":
+            return
+        if int(run.artifacts.get("design_input_generation") or 0) != generation:
+            return
+        run.artifacts["design_input_generation"] = generation + 1
+        run.artifacts["design_input_status"] = "failed"
+        run.artifacts["design_input_step"] = ""
+        run.artifacts["design_input_message"] = message
+        run.artifacts["design_input_errors"] = [message]
+        if run.status not in {"terminated", "done"}:
+            run.status = "stopped"
+        self.emit(run, "design_input.rejected", "", {"reason": message}, "system")
+        self._persist_snapshot(run)
+
+    def _interrupt_stale_import(self, run: RunState) -> None:
+        if run.artifacts.get("design_input_status") != "importing":
+            return
+        message = "整理在服务中断后停止，未自动续跑。可以修改后重新提交。"
+        run.artifacts["design_input_status"] = "failed"
+        run.artifacts["design_input_step"] = ""
+        run.artifacts["design_input_message"] = message
+        run.artifacts["design_input_errors"] = [message]
+        run.artifacts["design_input_generation"] = int(run.artifacts.get("design_input_generation") or 0) + 1
+        if run.status not in {"terminated", "done"}:
+            run.status = "stopped"
+
+    def _cancel_import_task(self, run_id: str) -> None:
+        import_task = self._import_tasks.get(run_id)
+        if import_task and not import_task.done():
+            import_task.cancel()
+
+    async def wait_design_import(self, run_id: str, timeout: float = 10.0) -> dict[str, Any]:
+        import_task = self._import_tasks.get(run_id)
+        if import_task is not None:
+            await asyncio.wait_for(import_task, timeout=timeout)
+        return self._design_run_result(self.runs[run_id])
+
     async def create_design_run(
         self,
         project_id: str,
@@ -506,13 +605,16 @@ class Workbench:
         source: DesignSource,
         title: str = "",
     ) -> dict[str, Any]:
-        """从设计规格原文创建一次运行：整理 → 检查 → 停在 DESIGN 确认关卡。
+        """从设计规格原文创建一次运行：尽快返回 run_id，后台整理 SPEC/DESIGN。
 
         不生成任务、不调度。校验失败时不写“已确认”的 SPEC/DESIGN，也不建关卡。
         """
         errors = design_input_service.validate_input(text)
         if errors:
             raise ValidationFailed("；".join(errors))
+        active = self._active_import_run(project_id)
+        if active:
+            raise ImportInProgress("该项目已有正在整理的设计规格，未启动新的导入", run_id=active.id)
         meta = design_input_service.measure_input(text, source)
         budget_error = design_input_service.model_budget_error(meta)
         rid = str(uuid.uuid4())
@@ -525,6 +627,8 @@ class Workbench:
         self.runs[rid] = run
         # 整理期间只标记当前阶段；SPEC 的历史推进必须等导入和检查成功。
         run.engine.current = "5"
+        started = float(self.clock())
+        timeout_s = float(getattr(self, "import_timeout_s", DEFAULT_IMPORT_TIMEOUT_S) or DEFAULT_IMPORT_TIMEOUT_S)
         run.artifacts["design_input"] = {
             "title": title,
             "source": source.model_dump(),
@@ -535,6 +639,11 @@ class Workbench:
         }
         run.artifacts["provenance"] = self._provenance()
         run.artifacts["design_input_status"] = "importing"
+        run.artifacts["design_input_step"] = ""
+        run.artifacts["design_input_started_at"] = _iso_utc(started)
+        run.artifacts["design_input_deadline_at"] = _iso_utc(started + timeout_s)
+        run.artifacts["design_input_generation"] = int(run.artifacts.get("design_input_generation") or 0) + 1
+        run.artifacts["design_input_message"] = "正在整理设计规格"
         folder = self.data_dir / "runs" / run.id
         _atomic_write(folder / "design-input.txt", text)
         _atomic_write(
@@ -558,45 +667,99 @@ class Workbench:
             {"source": source.model_dump(), "chars": meta.chars, "bytes": meta.bytes, "sha256": meta.sha256},
             "owner",
         )
-
-        def result(status: str, **extra: Any) -> dict[str, Any]:
-            run.artifacts["design_input_status"] = status
-            return {
-                "run_id": run.id,
-                "project_id": project_id,
-                "status": status,
-                "input": meta.model_dump(),
-                "spec": run.artifacts.get("spec"),
-                "design": run.artifacts.get("design"),
-                "missing": list(run.artifacts.get("design_input_missing") or []),
-                "errors": list(run.artifacts.get("design_input_errors") or []),
-                "checks": run.artifacts.get("design_input_checks") or {},
-                "gate": extra.get("gate"),
-                "provenance": run.artifacts.get("provenance") or {},
-                "message": extra.get("message", ""),
-            }
+        self._persist_snapshot(run)
 
         if budget_error:
             run.status = "stopped"
             run.artifacts["design_input_errors"] = [budget_error]
+            run.artifacts["design_input_status"] = "needs_split"
+            run.artifacts["design_input_message"] = budget_error
             self.emit(run, "design_input.rejected", "", {"reason": budget_error}, "system")
-            return result("needs_split", message=budget_error)
+            self._persist_snapshot(run)
+            return self._design_run_result(run, meta=meta, message=budget_error)
 
+        generation = int(run.artifacts["design_input_generation"])
+        import_task = asyncio.create_task(
+            self._run_design_import(run, generation, text, title, source, meta, timeout_s),
+            name=f"design-import-{run.id}",
+        )
+        self._import_tasks[run.id] = import_task
+        import_task.add_done_callback(lambda _t, rid=run.id: self._import_tasks.pop(rid, None))
+        return self._design_run_result(run, meta=meta, message="正在整理设计规格")
+
+    async def _run_design_import(
+        self,
+        run: RunState,
+        generation: int,
+        text: str,
+        title: str,
+        source: DesignSource,
+        meta: Any,
+        timeout_s: float,
+    ) -> None:
+        watchdog = asyncio.create_task(self._import_watchdog(run, generation, timeout_s))
+        try:
+            await self._import_intakes(run, generation, text, title, source, meta)
+        except asyncio.CancelledError:
+            self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
+            raise
+        finally:
+            watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await watchdog
+
+    async def _import_watchdog(self, run: RunState, generation: int, timeout_s: float) -> None:
+        try:
+            await asyncio.sleep(max(0.0, timeout_s))
+        except asyncio.CancelledError:
+            raise
+        self._fail_import(run, generation, "设计规格整理超时")
+
+    async def _import_intakes(
+        self,
+        run: RunState,
+        generation: int,
+        text: str,
+        title: str,
+        source: DesignSource,
+        meta: Any,
+    ) -> None:
+        if not self._import_writable(run, generation):
+            return
+        run.artifacts["design_input_step"] = "spec"
+        self._persist_snapshot(run)
         try:
             with self._usage_scope(run):
                 spec_intake = await design_input_service.intake_spec(
                     text, title, source, meta, gateway=self.gateway, registry=self.registry
                 )
+                if not self._import_writable(run, generation):
+                    return
+                run.artifacts["design_input_step"] = "design"
+                self._persist_snapshot(run)
                 design_intake = await design_input_service.intake_design(
                     text, title, source, meta, spec_intake, gateway=self.gateway, registry=self.registry
                 )
-        except Exception as exc:  # noqa: BLE001
-            message = f"设计规格整理失败: {exc}"
-            run.status = "stopped"
-            run.artifacts["design_input_errors"] = [message]
-            self.emit(run, "design_input.rejected", "", {"reason": message}, "system")
-            return result("failed", message=message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            self._fail_import(run, generation, "设计规格整理失败")
+            return
+        if not self._import_writable(run, generation):
+            return
+        self._commit_design_import(run, generation, spec_intake, design_intake, title, meta)
 
+    def _commit_design_import(
+        self,
+        run: RunState,
+        generation: int,
+        spec_intake: Any,
+        design_intake: Any,
+        title: str,
+        meta: Any,
+    ) -> None:
+        if not self._import_writable(run, generation):
+            return
         run.artifacts["spec"] = spec_intake.spec.model_dump()
         run.artifacts["design"] = design_intake.design.model_dump()
         run.artifacts.setdefault("issues", [])
@@ -615,10 +778,14 @@ class Workbench:
         }
         flat_errors = [f"SPEC: {e}" for e in checks["spec"]] + [f"DESIGN: {e}" for e in checks["design"]]
         run.artifacts["design_input_errors"] = flat_errors
+        run.artifacts["design_input_step"] = ""
+        run.artifacts["design_input_generation"] = generation + 1
 
         if missing or flat_errors:
             run.status = "stopped"
             message = "设计规格缺少必要内容，未进入任务分解" if missing else "设计规格未通过结构检查，未进入任务分解"
+            run.artifacts["design_input_status"] = "needs_input"
+            run.artifacts["design_input_message"] = message
             self.emit(
                 run,
                 "design_input.needs_input",
@@ -626,11 +793,14 @@ class Workbench:
                 {"missing": missing, "errors": flat_errors},
                 "system",
             )
-            return result("needs_input", message=message)
+            self._persist_snapshot(run)
+            return
 
         # 外部文档整理成功后直接进入设计阶段，不走讨论/评审。
         run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
-        gate = self._gate(
+        run.artifacts["design_input_status"] = "awaiting_confirmation"
+        run.artifacts["design_input_message"] = "设计规格已整理，等待确认"
+        self._gate(
             run,
             "DESIGN基线确认",
             {
@@ -644,8 +814,8 @@ class Workbench:
                 "provenance": run.artifacts["provenance"],
             },
         )
-        self.emit(run, "design_input.accepted", "", {"sha256": meta.sha256}, "system")
-        return result("awaiting_confirmation", gate=gate["gate"], message="设计规格已整理，等待确认")
+        self.emit(run, "design_input.accepted", "", {"sha256": getattr(meta, "sha256", "")}, "system")
+        self._persist_snapshot(run)
 
     def patch_limits(self, run: RunState, body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
         before = copy.deepcopy(run.limits)
@@ -1734,6 +1904,10 @@ class Workbench:
         elif action == "terminate":
             run.status = "terminated"
             run.paused = True
+            if run.artifacts.get("design_input_status") == "importing":
+                generation = int(run.artifacts.get("design_input_generation") or 0)
+                self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
+            self._cancel_import_task(run.id)
             for task in run.tasks.values():
                 if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
                     self._set_state(run, task, "cancel", actor=actor)

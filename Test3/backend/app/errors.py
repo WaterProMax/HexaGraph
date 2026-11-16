@@ -42,3 +42,12 @@ class ReplayMissing(Test3Error):
 
 class ValidationFailed(Test3Error):
     code = "VALIDATION_FAILED"
+
+
+class ImportInProgress(Test3Error):
+    code = "IMPORT_IN_PROGRESS"
+
+    def __init__(self, message: str, *, run_id: str, category: str = "import_in_progress") -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.category = category

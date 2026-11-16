@@ -7,7 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.errors import ValidationFailed
 from app.main import create_app
-from app.schemas.design_input import DesignSource, DesignRunCreate
+from app.schemas.design_input import DesignRunCreate, DesignSource
 from tests.e2e.test_must_fixes import _bench
 
 SPEC = {
@@ -113,6 +113,12 @@ def _intake(missing: list[str] | None = None) -> list[dict]:
     ]
 
 
+async def finish_design_import(bench, result: dict) -> dict:
+    if result.get("status") != "importing":
+        return result
+    return await bench.wait_design_import(result["run_id"])
+
+
 @pytest.mark.asyncio
 async def test_design_input_rejects_empty_and_oversize(tmp_path) -> None:
     bench, _ = _bench(tmp_path)
@@ -128,8 +134,11 @@ async def test_design_input_creates_confirmable_docs_without_tasks(tmp_path) -> 
     text = "# 自习室预约\n目标：学生查看空闲座位。\n§2 座位查询：显示剩余座位与开放时段。"
     bench, _ = _bench(tmp_path, _intake())
     project = bench.create_project("p")
-    result = await bench.create_design_run(
-        project["id"], text, DesignSource(kind="file", name="self-study.md"), title="自习室预约"
+    result = await finish_design_import(
+        bench,
+        await bench.create_design_run(
+            project["id"], text, DesignSource(kind="file", name="self-study.md"), title="自习室预约"
+        ),
     )
     assert result["status"] == "awaiting_confirmation"
     assert result["gate"]["kind"] == "DESIGN基线确认"
@@ -151,7 +160,9 @@ async def test_design_input_creates_confirmable_docs_without_tasks(tmp_path) -> 
 async def test_design_input_missing_stops_before_planning(tmp_path) -> None:
     bench, _ = _bench(tmp_path, _intake(["未给出并发上限"]))
     project = bench.create_project("p")
-    result = await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    result = await finish_design_import(
+        bench, await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    )
     assert result["status"] == "needs_input"
     assert result["missing"] == ["未给出并发上限"]
     run = bench.runs[result["run_id"]]
@@ -170,7 +181,9 @@ async def test_design_input_missing_stops_before_planning(tmp_path) -> None:
 async def test_design_input_needs_split_does_not_confirm_spec_or_design(tmp_path) -> None:
     bench, provider = _bench(tmp_path, _intake())
     project = bench.create_project("p")
-    result = await bench.create_design_run(project["id"], "目标：" + "长" * 24_000, DesignSource())
+    result = await finish_design_import(
+        bench, await bench.create_design_run(project["id"], "目标：" + "长" * 24_000, DesignSource())
+    )
     assert result["status"] == "needs_split"
     run = bench.runs[result["run_id"]]
     assert run.artifacts["design_input_status"] == "needs_split"
@@ -184,7 +197,9 @@ async def test_design_input_needs_split_does_not_confirm_spec_or_design(tmp_path
 async def test_design_input_invalid_model_output_leaves_no_confirmed_artifacts(tmp_path) -> None:
     bench, _ = _bench(tmp_path, [{"spec": {"chapters": []}}])
     project = bench.create_project("p")
-    result = await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    result = await finish_design_import(
+        bench, await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    )
     assert result["status"] == "failed"
     run = bench.runs[result["run_id"]]
     assert run.gates == []
@@ -210,6 +225,9 @@ async def test_design_input_api_returns_structured_preview(tmp_path) -> None:
         )
         assert res.status_code == 200
         body = res.json()
+        assert body["status"] in {"importing", "awaiting_confirmation"}
+        if body["status"] == "importing":
+            body = await bench.wait_design_import(body["run_id"])
         assert body["status"] == "awaiting_confirmation"
         assert body["spec"]["features"][0]["code"] == "F1"
         assert body["gate"]["kind"] == "DESIGN基线确认"
@@ -228,7 +246,9 @@ async def test_design_input_api_returns_structured_preview(tmp_path) -> None:
 async def test_design_gate_confirm_is_idempotent_and_reaches_plan(tmp_path) -> None:
     bench, _ = _bench(tmp_path, _intake() + [copy.deepcopy(PLAN)])
     project = bench.create_project("p")
-    created = await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    created = await finish_design_import(
+        bench, await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    )
     run = bench.runs[created["run_id"]]
     gate_id = created["gate"]["id"]
 
@@ -254,7 +274,9 @@ async def test_design_gate_confirm_is_idempotent_and_reaches_plan(tmp_path) -> N
 async def test_design_reject_on_imported_run_does_not_rebuild_design(tmp_path) -> None:
     bench, _ = _bench(tmp_path, _intake())
     project = bench.create_project("p")
-    created = await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    created = await finish_design_import(
+        bench, await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
+    )
     run = bench.runs[created["run_id"]]
     result = await bench.resolve_gate(run, created["gate"]["id"], "reject", {"reason": "规则写错"})
     assert result["status"] == "rejected"

@@ -6,6 +6,7 @@ interface Props {
 }
 
 const IMPORT_STATUS: Record<string, { type: "info" | "warning" | "error"; message: string }> = {
+  importing: { type: "info", message: "正在整理设计规格，尚未进入确认或任务分解" },
   needs_input: { type: "warning", message: "缺少必要内容，未进入 DESIGN 确认或任务分解" },
   needs_split: { type: "warning", message: "输入需要拆分，未进入 DESIGN 确认或任务分解" },
   failed: { type: "error", message: "整理失败，未进入 DESIGN 确认或任务分解" },

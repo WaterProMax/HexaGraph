@@ -1,17 +1,55 @@
 const BASE = "/api";
 
+export class ApiError extends Error {
+  status: number;
+  category?: string;
+  summary?: string;
+  run_id?: string;
+
+  constructor(
+    message: string,
+    init: { status: number; category?: string; summary?: string; run_id?: string },
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = init.status;
+    this.category = init.category;
+    this.summary = init.summary;
+    this.run_id = init.run_id;
+  }
+}
+
+function parseApiError(status: number, text: string): ApiError {
+  let category: string | undefined;
+  let summary: string | undefined;
+  let runId: string | undefined;
+  let message = text || String(status);
+  try {
+    const body = JSON.parse(text) as { detail?: unknown };
+    const detail = body?.detail ?? body;
+    if (detail && typeof detail === "object") {
+      const rec = detail as Record<string, unknown>;
+      category = typeof rec.category === "string" ? rec.category : undefined;
+      summary = typeof rec.summary === "string" ? rec.summary : undefined;
+      runId = typeof rec.run_id === "string" ? rec.run_id : undefined;
+      if (summary) message = summary;
+      else if (typeof rec.message === "string" && rec.message) message = rec.message;
+    } else if (typeof detail === "string" && detail) {
+      message = detail;
+    }
+  } catch {
+    // keep raw text; never invent secrets from the payload
+  }
+  return new ApiError(message, { status, category, summary, run_id: runId });
+}
+
 async function req(path: string, init?: RequestInit) {
   const res = await fetch(BASE + path, {
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
   });
-  if (res.status === 409) {
-    const err = new Error("409");
-    (err as Error & { status: number }).status = 409;
-    throw err;
-  }
   if (!res.ok) {
-    throw new Error(await res.text());
+    throw parseApiError(res.status, await res.text());
   }
   return res.json();
 }
@@ -26,16 +64,18 @@ export const api = {
     text: string,
     source: { kind: "text" | "file"; name?: string; note?: string },
     title = "",
+    init?: RequestInit,
   ) =>
     req(`/projects/${projectId}/design-runs`, {
       method: "POST",
       body: JSON.stringify({ text, source, title }),
+      signal: init?.signal,
     }),
   runs: () => req("/runs"),
-  run: (id: string) => req(`/runs/${id}`),
+  run: (id: string, init?: RequestInit) => req(`/runs/${id}`, init),
   stages: (id: string) => req(`/runs/${id}/stages`),
   discussion: (id: string) => req(`/runs/${id}/discussion`),
-  artifacts: (id: string) => req(`/runs/${id}/artifacts`),
+  artifacts: (id: string, init?: RequestInit) => req(`/runs/${id}/artifacts`, init),
   todos: (id: string) => req(`/runs/${id}/todos`),
   tasks: (id: string) => req(`/runs/${id}/tasks`),
   task: (taskId: string) => req(`/tasks/${taskId}`),

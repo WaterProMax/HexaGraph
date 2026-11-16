@@ -65,6 +65,7 @@ class DesignRunResult(BaseModel):
     run_id: str
     project_id: str
     status: Literal[
+        "importing",
         "awaiting_confirmation",
         "needs_input",
         "needs_split",

@@ -12,6 +12,7 @@ describe("DesignSpecPreview persisted import status", () => {
     ["awaiting_confirmation", "整理完成，等待 DESIGN 确认；尚未进入任务分解或调度"],
     ["design_confirmed", "DESIGN 已确认，等待 PLAN 确认；尚未进入调度"],
     ["plan_confirmed", "PLAN 已确认，任务已建立；调度状态以任务列表为准"],
+    ["importing", "正在整理"],
   ])("renders %s from refreshed artifacts", (status, message) => {
     render(
       <DesignSpecPreview

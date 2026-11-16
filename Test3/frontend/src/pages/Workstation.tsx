@@ -873,6 +873,7 @@ export default function Workstation() {
                 projectName={projectName}
                 onProjectName={setProjectName}
                 onCreated={handleDesignCreated}
+                watchingImport={artifacts?.design_input_status === "importing"}
               />
             ) : (
               <>
