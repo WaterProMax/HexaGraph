@@ -162,6 +162,33 @@ describe("Workstation design-spec entry", () => {
     expect(api.createProject).not.toHaveBeenCalled();
     expect(api.createDesignRun.mock.calls[0][0]).toBe("proj-1");
   });
+
+  it("keeps 整理并检查 disabled after navigate while the new run is still importing", async () => {
+    let resolveArtifacts: ((value: unknown) => void) | undefined;
+    api.artifacts.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveArtifacts = resolve;
+        }),
+    );
+    api.run.mockImplementation(async (id?: string) => {
+      if (id === "run-2") return designRun({ id: "run-2", idea: "新导入规格", gates: [] });
+      return designRun();
+    });
+
+    renderWorkstation("/workstation");
+    fireEvent.click(screen.getByText("从设计规格开始"));
+    await waitFor(() => expect(screen.getByTestId("design-spec-input")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("设计规格原文"), {
+      target: { value: "目标：学生查看空闲座位。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "整理并检查" }));
+
+    await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("新导入规格")).toBeTruthy());
+    expect(resolveArtifacts).toBeDefined();
+    expect((screen.getByRole("button", { name: /整理并检查/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe("Workstation buttons follow backend status", () => {
@@ -207,6 +234,17 @@ describe("Workstation buttons follow backend status", () => {
     await act(async () => {
       finish?.({ ok: true });
     });
+  });
+
+  it("does not auto-approve while gates are locked for import", async () => {
+    api.artifacts.mockResolvedValue(designArtifacts({ design_input_status: "importing" }));
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "自动过关" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "自动过关" }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    });
+    expect(api.resolveGate).not.toHaveBeenCalled();
   });
 
   it("does not allow approve or schedule while importing", async () => {

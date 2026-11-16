@@ -31,7 +31,9 @@ import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
 import {
+  autoAdvanceAllowed,
   gateActionsLocked,
+  isDesignImporting,
   pauseResumeEnabled,
   pauseResumeKind,
   scheduleEnabled,
@@ -306,7 +308,11 @@ export default function Workstation() {
 
   const designView = designResult && designResult.run_id === activeRunId ? designResult : null;
   const isDesignRun = run?.origin === "design_spec";
-  const importingDesign = artifacts?.design_input_status === "importing";
+  const importingDesign = isDesignImporting({
+    artifactStatus: artifacts?.design_input_status,
+    inFlight: designResult,
+    activeRunId,
+  });
   const waitingForRun = Boolean(activeRunId) && runPending && !run;
   const composerMode: "idea" | "design" = designComposerForced(artifacts, run) ? "design" : flowMode;
   const showDesignPreview = Boolean(
@@ -408,14 +414,21 @@ export default function Workstation() {
   });
 
   useEffect(() => {
-    if (!autoAdvance || !activeRunId || !run) return;
-    if (pendingGate && !resolveGateMut.isPending) {
-      const timer = setTimeout(() => {
-        resolveGateMut.mutate({ decision: "approve" });
-      }, 600);
-      return () => clearTimeout(timer);
+    if (!activeRunId || !run) return;
+    if (
+      !autoAdvanceAllowed({
+        autoAdvance,
+        hasPendingGate: Boolean(pendingGate),
+        gatesLocked,
+      })
+    ) {
+      return;
     }
-  }, [autoAdvance, activeRunId, run, pendingGate]);
+    const timer = setTimeout(() => {
+      resolveGateMut.mutate({ decision: "approve" });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [autoAdvance, activeRunId, run, pendingGate, gatesLocked]);
 
   useEffect(() => {
     const el = flowRef.current;
@@ -903,7 +916,11 @@ export default function Workstation() {
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
               <h2 id="composer-heading">
-                {waitingForRun ? "运行加载中" : composerMode === "design" ? "设计规格输入" : "想法输入"}
+                {waitingForRun && composerMode !== "design"
+                  ? "运行加载中"
+                  : composerMode === "design"
+                    ? "设计规格输入"
+                    : "想法输入"}
               </h2>
             </div>
             <Segmented
@@ -918,7 +935,7 @@ export default function Workstation() {
                 { label: "从设计规格开始", value: "design" },
               ]}
             />
-            {waitingForRun ? (
+            {waitingForRun && composerMode !== "design" ? (
               <div className="mono muted">正在加载运行…</div>
             ) : composerMode === "design" ? (
               <DesignSpecInput

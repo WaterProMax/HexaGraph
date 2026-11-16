@@ -27,6 +27,28 @@ export function gateActionsLocked(opts: {
   return Boolean(opts.resolving || opts.importing || opts.statusQueryFailed);
 }
 
+export function isDesignImporting(opts: {
+  artifactStatus?: string | null;
+  inFlight?: { run_id?: string; status?: string } | null;
+  activeRunId?: string | null;
+}): boolean {
+  if (opts.artifactStatus === "importing") return true;
+  if (opts.artifactStatus) return false;
+  return Boolean(
+    opts.inFlight?.status === "importing" &&
+      opts.inFlight.run_id &&
+      opts.inFlight.run_id === opts.activeRunId,
+  );
+}
+
+export function autoAdvanceAllowed(opts: {
+  autoAdvance: boolean;
+  hasPendingGate: boolean;
+  gatesLocked: boolean;
+}): boolean {
+  return Boolean(opts.autoAdvance && opts.hasPendingGate && !opts.gatesLocked);
+}
+
 export function scheduleEnabled(
   run?: { status?: string; paused?: boolean; stage?: string } | null,
   opts?: { importing?: boolean; statusQueryFailed?: boolean },

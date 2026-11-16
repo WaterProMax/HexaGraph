@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  autoAdvanceAllowed,
   gateActionsLocked,
+  isDesignImporting,
   pauseResumeEnabled,
   pauseResumeKind,
   scheduleEnabled,
@@ -28,6 +30,42 @@ describe("workstationControls from backend status", () => {
   it("locks approve and schedule while importing", () => {
     expect(gateActionsLocked({ importing: true })).toBe(true);
     expect(scheduleEnabled({ status: "waiting", paused: false, stage: "7" }, { importing: true })).toBe(false);
+  });
+
+  it("treats an in-flight create as importing until artifacts report a status", () => {
+    expect(
+      isDesignImporting({
+        inFlight: { run_id: "run-2", status: "importing" },
+        activeRunId: "run-2",
+      }),
+    ).toBe(true);
+    expect(
+      isDesignImporting({
+        artifactStatus: "importing",
+        inFlight: { run_id: "run-2", status: "importing" },
+        activeRunId: "run-2",
+      }),
+    ).toBe(true);
+    expect(
+      isDesignImporting({
+        artifactStatus: "awaiting_confirmation",
+        inFlight: { run_id: "run-2", status: "importing" },
+        activeRunId: "run-2",
+      }),
+    ).toBe(false);
+    expect(
+      isDesignImporting({
+        inFlight: { run_id: "run-2", status: "importing" },
+        activeRunId: "run-other",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows auto-advance only when a pending gate is unlocked", () => {
+    expect(autoAdvanceAllowed({ autoAdvance: true, hasPendingGate: true, gatesLocked: false })).toBe(true);
+    expect(autoAdvanceAllowed({ autoAdvance: true, hasPendingGate: true, gatesLocked: true })).toBe(false);
+    expect(autoAdvanceAllowed({ autoAdvance: true, hasPendingGate: false, gatesLocked: false })).toBe(false);
+    expect(autoAdvanceAllowed({ autoAdvance: false, hasPendingGate: true, gatesLocked: false })).toBe(false);
   });
 
   it("does not dispatch while paused or terminal", () => {
