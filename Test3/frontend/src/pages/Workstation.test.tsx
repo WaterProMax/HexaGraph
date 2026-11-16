@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   createProject: vi.fn(),
   createDesignRun: vi.fn(),
   terminate: vi.fn(),
+  health: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({
@@ -114,6 +115,7 @@ beforeEach(() => {
   api.schedule.mockReset().mockResolvedValue({ started: [] });
   api.createProject.mockReset().mockResolvedValue({ id: "proj-new" });
   api.createDesignRun.mockReset().mockResolvedValue({ run_id: "run-2", status: "importing", project_id: "proj-1" });
+  api.health.mockReset().mockResolvedValue({ status: "ok", schedule_mode: "manual" });
 });
 
 afterEach(() => {
@@ -302,6 +304,60 @@ describe("Workstation buttons follow backend status", () => {
     successSpy.mockClear();
     fireEvent.click(screen.getByRole("button", { name: /驳回/ }));
     await waitFor(() => expect(successSpy.mock.calls.some((call) => String(call[0]).includes("已驳回"))).toBe(true));
+  });
+
+  it("shows click-to-schedule copy in manual mode even when provenance is preset", async () => {
+    api.run.mockResolvedValue(
+      designRun({
+        stage: "7",
+        gates: [],
+        provenance: {
+          generation: "preset",
+          generation_label: "预置测试输出（scripted）",
+          execution: "simulated",
+          execution_label: "模拟执行（预置工具调用）",
+        },
+      }),
+    );
+    api.artifacts.mockResolvedValue(
+      designArtifacts({
+        provenance: {
+          generation: "preset",
+          generation_label: "预置测试输出（scripted）",
+          execution: "simulated",
+          execution_label: "模拟执行（预置工具调用）",
+        },
+      }),
+    );
+    api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1 }]);
+    api.health.mockResolvedValue({ status: "ok", schedule_mode: "manual" });
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("schedule-notice")).toBeTruthy());
+    expect(screen.getByTestId("schedule-notice").textContent).toContain("请点击调度执行");
+    expect(screen.getByTestId("schedule-notice").textContent).not.toContain("每 5 秒自动调度");
+    expect(screen.getByTestId("run-provenance").textContent).toContain("预置测试输出");
+    expect(screen.getByTestId("run-provenance").textContent).toContain("模拟执行");
+  });
+
+  it("keeps preset labels after remount and still follows auto schedule_mode", async () => {
+    const provenance = {
+      generation: "preset",
+      generation_label: "预置测试输出（scripted）",
+      execution: "simulated",
+      execution_label: "模拟执行（预置工具调用）",
+    };
+    api.health.mockResolvedValue({ status: "ok", schedule_mode: "auto" });
+    api.run.mockResolvedValue(designRun({ stage: "7", gates: [], provenance }));
+    api.artifacts.mockResolvedValue(designArtifacts({ provenance }));
+    api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1 }]);
+    const { unmount } = renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("schedule-notice").textContent).toContain("每 5 秒自动调度"));
+    expect(screen.getByTestId("run-provenance").textContent).toContain("预置测试输出");
+    unmount();
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("run-provenance").textContent).toContain("模拟执行"));
+    expect(screen.getByTestId("schedule-notice").textContent).toContain("每 5 秒自动调度");
+    expect(screen.queryByText("请点击调度执行")).toBeNull();
   });
 
   it("shows failure feedback for approve and keeps the gate actionable", async () => {

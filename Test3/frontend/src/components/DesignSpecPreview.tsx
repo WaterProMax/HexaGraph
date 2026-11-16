@@ -34,6 +34,7 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
   const errors: string[] = result?.errors ?? artifacts?.design_input_errors ?? [];
   const input = result?.input ?? artifacts?.design_input;
   const provenance = result?.provenance ?? artifacts?.provenance;
+  const provenanceText = [provenance?.generation_label, provenance?.execution_label].filter(Boolean).join("／");
   const checks = result?.checks ?? artifacts?.design_input_checks;
   const status = result?.status ?? artifacts?.design_input_status;
   const errorCategory = result?.error_category ?? artifacts?.design_input_error_category;
@@ -50,7 +51,11 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
     <section className="glass-panel" style={{ padding: 14 }} data-testid="design-spec-preview">
       <div className="section-title">
         <span>设计规格整理</span>
-        {provenance?.generation_label && <span className="hint">{provenance.generation_label}</span>}
+        {provenanceText && (
+          <span className="hint" data-testid="design-provenance">
+            {provenanceText}
+          </span>
+        )}
       </div>
 
       {importStatus && (

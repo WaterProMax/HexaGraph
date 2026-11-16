@@ -34,6 +34,36 @@ def execution_queue(code: str, path: str) -> list[dict]:
     ]
 
 
+def build_offline_queue() -> list[dict]:
+    """One successful seat-query import, then one missing import; then the queue is exhausted.
+
+    Matches `examples/design-specs/self-study-room.md`. Does not start the 5s auto-scheduler.
+    Tests and demos must each start their own process with a fresh data dir.
+    """
+    plan = copy.deepcopy(PLAN)
+    for task in plan["tasks"]:
+        task["acceptance"][0]["cmd"] = ["python", "-m", "pytest", "tests/test_smoke.py", "-q"]
+    return (
+        _intake()
+        + [plan]
+        + execution_queue("T-01", "src/seats.py")
+        + execution_queue("T-02", "tests/test_seats.py")
+        + _intake(["缺少并发冲突处理与可检查的验收条件"])
+    )
+
+
+def create_offline_app(data_dir: Path):
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    provider = ScriptedProvider(build_offline_queue())
+    gateway = Gateway(load_models(), provider, data_dir=data_dir)
+    workbench = Workbench(gateway, RoleRegistry(load_roles()), data_dir)
+    workbench.schedule_mode = "manual"
+    app = create_app()
+    app.state.workbench = workbench
+    return app
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -41,27 +71,11 @@ def main() -> None:
     parser.add_argument("--data-dir", default="")
     args = parser.parse_args()
     data_dir = Path(args.data_dir) if args.data_dir else Path(tempfile.mkdtemp(prefix="hexagraph-design-http-"))
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    # 顺序对应：成功整理、PLAN、T-01/T-02 执行；第二条缺项整理。
-    plan = copy.deepcopy(PLAN)
-    for task in plan["tasks"]:
-        task["acceptance"][0]["cmd"] = ["python", "-m", "pytest", "tests/test_smoke.py", "-q"]
-    queue = (
-        _intake()
-        + [plan]
-        + execution_queue("T-01", "src/seats.py")
-        + execution_queue("T-02", "tests/test_seats.py")
-        + _intake(["缺少并发冲突处理与可检查的验收条件"])
-    )
-    provider = ScriptedProvider(queue)
-    gateway = Gateway(load_models(), provider, data_dir=data_dir)
-    workbench = Workbench(gateway, RoleRegistry(load_roles()), data_dir)
-    app = create_app()
-    app.state.workbench = workbench
+    app = create_offline_app(data_dir)
 
     # 不运行 app.main lifespan，避免 Settings 读取 .env；本服务器只用于测试。
     print(f"OFFLINE_SCRIPTED_DATA_DIR={data_dir}", flush=True)
+    print("OFFLINE_SCHEDULE_MODE=manual", flush=True)
     config = uvicorn.Config(app, host=args.host, port=args.port, log_level="warning", lifespan="off")
     uvicorn.Server(config).run()
 

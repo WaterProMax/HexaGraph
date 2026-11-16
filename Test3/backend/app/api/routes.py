@@ -49,8 +49,10 @@ def wb(request: Request) -> Workbench:
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(request: Request) -> dict[str, str]:
+    bench = getattr(request.app.state, "workbench", None)
+    mode = getattr(bench, "schedule_mode", None) if bench is not None else None
+    return {"status": "ok", "schedule_mode": mode if mode in {"auto", "manual"} else "manual"}
 
 
 @router.post("/projects")

@@ -19,7 +19,7 @@ UI_PLAYWRIGHT_MODULE=$PWD/tools/node_modules/playwright \
 
 ## 设计规格页面 + 真实后端 HTTP 离线验证
 
-`../scripts/verify-design-spec-http.cjs` 不 mock `/api`。关键确认和调度全部由页面完成，脚本仅以 GET 只读核对后端状态。测试服务器显式使用 `ScriptedProvider`，关闭会读取 settings 的 lifespan，不读取 `.env`，不调用真实模型。
+`../scripts/verify-design-spec-http.cjs` 不 mock `/api`。关键确认和调度全部由页面完成，脚本仅以 GET 只读核对后端状态。测试服务器显式使用 `ScriptedProvider`，关闭会读取 settings 的 lifespan，不读取 `.env`，不调用真实模型。健康检查为 `schedule_mode=manual`。主样例是 `examples/design-specs/self-study-room.md`；`club-signup.md` 只验证上传/原文保存。
 
 1. 终端一，从 `Test3/backend` 启动真实 FastAPI 和测试夹具：
 
@@ -51,4 +51,6 @@ UI_PLAYWRIGHT_MODULE=$PWD/tools/node_modules/playwright \
      node scripts/verify-design-spec-http.cjs
    ```
 
-覆盖成功与缺项两条路径，包括 DESIGN/PLAN 页面确认、任务依赖与状态、页面调度、成功/缺项后的刷新。截图写入 `docs/design/screenshots/design-spec-http-*.png`。夹具队列有限，完整重跑前重启终端一以获得干净数据。
+覆盖成功与缺项两条路径，包括 DESIGN/PLAN 页面确认、任务依赖与状态、页面调度、成功/缺项后的刷新。截图写入 `docs/design/screenshots/design-spec-http-*.png`。
+
+复位与队列：没有生产环境公开复位 API。每次启动只有一次成功整理 + 一次缺项整理，然后队列耗尽。完整重跑必须停掉终端一并换新的隔离数据目录再启动。自动化测试与人工演示必须分开启动，不要共用进程或数据目录。演示步骤见 `docs/Demo.md`。

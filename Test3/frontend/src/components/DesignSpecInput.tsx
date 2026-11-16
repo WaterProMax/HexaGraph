@@ -289,6 +289,10 @@ export default function DesignSpecInput({
         }}
         placeholder="粘贴设计规格：目标、功能、模块、接口或数据要求、业务规则、约束与验收条件…"
       />
+      <div className="mono muted" data-testid="design-demo-hint" style={{ lineHeight: 1.45 }}>
+        离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted
+        使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。
+      </div>
       <div className="composer-actions" style={{ justifyContent: "space-between" }}>
         <span className="mono muted">
           {byteLength(text).toLocaleString()} / {MAX_BYTES.toLocaleString()} 字节

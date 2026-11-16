@@ -7,6 +7,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("DesignSpecPreview persisted provenance", () => {
+  it("keeps preset generation and simulated execution labels from artifacts after remount", () => {
+    const artifacts = {
+      design_input_status: "awaiting_confirmation",
+      provenance: {
+        generation: "preset",
+        generation_label: "预置测试输出（scripted）",
+        execution: "simulated",
+        execution_label: "模拟执行（预置工具调用）",
+      },
+    };
+    const { unmount } = render(<DesignSpecPreview result={null} artifacts={artifacts} />);
+    expect(screen.getByTestId("design-provenance").textContent).toContain("预置测试输出");
+    expect(screen.getByTestId("design-provenance").textContent).toContain("模拟执行");
+    unmount();
+    render(<DesignSpecPreview result={null} artifacts={artifacts} />);
+    expect(screen.getByTestId("design-provenance").textContent).toMatch(/预置测试输出/);
+    expect(screen.getByTestId("design-provenance").textContent).toMatch(/模拟执行/);
+  });
+});
+
 describe("DesignSpecPreview persisted import status", () => {
   it.each([
     ["needs_input", "缺少必要内容，未进入 DESIGN 确认或任务分解"],

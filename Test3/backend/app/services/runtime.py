@@ -161,6 +161,7 @@ class Workbench:
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
+        self.schedule_mode = "manual"
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -168,8 +169,10 @@ class Workbench:
             return
         self._loop_stop = asyncio.Event()
         self._loop_task = asyncio.create_task(self._schedule_loop())
+        self.schedule_mode = "auto"
 
     async def stop_loop(self) -> None:
+        self.schedule_mode = "manual"
         if self._loop_stop:
             self._loop_stop.set()
         for import_task in list(self._import_tasks.values()):

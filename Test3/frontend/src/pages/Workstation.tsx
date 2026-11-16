@@ -36,7 +36,9 @@ import {
   isDesignImporting,
   pauseResumeEnabled,
   pauseResumeKind,
+  provenanceMarks,
   scheduleEnabled,
+  scheduleNoticeText,
 } from "./workstationControls";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
@@ -252,6 +254,13 @@ export default function Workstation() {
     refetchInterval: 4000,
   });
 
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: api.health,
+    refetchInterval: 15000,
+    retry: false,
+  });
+
   const refreshAll = () => {
     qc.invalidateQueries({ queryKey: ["runs"] });
     if (activeRunId) {
@@ -323,6 +332,8 @@ export default function Workstation() {
   const runPauseKind = pauseResumeKind(run);
   const runPauseEnabled = pauseResumeEnabled(run, controlOpts);
   const canSchedule = scheduleEnabled(run, controlOpts);
+  const scheduleMode = health?.schedule_mode;
+  const persistentProvenance = provenanceMarks(artifacts?.provenance || run?.provenance);
 
   const handleDesignCreated = (result: any) => {
     if (result?.project_id) setSessionProjectId(result.project_id);
@@ -1005,6 +1016,12 @@ export default function Workstation() {
             />
           )}
 
+          {persistentProvenance.length > 0 && (
+            <div className="notice" data-testid="run-provenance">
+              <span>{persistentProvenance.join("／")}</span>
+            </div>
+          )}
+
           {showDesignPreview && (
             <DesignSpecPreview artifacts={artifacts} result={designView} />
           )}
@@ -1068,8 +1085,8 @@ export default function Workstation() {
           )}
 
           {hasReadyTasks && !pendingGate && (
-            <div className="notice">
-              <span>有就绪任务，编排器每 5 秒自动调度一次。</span>
+            <div className="notice" data-testid="schedule-notice">
+              <span>{scheduleNoticeText(scheduleMode)}</span>
               <Button
                 size="small"
                 type="primary"

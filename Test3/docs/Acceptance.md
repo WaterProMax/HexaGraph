@@ -28,7 +28,7 @@
 
 ### B. scripted 模型 + 真实后端 HTTP + 真实页面
 
-`frontend/scripts/verify-design-spec-http.cjs` 不拦截 `/api`。后端由 `backend/tests/e2e/design_spec_http_server.py` 启动，显式使用 `ScriptedProvider`，不运行 `app.main` 的 settings lifespan，不读取 `.env`，不发真实模型请求。
+`frontend/scripts/verify-design-spec-http.cjs` 不拦截 `/api`。后端由 `backend/tests/e2e/design_spec_http_server.py` 启动，显式使用 `ScriptedProvider`，不运行 `app.main` 的 settings lifespan，不读取 `.env`，不发真实模型请求。健康检查返回 `schedule_mode=manual`；页面就绪提示为「请点击调度执行」，不得写成「每 5 秒自动调度」。主样例是 `examples/design-specs/self-study-room.md`，与预置座位查询任务一致。`club-signup.md` 只证明上传/原文保存，不能声称座位任务由社团文档生成。运行与产物持续标注「预置测试输出／模拟执行」，不是一次性 toast。
 
 浏览器实际完成：选择设计规格入口、输入示例、查看整理结果、确认 DESIGN、查看任务分解、确认 PLAN、点击调度、查看任务依赖与状态。后端 API 仅用于只读核对运行编号、任务、依赖和状态。
 
@@ -45,6 +45,8 @@
 - `docs/design/screenshots/design-spec-http-missing.png`
 
 这项验证证明的是**预置模型结果经过真实前后端 HTTP 后的流程衔接与离线执行**，不是 PM 的泛化生成能力。
+
+复位：停掉离线服务器并用新的隔离数据目录再启动；没有生产环境公开复位 API。队列限制：每次启动只有一次成功整理 + 一次缺项整理，然后耗尽。自动化测试与人工演示必须分开启动，不要共用进程或数据目录。两次完整复位后的首次导入应一致。
 
 ### C. 真实模型生成与实际工具执行
 

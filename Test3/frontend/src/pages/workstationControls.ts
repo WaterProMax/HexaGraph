@@ -57,3 +57,18 @@ export function scheduleEnabled(
   if (run.paused || isTerminalRunStatus(run.status)) return false;
   return true;
 }
+
+export function scheduleNoticeText(scheduleMode?: string | null): string {
+  if (scheduleMode === "auto") {
+    return "有就绪任务，编排器每 5 秒自动调度一次。";
+  }
+  return "有就绪任务，请点击调度执行。";
+}
+
+export function provenanceMarks(
+  provenance?: { generation_label?: string; execution_label?: string } | null,
+): string[] {
+  return [provenance?.generation_label, provenance?.execution_label].filter(
+    (label): label is string => Boolean(label),
+  );
+}

@@ -23,7 +23,7 @@
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/health` | `{status: ok}` |
+| GET | `/health` | `{status: ok, schedule_mode: auto|manual}`。`schedule_mode` 由进程是否启动 5 秒调度循环决定，不能从 `provenance.generation=preset` 推断。离线演示服务器为 `manual`；`make dev-backend` 默认 `auto`。 |
 | POST/GET | `/projects` | 建项目 / 列表 |
 | POST | `/projects/{id}/runs` | 建运行并立刻 `start_idea` |
 | POST | `/projects/{id}/design-runs` | 从设计规格原文建运行：整理 SPEC/DESIGN、检查后停在 DESIGN 确认 |

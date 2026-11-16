@@ -53,7 +53,7 @@ cd Test3 && make dev-backend   # http://127.0.0.1:8765
 cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代理到后端
 ```
 
-默认 `scripted` + `study-room`：在前端 Workstation（`/workstation`）或 API 创建项目并提交自习室想法后，会按 Design.md 金标准走完想法 → 讨论 → 方案 → 评审 → SPEC → 设计规格（DESIGN）→ 任务分解（PLAN）→ 编排器执行（T-01/T-02）→ 验收导出。Workstation 左侧支持输入需求并查看分阶段任务进度，右侧通过 React Flow Twin Graph 可视化全流程及任务依赖图，并支持任务级控制（pause/resume/retry/skip/force-pass/takeover/submit-takeover）。
+默认 `scripted` + `study-room`：在前端 Workstation（`/workstation`）或 API 创建项目并提交自习室想法后，会按 Design.md 金标准走完想法 → 讨论 → 方案 → 评审 → SPEC → 设计规格（DESIGN）→ 任务分解（PLAN）→ 编排器执行（T-01/T-02）→ 验收导出。此路径会启动 5 秒自动调度。设计规格离线主演示请用 `examples/design-specs/self-study-room.md` 和 `backend/tests/e2e/design_spec_http_server.py`（手动调度，见 `docs/Demo.md`）；不要把 `club-signup.md` 说成生成了座位任务。Workstation 左侧支持输入需求并查看分阶段任务进度，右侧通过 React Flow Twin Graph 可视化全流程及任务依赖图，并支持任务级控制（pause/resume/retry/skip/force-pass/takeover/submit-takeover）。
 
 示例想法：
 

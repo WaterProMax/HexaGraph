@@ -55,6 +55,7 @@ async function req(path: string, init?: RequestInit) {
 }
 
 export const api = {
+  health: () => req("/health"),
   projects: () => req("/projects"),
   createProject: (name: string) => req("/projects", { method: "POST", body: JSON.stringify({ name }) }),
   createRun: (projectId: string, idea: string) =>

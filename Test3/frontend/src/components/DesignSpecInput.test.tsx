@@ -302,3 +302,14 @@ describe("DesignSpecInput restore and resubmit", () => {
     await waitFor(() => expect(api.createDesignRun).toHaveBeenCalled());
   });
 });
+
+describe("DesignSpecInput offline demo hint", () => {
+  it("points at self-study-room.md and does not claim club-signup generated seat tasks", () => {
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
+    const hint = screen.getByTestId("design-demo-hint").textContent || "";
+    expect(hint).toMatch(/self-study-room\.md/);
+    expect(hint).toMatch(/预置/);
+    expect(hint).toMatch(/club-signup\.md/);
+    expect(hint).not.toMatch(/社团文档生成座位/);
+  });
+});

@@ -5,7 +5,9 @@ import {
   isDesignImporting,
   pauseResumeEnabled,
   pauseResumeKind,
+  provenanceMarks,
   scheduleEnabled,
+  scheduleNoticeText,
 } from "./workstationControls";
 
 describe("workstationControls from backend status", () => {
@@ -80,5 +82,35 @@ describe("workstationControls from backend status", () => {
     expect(
       scheduleEnabled({ status: "waiting", paused: false, stage: "7" }, { statusQueryFailed: true }),
     ).toBe(false);
+  });
+});
+
+describe("schedule notice follows backend schedule_mode", () => {
+  it("asks for a click in manual mode and never claims a 5-second loop", () => {
+    expect(scheduleNoticeText("manual")).toContain("请点击调度执行");
+    expect(scheduleNoticeText("manual")).not.toContain("每 5 秒自动调度");
+    expect(scheduleNoticeText(undefined)).toContain("请点击调度执行");
+    expect(scheduleNoticeText(undefined)).not.toContain("每 5 秒自动调度");
+  });
+
+  it("mentions the 5-second loop only when the backend reports auto mode", () => {
+    expect(scheduleNoticeText("auto")).toContain("每 5 秒自动调度");
+    expect(scheduleNoticeText("auto")).not.toContain("请点击调度执行");
+  });
+
+  it("does not take provenance/preset into account", () => {
+    expect(scheduleNoticeText.length).toBe(1);
+    expect(scheduleNoticeText("auto")).toContain("每 5 秒自动调度");
+  });
+});
+
+describe("provenanceMarks stay on run/artifacts", () => {
+  it("surfaces generation and execution labels together", () => {
+    expect(
+      provenanceMarks({
+        generation_label: "预置测试输出（scripted）",
+        execution_label: "模拟执行（预置工具调用）",
+      }),
+    ).toEqual(["预置测试输出（scripted）", "模拟执行（预置工具调用）"]);
   });
 });
