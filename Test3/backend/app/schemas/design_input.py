@@ -76,6 +76,7 @@ class DesignRunResult(BaseModel):
     design: dict | None = None
     missing: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    error_category: str | None = None
     checks: dict[str, list[str]] = Field(default_factory=dict)
     gate: dict | None = None
     provenance: dict = Field(default_factory=dict)

@@ -27,7 +27,16 @@ from app.docs.checks import (
     route_design_review,
     route_review,
 )
-from app.errors import AgentOutputError, CommandDenied, IllegalTransition, ImportInProgress, RevisionConflict, ValidationFailed
+from app.errors import (
+    AgentOutputError,
+    CommandDenied,
+    IllegalTransition,
+    ImportInProgress,
+    RevisionConflict,
+    ValidationFailed,
+    classify_llm_error,
+    user_message_for_category,
+)
 from app.events.bus import BUS, rebuild_task_states
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
@@ -547,6 +556,7 @@ class Workbench:
             "design": run.artifacts.get("design"),
             "missing": list(run.artifacts.get("design_input_missing") or []),
             "errors": list(run.artifacts.get("design_input_errors") or []),
+            "error_category": run.artifacts.get("design_input_error_category") or None,
             "checks": run.artifacts.get("design_input_checks") or {},
             "gate": pending,
             "provenance": run.artifacts.get("provenance") or {},
@@ -560,7 +570,7 @@ class Workbench:
             return False
         return int(run.artifacts.get("design_input_generation") or 0) == generation
 
-    def _fail_import(self, run: RunState, generation: int, message: str) -> None:
+    def _fail_import(self, run: RunState, generation: int, message: str, *, category: str | None = None) -> None:
         if run.artifacts.get("design_input_status") != "importing":
             return
         if int(run.artifacts.get("design_input_generation") or 0) != generation:
@@ -570,9 +580,13 @@ class Workbench:
         run.artifacts["design_input_step"] = ""
         run.artifacts["design_input_message"] = message
         run.artifacts["design_input_errors"] = [message]
+        if category:
+            run.artifacts["design_input_error_category"] = category
+        else:
+            run.artifacts.pop("design_input_error_category", None)
         if run.status not in {"terminated", "done"}:
             run.status = "stopped"
-        self.emit(run, "design_input.rejected", "", {"reason": message}, "system")
+        self.emit(run, "design_input.rejected", "", {"reason": message, "error_category": category}, "system")
         self._persist_snapshot(run)
 
     def _interrupt_stale_import(self, run: RunState) -> None:
@@ -703,8 +717,10 @@ class Workbench:
         except asyncio.CancelledError:
             self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
             raise
-        except Exception:  # noqa: BLE001
-            self._fail_import(run, generation, "设计规格整理失败")
+        except Exception as exc:  # noqa: BLE001
+            category = classify_llm_error(exc)
+            message = user_message_for_category(category) or "设计规格整理失败"
+            self._fail_import(run, generation, message, category=category)
         finally:
             if self._import_writable(run, generation):
                 self._fail_import(run, generation, "设计规格整理失败")
@@ -718,7 +734,12 @@ class Workbench:
         except asyncio.CancelledError:
             raise
         # Mark terminal first, then cancel the local import task. Provider may still bill.
-        self._fail_import(run, generation, "设计规格整理超时。供应商可能仍会计费。")
+        self._fail_import(
+            run,
+            generation,
+            "设计规格整理超时。供应商可能仍会计费。",
+            category="timeout",
+        )
         self._cancel_import_task(run.id)
 
     async def _import_intakes(
@@ -751,8 +772,10 @@ class Workbench:
             self._commit_design_import(run, generation, spec_intake, design_intake, title, meta)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
-            self._fail_import(run, generation, "设计规格整理失败")
+        except Exception as exc:  # noqa: BLE001
+            category = classify_llm_error(exc)
+            message = user_message_for_category(category) or "设计规格整理失败"
+            self._fail_import(run, generation, message, category=category)
             return
 
     def _commit_design_import(
@@ -789,14 +812,18 @@ class Workbench:
 
         if missing or flat_errors:
             run.status = "stopped"
-            message = "设计规格缺少必要内容，未进入任务分解" if missing else "设计规格未通过结构检查，未进入任务分解"
+            category = "missing_fields" if missing else "invalid_structure"
+            message = user_message_for_category(category) or (
+                "设计规格缺少必要内容，未进入任务分解" if missing else "设计规格未通过结构检查，未进入任务分解"
+            )
             run.artifacts["design_input_status"] = "needs_input"
             run.artifacts["design_input_message"] = message
+            run.artifacts["design_input_error_category"] = category
             self.emit(
                 run,
                 "design_input.needs_input",
                 "",
-                {"missing": missing, "errors": flat_errors},
+                {"missing": missing, "errors": flat_errors, "error_category": category},
                 "system",
             )
             self._persist_snapshot(run)
@@ -806,6 +833,7 @@ class Workbench:
         run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
         run.artifacts["design_input_status"] = "awaiting_confirmation"
         run.artifacts["design_input_message"] = "设计规格已整理，等待确认"
+        run.artifacts.pop("design_input_error_category", None)
         self._gate(
             run,
             "DESIGN基线确认",

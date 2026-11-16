@@ -1,4 +1,5 @@
 import { Alert, Tag } from "antd";
+import { designErrorHint } from "./designErrorHint";
 import { useImportWaitText } from "./designImportWait";
 
 interface Props {
@@ -16,6 +17,16 @@ const IMPORT_STATUS: Record<string, { type: "info" | "warning" | "error"; messag
   plan_confirmed: { type: "info", message: "PLAN 已确认，任务已建立；调度状态以任务列表为准" },
 };
 
+function importStatusView(status?: string, errorCategory?: string) {
+  if (status === "needs_input" && errorCategory === "invalid_structure") {
+    return { type: "error" as const, message: "模型输出未通过结构校验，未进入 DESIGN 确认或任务分解" };
+  }
+  if (status === "needs_input" && errorCategory === "missing_fields") {
+    return { type: "warning" as const, message: "缺少必要内容，未进入 DESIGN 确认或任务分解" };
+  }
+  return status ? IMPORT_STATUS[status] : undefined;
+}
+
 export default function DesignSpecPreview({ artifacts, result }: Props) {
   const spec = result?.spec ?? artifacts?.spec;
   const design = result?.design ?? artifacts?.design;
@@ -25,7 +36,9 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
   const provenance = result?.provenance ?? artifacts?.provenance;
   const checks = result?.checks ?? artifacts?.design_input_checks;
   const status = result?.status ?? artifacts?.design_input_status;
-  const importStatus = IMPORT_STATUS[status];
+  const errorCategory = result?.error_category ?? artifacts?.design_input_error_category;
+  const hint = designErrorHint({ errorCategory, missing, errors });
+  const importStatus = importStatusView(status, errorCategory);
   const waitText = useImportWaitText({
     active: status === "importing",
     status,
@@ -66,7 +79,29 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
         </div>
       )}
 
-      {missing.length > 0 && (
+      {hint && (
+        <Alert
+          data-testid="design-error-hint"
+          style={{ marginBottom: 8 }}
+          type={errorCategory === "missing_fields" ? "warning" : "error"}
+          showIcon
+          message={hint.title}
+          description={
+            <div>
+              <div>下一步：{hint.nextStep}</div>
+              {hint.details.length > 0 && (
+                <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                  {hint.details.slice(0, 8).map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          }
+        />
+      )}
+
+      {!hint && missing.length > 0 && (
         <Alert
           style={{ marginBottom: 8 }}
           type="warning"
@@ -82,12 +117,12 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
         />
       )}
 
-      {errors.length > 0 && (
+      {!hint && errors.length > 0 && (
         <Alert
           style={{ marginBottom: 8 }}
           type="error"
           showIcon
-          message={`结构检查未通过 ${errors.length} 项`}
+          message={status === "failed" ? "整理失败" : `未通过检查 ${errors.length} 项`}
           description={
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               {errors.slice(0, 8).map((e) => (

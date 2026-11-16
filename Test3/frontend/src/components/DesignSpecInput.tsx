@@ -107,6 +107,7 @@ export default function DesignSpecInput({
             design: arts.design,
             missing: arts.design_input_missing,
             errors: arts.design_input_errors,
+            error_category: arts.design_input_error_category,
             checks: arts.design_input_checks,
             input: arts.design_input,
             provenance: arts.provenance,

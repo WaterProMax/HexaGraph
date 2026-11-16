@@ -99,7 +99,7 @@ async def call_agent(
             {"role": "assistant", "content": result.text},
             {"role": "user", "content": "输出不符合格式，请按 JSON 重新输出"},
         ]
-    raise AgentOutputError(f"{name} output invalid after retry: {last_error}")
+    raise AgentOutputError("模型输出未通过结构校验", category="invalid_structure")
 
 
 def _assistant_tool_message(result: Any) -> dict[str, Any]:

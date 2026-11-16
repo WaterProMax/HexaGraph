@@ -123,4 +123,29 @@ describe("DesignSpecInput import wait", () => {
     expect(screen.getByTestId("design-import-wait").textContent).toMatch(/等待已停止（未取消后端整理）/);
     expect((screen.getByRole("button", { name: /整理并检查/ }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("passes error_category from artifacts into onCreated so the page can keep the hint", async () => {
+    api.createDesignRun.mockResolvedValue({ run_id: "run-1", status: "importing", project_id: "proj-1" });
+    api.artifacts.mockResolvedValue({
+      design_input_status: "failed",
+      design_input_error_category: "rate_limit",
+      design_input_errors: ["模型服务繁忙或请求受限"],
+      design_input_message: "模型服务繁忙或请求受限",
+      design_input_missing: [],
+    });
+    const onCreated = vi.fn();
+    render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={onCreated} />);
+    fillAndSubmit();
+    await waitFor(() =>
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          run_id: "run-1",
+          status: "failed",
+          error_category: "rate_limit",
+          errors: ["模型服务繁忙或请求受限"],
+          message: "模型服务繁忙或请求受限",
+        }),
+      ),
+    );
+  });
 });

@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.errors import ReplayMissing
+from app.errors import AgentOutputError, ReplayMissing, classified_llm_error
 from app.llm.types import LLMResult
 from app.settings import ModelsFile, get_settings
 
@@ -157,7 +157,7 @@ class DashScopeProvider:
             key = settings.dashscope_api_key
             # 【修改点】没有密钥时显式报错，不要带 "missing" 去发请求
             if not key:
-                raise ValueError("DASHSCOPE_API_KEY is not configured. Cannot initialize DashScope client.")
+                raise AgentOutputError("模型配置或凭据不可用", category="auth")
             self._client = AsyncOpenAI(base_url=self.models.base_url, api_key=key)
         return self._client
 
@@ -182,14 +182,19 @@ class DashScopeProvider:
             else:
                 # 【修改点】不支持 tool calls 的模型必须显式报错，不能静默忽略
                 raise ValueError(f"Model {cfg.model} for slot {slot} does not support tool_calls (cfg.tool_calls is false).")
-                
-        completion = await self._client_obj().chat.completions.create(
-            model=kwargs.get("model") or cfg.model,
-            messages=messages,
-            temperature=kwargs.get("temperature", cfg.temperature),
-            max_tokens=cfg.max_tokens,
-            **extra,
-        )
+
+        try:
+            completion = await self._client_obj().chat.completions.create(
+                model=kwargs.get("model") or cfg.model,
+                messages=messages,
+                temperature=kwargs.get("temperature", cfg.temperature),
+                max_tokens=cfg.max_tokens,
+                **extra,
+            )
+        except AgentOutputError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise classified_llm_error(exc) from exc
         choice = completion.choices[0]
         text = choice.message.content or ""
         parsed = None

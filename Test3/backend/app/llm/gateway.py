@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from app.errors import AgentOutputError, ReplayMissing
+from app.errors import ReplayMissing, classified_llm_error, classify_llm_error
 from app.llm.providers import DashScopeProvider, ReplayProvider, ScriptedProvider
 from app.llm.types import LLMResult
 from app.settings import ModelsFile, get_settings
@@ -98,7 +98,7 @@ class Gateway:
                 return result
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-        raise AgentOutputError(f"llm failed for slot {slot}: {last_error}")
+        raise classified_llm_error(last_error) from last_error
 
     def _persist(self, slot: str, messages: list[dict[str, Any]], result: LLMResult) -> None:
         if not self.data_dir:
@@ -113,11 +113,20 @@ class Gateway:
 
 
 def _retryable(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    if status in {429, 500, 502, 503, 504}:
+    if classify_llm_error(exc) in {"rate_limit", "timeout"}:
         return True
-    name = exc.__class__.__name__.lower()
-    return "timeout" in name or "rate" in name
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = getattr(current, "status_code", None) or getattr(current, "status", None)
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        name = type(current).__name__.lower()
+        if "timeout" in name or "rate" in name:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _redact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

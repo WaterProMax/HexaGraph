@@ -60,3 +60,60 @@ describe("DesignSpecPreview persisted import status", () => {
     expect(screen.getByTestId("design-import-wait").textContent).toMatch(/等待已停止（未取消后端整理）/);
   });
 });
+
+describe("DesignSpecPreview error taxonomy", () => {
+  it.each([
+    ["connection", "无法连接模型服务，未完成整理", "确认运行结束后重试"],
+    ["auth", "模型配置或凭据不可用", "检查配置，不改文档"],
+    ["rate_limit", "模型服务繁忙或请求受限", "稍后重试"],
+    ["timeout", "整理超过 10 分钟，未进入设计确认", "保留原文，再次提交"],
+    ["missing_fields", "文档缺项", "修改原文"],
+    ["invalid_structure", "模型输出未通过结构校验", "查看具体校验项"],
+  ] as const)("shows lasting %s title and next step, not a lumped structure failure", (category, title, nextStep) => {
+    render(
+      <DesignSpecPreview
+        result={null}
+        artifacts={{
+          design_input_status: category === "missing_fields" || category === "invalid_structure" ? "needs_input" : "failed",
+          design_input_error_category: category,
+          design_input_missing: category === "missing_fields" ? ["未给出并发上限"] : [],
+          design_input_errors: category === "invalid_structure" ? ["DESIGN: 模块来源不存在: M1/F999"] : ["整理失败"],
+          design_input: { source: { kind: "text" }, chars: 10, sha256: "abc" },
+        }}
+      />,
+    );
+    const hint = screen.getByTestId("design-error-hint");
+    expect(hint.textContent).toContain(title);
+    expect(hint.textContent).toContain(nextStep);
+    expect(hint.textContent).not.toContain("结构检查未通过");
+    const statusBanner = screen.getByTestId("design-import-status").textContent || "";
+    expect(statusBanner).toContain("未进入");
+    if (category === "missing_fields") {
+      expect(hint.textContent).toContain("未给出并发上限");
+      expect(statusBanner).toContain("缺少必要内容");
+    }
+    if (category === "invalid_structure") {
+      expect(hint.textContent).toContain("模块来源不存在");
+      expect(statusBanner).not.toContain("缺少必要内容");
+    }
+    if (category === "timeout" || category === "connection" || category === "auth" || category === "rate_limit") {
+      expect(statusBanner).not.toContain("整理完成");
+    }
+  });
+
+  it("reads error_category from the live result as well as artifacts", () => {
+    render(
+      <DesignSpecPreview
+        artifacts={{}}
+        result={{
+          status: "failed",
+          error_category: "auth",
+          errors: ["模型配置或凭据不可用"],
+          message: "模型配置或凭据不可用",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("design-error-hint").textContent).toContain("模型配置或凭据不可用");
+    expect(screen.getByTestId("design-error-hint").textContent).toContain("检查配置，不改文档");
+  });
+});
