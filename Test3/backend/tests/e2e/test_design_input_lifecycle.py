@@ -232,3 +232,37 @@ async def test_restore_runs_marks_interrupted_importing_terminal(tmp_path) -> No
         if r.project_id == project["id"] and r.artifacts.get("design_input_status") == "importing"
     ]
     assert active == []
+
+
+@pytest.mark.asyncio
+async def test_commit_exception_marks_failed_not_importing(tmp_path, monkeypatch) -> None:
+    bench, _provider, hold = _hold_bench(tmp_path, _intake())
+
+    def boom(self, *args, **kwargs):  # noqa: ANN001, ANN003
+        raise RuntimeError("commit exploded sk-secret /etc/passwd")
+
+    monkeypatch.setattr(type(bench), "_commit_design_import", boom)
+    project = bench.create_project("p")
+    result = await asyncio.wait_for(
+        bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource()),
+        timeout=1.0,
+    )
+    assert result["status"] == "importing"
+    hold.set()
+    status = await _wait_not_importing(bench, result["run_id"], timeout=2.0)
+    assert status == "failed"
+    run = bench.runs[result["run_id"]]
+    blob = " ".join(
+        [
+            str(run.artifacts.get("design_input_message") or ""),
+            *(run.artifacts.get("design_input_errors") or []),
+        ]
+    )
+    assert "设计规格整理失败" in blob
+    assert "sk-secret" not in blob
+    assert "commit exploded" not in blob
+    assert "/etc/passwd" not in blob
+    assert run.artifacts.get("design_input_status") != "importing"
+    assert run.gates == []
+    task = getattr(bench, "_import_tasks", {}).get(result["run_id"])
+    assert task is None or task.done()

@@ -100,8 +100,7 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/workstation" replace />} />
-          <Route path="/workstation" element={<Workstation />} />
-          <Route path="/workstation/:id" element={<Workstation />} />
+          <Route path="/workstation/:id?" element={<Workstation />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/runs/:id/*" element={<RunShell />} />

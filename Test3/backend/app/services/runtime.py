@@ -703,7 +703,11 @@ class Workbench:
         except asyncio.CancelledError:
             self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
             raise
+        except Exception:  # noqa: BLE001
+            self._fail_import(run, generation, "设计规格整理失败")
         finally:
+            if self._import_writable(run, generation):
+                self._fail_import(run, generation, "设计规格整理失败")
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog
@@ -742,14 +746,14 @@ class Workbench:
                 design_intake = await design_input_service.intake_design(
                     text, title, source, meta, spec_intake, gateway=self.gateway, registry=self.registry
                 )
+            if not self._import_writable(run, generation):
+                return
+            self._commit_design_import(run, generation, spec_intake, design_intake, title, meta)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
             self._fail_import(run, generation, "设计规格整理失败")
             return
-        if not self._import_writable(run, generation):
-            return
-        self._commit_design_import(run, generation, spec_intake, design_intake, title, meta)
 
     def _commit_design_import(
         self,

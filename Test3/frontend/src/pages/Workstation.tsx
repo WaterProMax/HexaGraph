@@ -26,6 +26,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, controlEnabled } from "../api/client";
 import DesignSpecInput from "../components/DesignSpecInput";
 import DesignSpecPreview from "../components/DesignSpecPreview";
+import { designComposerForced } from "../components/designImportWait";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
@@ -293,14 +294,18 @@ export default function Workstation() {
 
   const designView = designResult && designResult.run_id === activeRunId ? designResult : null;
   const isDesignRun = run?.origin === "design_spec";
-  const showDesignPreview = Boolean(activeRunId && (isDesignRun || designView));
+  const importingDesign = artifacts?.design_input_status === "importing";
+  const composerMode: "idea" | "design" = designComposerForced(artifacts, run) ? "design" : flowMode;
+  const showDesignPreview = Boolean(
+    activeRunId && (isDesignRun || designView || artifacts?.design_input_status),
+  );
 
   const handleDesignCreated = (result: any) => {
     setDesignResult(result);
     qc.invalidateQueries({ queryKey: ["runs"] });
     setSelectedId(null);
     setActiveTab("graph");
-    if (result?.run_id) nav(`/workstation/${result.run_id}`);
+    if (result?.run_id && result.run_id !== routeRunId) nav(`/workstation/${result.run_id}`);
   };
 
   const resolveGateMut = useMutation({
@@ -855,25 +860,26 @@ export default function Workstation() {
           <section className="composer glass-panel" aria-labelledby="composer-heading">
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
-              <h2 id="composer-heading">{flowMode === "design" ? "设计规格输入" : "想法输入"}</h2>
+              <h2 id="composer-heading">{composerMode === "design" ? "设计规格输入" : "想法输入"}</h2>
             </div>
             <Segmented
               block
               size="small"
               aria-label="选择流程入口"
-              value={flowMode}
+              value={composerMode}
               onChange={(val) => setFlowMode(val as "idea" | "design")}
               options={[
                 { label: "完整流程", value: "idea" },
                 { label: "从设计规格开始", value: "design" },
               ]}
             />
-            {flowMode === "design" ? (
+            {composerMode === "design" ? (
               <DesignSpecInput
                 projectName={projectName}
                 onProjectName={setProjectName}
                 onCreated={handleDesignCreated}
-                watchingImport={artifacts?.design_input_status === "importing"}
+                watchingImport={importingDesign}
+                importArtifacts={artifacts}
               />
             ) : (
               <>

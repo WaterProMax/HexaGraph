@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Alert, Button, message } from "antd";
 import { FileTextOutlined, UploadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
+import { UX_TIMEOUT_MS, startedAtMs, useImportWaitText } from "./designImportWait";
 
 const MAX_BYTES = 100 * 1024;
-const UX_TIMEOUT_MS = 10 * 60 * 1000;
 const POLL_MS = 1000;
 
 interface Props {
@@ -12,16 +12,15 @@ interface Props {
   onProjectName: (value: string) => void;
   onCreated: (result: any) => void;
   watchingImport?: boolean;
+  importArtifacts?: {
+    design_input_status?: string;
+    design_input_step?: string;
+    design_input_started_at?: string;
+  } | null;
 }
 
 function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
-}
-
-function waitCopy(step: string, seconds: number): string {
-  const label =
-    step === "spec" ? "正在整理需求规格" : step === "design" ? "正在整理设计规格" : "正在整理…";
-  return `${label} ${seconds} 秒`;
 }
 
 function isAbort(err: unknown): boolean {
@@ -48,28 +47,28 @@ export default function DesignSpecInput({
   onProjectName,
   onCreated,
   watchingImport = false,
+  importArtifacts = null,
 }: Props) {
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [waitText, setWaitText] = useState("");
+  const [pollStep, setPollStep] = useState("");
+  const [pollStartedAt, setPollStartedAt] = useState<string | undefined>();
   const fileRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const tickRef = useRef<number | null>(null);
 
-  const stopTimers = () => {
-    if (tickRef.current != null) {
-      window.clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
-  };
+  const waitText = useImportWaitText({
+    active: busy || watchingImport,
+    status: importArtifacts?.design_input_status || (busy || watchingImport ? "importing" : undefined),
+    step: importArtifacts?.design_input_step || pollStep,
+    startedAt: importArtifacts?.design_input_started_at || pollStartedAt,
+  });
 
   useEffect(
     () => () => {
       abortRef.current?.abort();
-      stopTimers();
     },
     [],
   );
@@ -87,23 +86,19 @@ export default function DesignSpecInput({
   };
 
   const watchImport = async (runId: string, signal: AbortSignal) => {
-    const started = Date.now();
-    let step = "";
-    setWaitText(waitCopy(step, 0));
-    tickRef.current = window.setInterval(() => {
-      setWaitText(waitCopy(step, Math.floor((Date.now() - started) / 1000)));
-    }, 1000);
-
+    let started = Date.now();
     try {
       while (!signal.aborted) {
         if (Date.now() - started >= UX_TIMEOUT_MS) {
-          setWaitText("等待已停止（未取消后端整理）。可刷新查看状态。");
           return;
         }
         const arts = await api.artifacts(runId, { signal });
         const status = arts?.design_input_status;
-        step = arts?.design_input_step || "";
-        setWaitText(waitCopy(step, Math.floor((Date.now() - started) / 1000)));
+        setPollStep(arts?.design_input_step || "");
+        if (arts?.design_input_started_at) {
+          setPollStartedAt(arts.design_input_started_at);
+          started = startedAtMs(arts.design_input_started_at, started);
+        }
         if (status && status !== "importing") {
           onCreated({
             run_id: runId,
@@ -131,8 +126,6 @@ export default function DesignSpecInput({
     } catch (err) {
       if (isAbort(err)) return;
       throw err;
-    } finally {
-      stopTimers();
     }
   };
 
@@ -150,7 +143,8 @@ export default function DesignSpecInput({
     const ac = new AbortController();
     abortRef.current = ac;
     setBusy(true);
-    setWaitText(waitCopy("", 0));
+    setPollStep("");
+    setPollStartedAt(undefined);
     try {
       const name = projectName.trim() || title.trim() || "设计规格导入";
       const project = await api.createProject(name);
@@ -185,7 +179,6 @@ export default function DesignSpecInput({
       setError(err?.message || String(err));
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
-      stopTimers();
       setBusy(false);
     }
   };

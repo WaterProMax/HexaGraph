@@ -1,4 +1,5 @@
 import { Alert, Tag } from "antd";
+import { useImportWaitText } from "./designImportWait";
 
 interface Props {
   artifacts: any;
@@ -23,7 +24,14 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
   const input = result?.input ?? artifacts?.design_input;
   const provenance = result?.provenance ?? artifacts?.provenance;
   const checks = result?.checks ?? artifacts?.design_input_checks;
-  const importStatus = IMPORT_STATUS[result?.status ?? artifacts?.design_input_status];
+  const status = result?.status ?? artifacts?.design_input_status;
+  const importStatus = IMPORT_STATUS[status];
+  const waitText = useImportWaitText({
+    active: status === "importing",
+    status,
+    step: artifacts?.design_input_step || result?.step,
+    startedAt: artifacts?.design_input_started_at || result?.design_input_started_at,
+  });
 
   return (
     <section className="glass-panel" style={{ padding: 14 }} data-testid="design-spec-preview">
@@ -40,6 +48,11 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
           showIcon
           message={importStatus.message}
         />
+      )}
+      {waitText && (
+        <div className="mono muted" data-testid="design-import-wait" style={{ marginBottom: 10 }}>
+          {waitText}
+        </div>
       )}
 
       {input && (

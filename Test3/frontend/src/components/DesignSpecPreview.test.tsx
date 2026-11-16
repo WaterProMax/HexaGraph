@@ -1,8 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import DesignSpecPreview from "./DesignSpecPreview";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("DesignSpecPreview persisted import status", () => {
   it.each([
@@ -24,5 +27,36 @@ describe("DesignSpecPreview persisted import status", () => {
       />,
     );
     expect(screen.getByTestId("design-import-status").textContent).toContain(message);
+  });
+
+  it("shows step wait and elapsed from started_at so remount still displays the wait UI", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const started = new Date("2026-11-16T00:00:00.000Z");
+    vi.setSystemTime(started);
+    const artifacts = {
+      design_input_status: "importing",
+      design_input_step: "spec",
+      design_input_started_at: started.toISOString(),
+      design_input: { source: { kind: "text" }, chars: 10, sha256: "abc" },
+    };
+    const { unmount } = render(<DesignSpecPreview result={null} artifacts={artifacts} />);
+    expect(screen.getByTestId("design-import-wait").textContent).toMatch(/正在整理需求规格/);
+
+    unmount();
+    vi.setSystemTime(new Date(started.getTime() + 8_000));
+    render(
+      <DesignSpecPreview
+        result={null}
+        artifacts={{ ...artifacts, design_input_step: "design" }}
+      />,
+    );
+    expect(screen.getByTestId("design-import-wait").textContent).toMatch(/正在整理设计规格/);
+    expect(screen.getByTestId("design-import-wait").textContent).toMatch(/8/);
+
+    vi.setSystemTime(new Date(started.getTime() + 10 * 60 * 1000));
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.getByTestId("design-import-wait").textContent).toMatch(/等待已停止（未取消后端整理）/);
   });
 });
