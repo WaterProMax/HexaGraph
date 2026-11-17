@@ -1,4 +1,4 @@
-import { DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined } from "@ant-design/icons";
+import { DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
@@ -14,6 +14,7 @@ import Budget from "./pages/Budget";
 import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
+import StaticClassroomDemo from "./pages/StaticClassroomDemo";
 
 export function runDot(run: any): string {
   if (run?.status === "done") return "completed";
@@ -43,6 +44,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
   const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
 
   const nav = [
+    { to: "/workstation/static-classroom", icon: <PlayCircleOutlined />, label: "静态课堂演示", match: "/workstation/static-classroom" },
     { to: "/workstation", icon: <DesktopOutlined />, label: "工作台", match: "/workstation" },
     { to: "/projects", icon: <FolderOpenOutlined />, label: "项目", match: "/projects" },
     { to: "/settings", icon: <SettingOutlined />, label: "模型槽位", match: "/settings" },
@@ -75,19 +77,24 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
       <div className="sidebar-scroll">
         <nav className="nav-group" aria-label="浏览" id="sidebar-navigation">
           <h2 className="nav-label">浏览</h2>
-          {nav.map((n) => (
-            <Link
-              key={n.to}
-              to={n.to}
-              className={`nav-item ${loc.pathname.startsWith(n.match) ? "active" : ""}`}
-              aria-current={loc.pathname.startsWith(n.match) ? "page" : undefined}
-              aria-label={n.label}
-              title={collapsed ? n.label : undefined}
-            >
-              {n.icon}
-              <span className="nav-text">{n.label}</span>
-            </Link>
-          ))}
+          {nav.map((n) => {
+            const active =
+              loc.pathname.startsWith(n.match) &&
+              (n.to !== "/workstation" || !loc.pathname.startsWith("/workstation/static-classroom"));
+            return (
+              <Link
+                key={n.to}
+                to={n.to}
+                className={`nav-item ${active ? "active" : ""}`}
+                aria-current={active ? "page" : undefined}
+                aria-label={n.label}
+                title={collapsed ? n.label : undefined}
+              >
+                {n.icon}
+                <span className="nav-text">{n.label}</span>
+              </Link>
+            );
+          })}
         </nav>
         <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
           <h2 className="nav-label" id="recent-runs-heading">
@@ -117,6 +124,7 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/workstation" replace />} />
+          <Route path="/workstation/static-classroom" element={<StaticClassroomDemo />} />
           <Route path="/workstation/:id?" element={<Workstation />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/settings" element={<Settings />} />

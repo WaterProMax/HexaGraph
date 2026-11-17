@@ -61,6 +61,16 @@ cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代�
 做一个帮同学在期末周找到有空位自习室的小程序。
 ```
 
+## 静态课堂演示（可无限重播）
+
+完整静态案例「自习室座位查询」覆盖四类角色讨论、两处分歧、人工确认、五项任务依赖与并行、模拟执行和验收。它只使用前端预置数据，不创建真实运行、不读取密钥、不调用模型，也不消耗 scripted 队列。
+
+```bash
+npm --prefix Test3/frontend run dev -- --host 127.0.0.1 --port 5173
+```
+
+访问 http://127.0.0.1:5173/workstation/static-classroom ，或从左侧导航进入「静态课堂演示」。中文操作说明、五分钟讲解脚本和实际测试边界见 [静态课堂演示文档](docs/StaticClassroomDemo.md)。
+
 ## 测试
 
 前端视觉维护请先读 [Ice Glass UI 设计规范](docs/design/UI-Design-System.md)；本轮修改与验证记录见 [UI 改版记录](docs/design/UI-Redesign-Log.md)。
