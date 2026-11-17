@@ -1,4 +1,5 @@
-import { DesktopOutlined, FolderOpenOutlined, SettingOutlined } from "@ant-design/icons";
+import { DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined } from "@ant-design/icons";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { api } from "./api/client";
@@ -36,7 +37,7 @@ function BrandMark() {
   );
 }
 
-function Sidebar() {
+function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const loc = useLocation();
   const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
   const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
@@ -48,55 +49,71 @@ function Sidebar() {
   ];
 
   return (
-    <aside className="sidebar" aria-label="应用导航">
-      <Link to="/workstation" className="brand" style={{ color: "inherit", textDecoration: "none" }}>
-        <BrandMark />
-        <span className="brand-name">HexaGraph</span>
-        <span className="brand-badge">Test3</span>
-      </Link>
+    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`} aria-label="应用导航">
+      <div className="sidebar-top">
+        <Link
+          to="/workstation"
+          className="brand"
+          style={{ color: "inherit", textDecoration: "none" }}
+          title={collapsed ? "HexaGraph" : undefined}
+          aria-label="HexaGraph 工作台"
+        >
+          <BrandMark />
+          <span className="brand-name">HexaGraph</span>
+        </Link>
+        <button
+          type="button"
+          className="sidebar-toggle"
+          aria-label={collapsed ? "展开导航" : "收起导航"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "展开导航" : "收起导航"}
+          onClick={onToggle}
+        >
+          {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+        </button>
+      </div>
       <div className="sidebar-scroll">
-        <p className="tagline">多体讨论驱动的工作流工作台。把一句想法推进成规格、设计、任务与交付。</p>
-        <nav className="nav-group" aria-label="浏览">
-        <h2 className="nav-label">浏览</h2>
-        {nav.map((n) => (
-          <Link
-            key={n.to}
-            to={n.to}
-            className={`nav-item ${loc.pathname.startsWith(n.match) ? "active" : ""}`}
-            aria-current={loc.pathname.startsWith(n.match) ? "page" : undefined}
-          >
-            {n.icon}
-            <span className="nav-text">{n.label}</span>
-          </Link>
-        ))}
+        <nav className="nav-group" aria-label="浏览" id="sidebar-navigation">
+          <h2 className="nav-label">浏览</h2>
+          {nav.map((n) => (
+            <Link
+              key={n.to}
+              to={n.to}
+              className={`nav-item ${loc.pathname.startsWith(n.match) ? "active" : ""}`}
+              aria-current={loc.pathname.startsWith(n.match) ? "page" : undefined}
+              aria-label={n.label}
+              title={collapsed ? n.label : undefined}
+            >
+              {n.icon}
+              <span className="nav-text">{n.label}</span>
+            </Link>
+          ))}
         </nav>
         <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
-        <h2 className="nav-label" id="recent-runs-heading">
-          <span>最近运行</span>
-          <span className="mono">{runs?.length ?? 0}</span>
-        </h2>
-        {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
-        {recent.map((r: any) => (
-          <NavLink key={r.id} to={`/workstation/${r.id}`} className="nav-item">
-            <span className={`dot ${runDot(r)}`} />
-            <span className="nav-text">{r.idea || r.id.slice(0, 8)}</span>
-            <span className="nav-meta">S{r.stage}</span>
-          </NavLink>
-        ))}
+          <h2 className="nav-label" id="recent-runs-heading">
+            <span>最近运行</span>
+            <span className="mono">{runs?.length ?? 0}</span>
+          </h2>
+          {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
+          {recent.map((r: any) => (
+            <NavLink key={r.id} to={`/workstation/${r.id}`} className="nav-item">
+              <span className={`dot ${runDot(r)}`} />
+              <span className="nav-text">{r.idea || r.id.slice(0, 8)}</span>
+              <span className="nav-meta">S{r.stage}</span>
+            </NavLink>
+          ))}
         </section>
-      </div>
-      <div className="sidebar-foot">
-        想法 → 讨论 → 规格 → 设计 → 任务 → 交付
-        <br />© 2026 HexaGraph
       </div>
     </aside>
   );
 }
 
 export default function App() {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
   return (
-    <div className="shell">
-      <Sidebar />
+    <div className={`shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((current) => !current)} />
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/workstation" replace />} />

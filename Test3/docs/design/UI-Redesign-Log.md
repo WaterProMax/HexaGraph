@@ -129,3 +129,51 @@ node scripts/verify-glass.cjs
 辅助文字色对三种代表性实体背景做 >=4.5:1 对比度抽检；透明表面的所有像素组合并未全量审计，不宣称全面 WCAG 达标。
 
 本轮截图重新生成，增加 Select 浮层、各标签及任务控制区截图。浏览器仍使用模拟 API，未启动真实后端、未创建真实运行；字体固定系统回退。既有静态 message 上下文提示保留。
+
+## v1.2 · 流程图边可读性
+
+日期：2026-11-17（北京时间）。功能分支：`fix/test3-flow-edge-readability`，目标集成分支：`teamwork-001`。
+
+### 修改范围
+
+- 只调整阶段流程图与任务依赖图的边、箭头、背景点阵和节点 hover / 选中时的边高亮；未改后端、状态机、编排逻辑、节点文案、布局算法、关卡协议或按钮行为。
+- 新增 `frontend/src/flowEdgeStyle.ts` 作为两种图的共享边样式。主边为 `#52738c`、2.5px 实线、18px 同色闭合箭头；仅“不适用”路径使用 `#718b9f`、2.25px 虚线。移除进行中边的动画，不新增动画。
+- 选中或悬停节点时，直接前驱和后继边使用既有品牌蓝、3px 线宽和 20px 箭头，其余边以 0.18 不透明度淡化。任务依赖图复用同一规则。
+- 点阵颜色由 `#b5cfe1` 减淡为 `#c5dce9`，让关系线而不是背景网格成为视觉重点；Ice Glass 节点、容器和布局保持不变。
+
+### 验证与截图
+
+- `npm test`：12 个测试文件、93 条测试通过；新增 `flowEdgeStyle.test.ts` 覆盖实线 / 箭头、未激活虚线、前后继高亮及无关边淡化。
+- `npm run build`：TypeScript 与 Vite 生产构建通过；既有大 chunk 提示保留，本轮不做拆包。
+- `frontend/scripts/verify-flow-edges.cjs` 使用本机 Chrome + Playwright、1280×800 和隔离 mock API，实际检查 `STAGE-0 → STAGE-1..3`、`T-01 → T-02` 的线宽 / 实线 / 箭头，验证选中前后继高亮、无关边淡化与 hover 高亮；无浏览器 pageerror，未连接真实后端。
+- 修改前后截图位于 `docs/design/screenshots/flow-edge-readability/before/` 与 `after/`，包括阶段默认、阶段选中及任务依赖图。
+
+复跑：先启动 Vite，再在 `frontend` 目录执行（路径按本机调整）：
+
+```bash
+UI_PLAYWRIGHT_MODULE="$PWD/tools/node_modules/playwright" \
+UI_BASE_URL=http://127.0.0.1:5173 \
+FLOW_EDGE_ASSERT=1 \
+node scripts/verify-flow-edges.cjs
+```
+
+可通过 `UI_SCREENSHOT_DIR` 隔离输出，`UI_BROWSER_PATH` 指定 Chrome / Edge。`FLOW_EDGE_ASSERT=0` 只截图，用于保留修改前基线。
+
+## v1.3 · 工作台视觉减法
+
+日期：2026-11-17（北京时间）。改动直接提交并推送至 `teamwork-001`，未创建 PR。
+
+### 修改范围
+
+- 左栏从重复的 PHASE 卡片列表改为“状态点 + 编号 + 标题”的单行进度列表；保留整体进度、阶段计数、详情选择、副文 DOM 与全部按钮行为。
+- 进度摘要和阶段容器取消独立厚卡、浅蓝底与阴影，改用细分隔；1280px 下左栏为 280px，把更多空间留给流程图。
+- 阶段容器改为透明底和顶部细线，背景点阵进一步减淡。节点采用 1px 细边框、紧凑 padding、无阴影；角色和内部副信息默认隐藏，hover / 选中时显示，并预留固定高度避免节点尺寸和箭头位置变化。
+- 顶栏、标签、缩放控件、底部操作条降低高度、填充与阴影，功能、协议和入口不变。任务依赖图复用共享边样式，节点由高饱和实心块改为浅状态底和细边框。
+- 同步保留导航一键收起、删除品牌介绍与页脚等本轮既有本地视觉改动；不涉及后端、状态机、关卡协议或编排逻辑。
+
+### 验证与截图
+
+- `npm test`：12 个测试文件、94 条测试全部通过；新增紧凑单行进度列表 DOM 断言。
+- `npm run build`：TypeScript 与 Vite 生产构建通过；既有大 chunk 提示保留。
+- `verify-flow-edges.cjs` 新增顶栏高度、单行列表、阶段透明底、节点 1px 边框、默认副信息隐藏、选中前后节点尺寸稳定及左栏无横向溢出断言；共享边线、箭头、前后继高亮和任务依赖图检查通过。
+- 修改前后使用同一组隔离 mock 数据和 1280×800 视口，截图位于 `docs/design/screenshots/visual-subtraction/before/` 与 `after/`；未连接真实后端。

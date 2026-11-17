@@ -407,6 +407,16 @@ describe("Workstation buttons follow backend status", () => {
     expect(document.body.textContent).toMatch(/选择一个节点|节点详情/);
   }, 15000);
 
+  it("uses compact single-line progress rows without duplicated raw-state metadata", async () => {
+    renderWorkstation();
+    await waitFor(() => expect(document.querySelector(".ws-left .phase-items .row")).toBeTruthy());
+
+    const firstRow = document.querySelector(".ws-left .phase-items .row")!;
+    expect(firstRow.querySelector(".row-meta")).toBeNull();
+    expect(firstRow.querySelector(".row-title .code")?.textContent).toBe("STAGE-0");
+    expect(firstRow.querySelector(".row-title .text")?.textContent).toBe("想法解析与初步做法");
+  });
+
   it("shows failure feedback for approve and keeps the gate actionable", async () => {
     const errorSpy = vi.spyOn(message, "error");
     const successSpy = vi.spyOn(message, "success");

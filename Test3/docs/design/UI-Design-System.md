@@ -1,28 +1,28 @@
-# HexaGraph UI 设计规范 · Ice Glass v1.1
+# HexaGraph UI 设计规范 · Ice Glass v1.3
 
-版本：1.1 · 2026-11-12（北京时间）  
-适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条）。  
-实现真源：`frontend/src/workstation-glass.css`、`App.tsx`、`pages/Workstation.tsx`。  
+版本：1.3 · 2026-11-17（北京时间）
+适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条），以及任务依赖图的共享边样式。
+实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`App.tsx`、`pages/Workstation.tsx`。
 过程与验证：[UI-Redesign-Log.md](UI-Redesign-Log.md)。
 
 ## 1. 设计目标与边界
 
-风格关键词：冰蓝、轻盈、饱满圆角、清晰分组、克制玻璃感。
+风格关键词：冰蓝、轻盈、轻圆角、清晰分组、克制玻璃感。
 
-用户提供的 Liquid Glass 图片是视觉方向，不是页面结构模板。保留 HexaGraph 的工作流信息密度，不复制演示页巨型标题、装饰开关或无业务意义的控件。
+老师参考图只用于校准“流程图优先、细边框、清晰连线、颜色区分状态”的克制层级，不复制其产品结构或文案。保留 HexaGraph 的工作流信息与全部现有功能。
 
-v1.0 仅更新左侧两列；v1.1 按用户追加要求，将同一风格推广到顶栏和右侧整个工作台，并增强文字对比度。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。项目、模型设置及独立运行详情路由不是本轮全面重设计范围。
+v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加强共享边线；v1.3 做视觉减法：左栏改为单行进度列表，阶段用细分隔，节点与顶栏控件减重。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。项目、模型设置及独立运行详情路由不做全面重设计。
 
 业务规则仍以仓库 Design / Architecture / ImplementationPlan 为准，本文件不定义状态机、API、审批或并发规则。
 
 ## 2. 视觉层级
 
-1. 背景托盘：导航是浅冰蓝，运行栏是稍饱和的蓝色渐变。
-2. 一级模块：输入、确认、进度摘要、四个 PHASE 各自独立成块。
-3. 模块内部：标题在上，内容在浅色内嵌列表中；一个模块不再套多个描边卡片。
-4. 活跃条目：白色填充、柔和阴影。非活跃条目保留透明底；悬停使用轻白底。
+1. 主视觉：右侧流程图优先，浅底、轻网格、细边节点和清晰关系线。
+2. 左侧托盘：输入与确认保留，进度摘要不设独立厚卡；四个 PHASE 仅用细分隔。
+3. 进度条目：状态点、编号、标题保持一行；不重复显示原始状态、角色和节点副文。
+4. 活跃条目：轻白底，无厚描边和浮起阴影；节点副信息仅在 hover / 选中时显现，且预留尺寸不变。
 
-玻璃感来自“有色背景 + 高透明度填充 + 顶部白色高光 + 柔和阴影”。模糊是增强，不是可读性的前提。禁止为正文增加折射、色散、波纹或跟随鼠标变形。
+玻璃感仅保留在必要的输入与导航表面。模糊是增强，不是可读性的前提；阶段容器和流程节点不再依赖大色块、厚描边或阴影建立层级。禁止为正文增加折射、色散、波纹或跟随鼠标变形。
 
 ## 3. 设计 token
 
@@ -43,6 +43,10 @@ v1.0 仅更新左侧两列；v1.1 按用户追加要求，将同一风格推广�
 | 模块间距 | `--glass-space` | `16px` |
 | 轻层次阴影 | `--glass-shadow` | 柔和外阴影 + 顶部 1px 白高光 |
 | 输入聚焦 | `--glass-focus` | `0 0 0 3px rgba(0,102,250,.25)` |
+| 流程图主边 | `FLOW_EDGE_COLORS.default` | `#52738c`；2.5px 实线，18px 闭合箭头 |
+| 流程图不适用边 | `FLOW_EDGE_COLORS.inactive` | `#718b9f`；2.25px 虚线，仍保持可见 |
+| 流程图高亮边 | `FLOW_EDGE_COLORS.connected` | 复用品牌蓝 `#0066fa`；3px，20px 箭头 |
+| 流程图淡化边 | `FLOW_EDGE_COLORS.dimmed` | `#a9bfce`；opacity 0.18，仅聚焦其它节点时使用 |
 
 胶囊按钮与状态徽章圆角固定 `999px`。PHASE 内嵌列表圆角 `18px`。
 
@@ -109,6 +113,7 @@ v1.0 仅更新左侧两列；v1.1 按用户追加要求，将同一风格推广�
 - 标签页为浅白分段托盘 + 蓝色选中胶囊；选中态保留 `aria-pressed`。
 - 缩放 / 适应画布按钮使用 34px 圆形按钮，外套浅色圆角托盘，不改变缩放逻辑。
 - 画布用浅蓝底和弱点阵；PHASE 去斜线纹理，改半透明蓝底；节点为浅白圆角卡片。保持现有节点宽度、padding 和布局计算，选中节点继续使用蓝色焦点环。
+- 阶段流程与任务依赖共用 `readableFlowEdge`：主关系使用蓝灰实线和同色的加粗闭合箭头，不使用边线动画；仅“不适用”路径使用虚线。选中或悬停节点时，直接前驱与后继边高亮，其余边淡化；不得改变节点坐标、依赖数据或点击行为。
 - 节点编号、标题、说明、原始状态分别使用次文字、主文字、辅助文字和语义状态胶囊；不能继续使用低对比浅灰。
 - 底部 dock 使用 24px 圆角玻璃面板；操作按钮、理由输入和禁用态沿用同一套控件。
 - 详情、规格和活动区域沿用浅蓝页面底、浅白内容块、蓝灰文字；原数据内容不变。
@@ -187,10 +192,22 @@ v1.0 仅更新左侧两列；v1.1 按用户追加要求，将同一风格推广�
 
 ![1024px 基线](screenshots/HexaGraph-Ice-Glass-1024.png)
 
+流程图边可读性（1280×800，隔离 mock 数据）：
+
+- [修改前阶段流程](screenshots/flow-edge-readability/before/stage-flow.png) / [修改后阶段流程](screenshots/flow-edge-readability/after/stage-flow.png)
+- [修改后选中高亮](screenshots/flow-edge-readability/after/stage-flow-selected.png)
+- [修改前任务依赖](screenshots/flow-edge-readability/before/task-dependencies.png) / [修改后任务依赖](screenshots/flow-edge-readability/after/task-dependencies.png)
+
+视觉减法（1280×800，同一组隔离 mock 数据）：
+
+- [修改前阶段流程](screenshots/visual-subtraction/before/stage-flow.png) / [修改后阶段流程](screenshots/visual-subtraction/after/stage-flow.png)
+- [修改后选中高亮](screenshots/visual-subtraction/after/stage-flow-selected.png)
+- [修改前任务依赖](screenshots/visual-subtraction/before/task-dependencies.png) / [修改后任务依赖](screenshots/visual-subtraction/after/task-dependencies.png)
+
 ## 10. 禁止的风格漂移
 
 - 在每张卡片、每一行、每个输入上同时加 1px 深色描边。
-- 全部文字同字号、同灰度，或把编号与标题堆回同一条紧凑行。
+- 全部文字同字号、同灰度，或把编号、原始状态、角色和副文全部堆回同一行。
 - 每种状态做一整张高饱和卡片，和主操作争夺注意力。
 - 给密集列表套连续多层模糊或高成本滤镜。
 - 用图片、外部 UI 库或全新字体替代现有组件，只为增加装饰。

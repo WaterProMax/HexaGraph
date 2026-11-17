@@ -14,7 +14,6 @@ import {
   BackgroundVariant,
   Controls,
   Handle,
-  MarkerType,
   Position,
   ReactFlow,
   useReactFlow,
@@ -30,6 +29,8 @@ import { designComposerForced } from "../components/designImportWait";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
+import { readableFlowEdge } from "../flowEdgeStyle";
+import { useFlowNodeHover } from "../useFlowNodeHover";
 import {
   autoAdvanceAllowed,
   gateActionsLocked,
@@ -58,12 +59,12 @@ interface PhaseTaskItem {
   detail?: any;
 }
 
-const STATUS_META: Record<ItemStatus, { label: string; edge: string }> = {
-  completed: { label: "已完成", edge: "#a1a1aa" },
-  in_progress: { label: "进行中", edge: "#0066fa" },
-  pending: { label: "待开始", edge: "#d4d4d8" },
-  error: { label: "需处理", edge: "#f76808" },
-  skipped: { label: "不适用", edge: "#94a3b8" },
+const STATUS_META: Record<ItemStatus, { label: string }> = {
+  completed: { label: "已完成" },
+  in_progress: { label: "进行中" },
+  pending: { label: "待开始" },
+  error: { label: "需处理" },
+  skipped: { label: "不适用" },
 };
 
 const RUN_STATUS: Record<string, string> = {
@@ -196,6 +197,7 @@ export default function Workstation() {
   const [projectName, setProjectName] = useState("自习室空位查询小程序");
   const [ideaInput, setIdeaInput] = useState(DEFAULT_IDEA);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const { hoveredNodeId, hoverNode, leaveNode } = useFlowNodeHover();
   const [controlReason, setControlReason] = useState("");
   const [gateReason, setGateReason] = useState("");
   const [supplementText, setSupplementText] = useState("");
@@ -749,26 +751,21 @@ export default function Workstation() {
         });
 
         item.dependsOn.forEach((depId) => {
-          const color = STATUS_META[item.status].edge;
-          edges.push({
-            id: `e-${depId}-${item.id}`,
-            source: depId,
-            target: item.id,
-            type: "smoothstep",
-            animated: item.status === "in_progress",
-            style: {
-              stroke: color,
-              strokeWidth: 1.5,
-              strokeDasharray: item.status === "pending" ? "4 4" : undefined,
-            },
-            markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
-          });
+          edges.push(
+            readableFlowEdge({
+              id: `e-${depId}-${item.id}`,
+              source: depId,
+              target: item.id,
+              inactive: item.status === "skipped",
+              focusNodeId: hoveredNodeId || selectedId,
+            }),
+          );
         });
       });
     });
 
     return { flowNodes: nodes, flowEdges: edges };
-  }, [phases, orientation, selectedItem?.id]);
+  }, [phases, orientation, selectedItem?.id, hoveredNodeId, selectedId]);
 
   const hasReadyTasks = useMemo(
     () => (tasks || []).some((t: any) => t.state === "ready" || t.state === "stale"),
@@ -1142,11 +1139,8 @@ export default function Workstation() {
                     >
                       <span className={`dot ${item.status}`} aria-hidden="true" />
                       <span className="row-main">
-                        <span className="row-meta">
-                          <span className="code">{item.code}</span>
-                          <span className="row-state">{item.rawState}</span>
-                        </span>
                         <span className="row-title">
+                          <span className="code">{item.code}</span>
                           <span className="text" title={item.title}>
                             {item.title}
                           </span>
@@ -1235,8 +1229,14 @@ export default function Workstation() {
                             setSelectedId(node.id);
                           }
                         }}
+                        onNodeMouseEnter={(_, node) => {
+                          if (!node.id.startsWith("group-")) hoverNode(node.id);
+                        }}
+                        onNodeMouseLeave={(_, node) => {
+                          if (!node.id.startsWith("group-")) leaveNode(node.id);
+                        }}
                       >
-                        <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#b5cfe1" />
+                        <Background variant={BackgroundVariant.Dots} gap={22} size={0.7} color="#e3ebf0" />
                         <Controls position="top-right" showInteractive={false} />
                         <AutoFit
                           signature={`${orientation}:${flowNodes.length}:${canvasSize.w}x${canvasSize.h}`}
