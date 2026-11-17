@@ -189,10 +189,11 @@ function AutoFit({ signature }: { signature: string }) {
   return null;
 }
 
-export default function Workstation() {
+export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: boolean }) {
   const { id: routeRunId } = useParams();
   const nav = useNavigate();
   const qc = useQueryClient();
+  const routeBase = deepSeekOnly ? "/deepseek" : "/workstation";
 
   const [projectName, setProjectName] = useState("自习室空位查询小程序");
   const [ideaInput, setIdeaInput] = useState(DEFAULT_IDEA);
@@ -203,7 +204,7 @@ export default function Workstation() {
   const [supplementText, setSupplementText] = useState("");
   const [activeTab, setActiveTab] = useState("graph");
   const [autoAdvance, setAutoAdvance] = useState(false);
-  const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
+  const [flowMode, setFlowMode] = useState<"idea" | "design" | "deepseek">(deepSeekOnly ? "deepseek" : "idea");
   const [designResult, setDesignResult] = useState<any>(null);
   const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
   const flowRef = useRef<HTMLDivElement>(null);
@@ -215,13 +216,20 @@ export default function Workstation() {
     refetchInterval: 3000,
   });
 
+  const availableRuns = useMemo(
+    () => (Array.isArray(runsList)
+      ? runsList.filter((item: any) => (item.provenance?.mode === "deepseek") === deepSeekOnly)
+      : runsList),
+    [runsList, deepSeekOnly],
+  );
+
   const activeRunId = useMemo(() => {
     if (routeRunId) return routeRunId;
-    if (Array.isArray(runsList) && runsList.length > 0) {
-      return runsList[runsList.length - 1].id;
+    if (Array.isArray(availableRuns) && availableRuns.length > 0) {
+      return availableRuns[availableRuns.length - 1].id;
     }
     return undefined;
-  }, [routeRunId, runsList]);
+  }, [routeRunId, availableRuns]);
 
   const {
     data: run,
@@ -234,6 +242,14 @@ export default function Workstation() {
     enabled: !!activeRunId,
     refetchInterval: 2000,
   });
+
+  useEffect(() => {
+    if (!routeRunId || !run) return;
+    const isDeepSeekRun = run.provenance?.mode === "deepseek";
+    if (isDeepSeekRun !== deepSeekOnly) {
+      nav(`${isDeepSeekRun ? "/deepseek" : "/workstation"}/${routeRunId}`, { replace: true });
+    }
+  }, [routeRunId, run, deepSeekOnly, nav]);
 
   const { data: artifacts } = useQuery({
     queryKey: ["arts", activeRunId],
@@ -305,7 +321,7 @@ export default function Workstation() {
     onSuccess: (newRunId) => {
       message.success(`运行已启动: ${newRunId.slice(0, 8)}`);
       qc.invalidateQueries({ queryKey: ["runs"] });
-      nav(`/workstation/${newRunId}`);
+      nav(`${routeBase}/${newRunId}`);
     },
     onError: (err: any) => {
       message.error(`启动失败: ${err?.message || String(err)}`);
@@ -325,7 +341,11 @@ export default function Workstation() {
     activeRunId,
   });
   const waitingForRun = Boolean(activeRunId) && runPending && !run;
-  const composerMode: "idea" | "design" = designComposerForced(artifacts, run) ? "design" : flowMode;
+  const composerMode: "idea" | "design" | "deepseek" = deepSeekOnly
+    ? "deepseek"
+    : designComposerForced(artifacts, run) && flowMode === "idea"
+      ? "design"
+      : flowMode;
   const showDesignPreview = Boolean(
     activeRunId && (isDesignRun || designView || artifacts?.design_input_status),
   );
@@ -347,7 +367,7 @@ export default function Workstation() {
     }
     setSelectedId(null);
     setActiveTab("graph");
-    if (result?.run_id && result.run_id !== routeRunId) nav(`/workstation/${result.run_id}`);
+    if (result?.run_id && result.run_id !== routeRunId) nav(`${routeBase}/${result.run_id}`);
   };
 
   const resolveGateMut = useMutation({
@@ -834,10 +854,10 @@ export default function Workstation() {
       <header className="topbar">
         <div className="topbar-left">
           <span className="crumb">
-            工作台 <span style={{ color: "var(--ink-4)" }}>/</span>
+            {deepSeekOnly ? "DeepSeek" : "工作台"} <span style={{ color: "var(--ink-4)" }}>/</span>
             <strong>{run ? run.idea?.slice(0, 18) || "运行" : "新运行"}</strong>
           </span>
-          {Array.isArray(runsList) && runsList.length > 0 && (
+          {Array.isArray(availableRuns) && availableRuns.length > 0 && (
             <Select
               size="small"
               aria-label="选择历史运行"
@@ -846,8 +866,8 @@ export default function Workstation() {
               style={{ width: 220 }}
               value={activeRunId}
               placeholder="选择历史运行"
-              onChange={(val) => nav(`/workstation/${val}`)}
-              options={[...runsList].reverse().map((r: any) => ({
+              onChange={(val) => nav(`${routeBase}/${val}`)}
+              options={[...availableRuns].reverse().map((r: any) => ({
                 value: r.id,
                 label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${RUN_STATUS[r.status] || r.status}`,
               }))}
@@ -928,28 +948,32 @@ export default function Workstation() {
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
               <h2 id="composer-heading">
-                {waitingForRun && composerMode !== "design"
+                {waitingForRun && composerMode === "idea"
                   ? "运行加载中"
-                  : composerMode === "design"
-                    ? "设计规格输入"
-                    : "想法输入"}
+                  : composerMode === "deepseek"
+                    ? "DeepSeek"
+                    : composerMode === "design"
+                      ? "设计规格输入"
+                      : "想法输入"}
               </h2>
             </div>
-            <Segmented
-              block
-              size="small"
-              aria-label="选择流程入口"
-              value={composerMode}
-              disabled={waitingForRun}
-              onChange={(val) => setFlowMode(val as "idea" | "design")}
-              options={[
-                { label: "完整流程", value: "idea" },
-                { label: "从设计规格开始", value: "design" },
-              ]}
-            />
-            {waitingForRun && composerMode !== "design" ? (
+            {!deepSeekOnly && (
+              <Segmented
+                block
+                size="small"
+                aria-label="选择流程入口"
+                value={composerMode}
+                disabled={waitingForRun}
+                onChange={(val) => setFlowMode(val as "idea" | "design")}
+                options={[
+                  { label: "完整流程", value: "idea" },
+                  { label: "从设计规格开始", value: "design" },
+                ]}
+              />
+            )}
+            {waitingForRun && composerMode === "idea" ? (
               <div className="mono muted">正在加载运行…</div>
-            ) : composerMode === "design" ? (
+            ) : composerMode !== "idea" ? (
               <DesignSpecInput
                 projectName={projectName}
                 onProjectName={setProjectName}
@@ -959,6 +983,7 @@ export default function Workstation() {
                 projectId={designProjectId}
                 onProjectId={setSessionProjectId}
                 runId={activeRunId}
+                provider={composerMode === "deepseek" ? "deepseek" : "existing"}
               />
             ) : (
               <>
@@ -1021,6 +1046,18 @@ export default function Workstation() {
             <div className="notice" data-testid="run-provenance">
               <span>{persistentProvenance.join("／")}</span>
             </div>
+          )}
+
+          {artifacts?.model_stage?.status === "running" && (
+            <Alert type="info" showIcon message="DeepSeek 正在生成任务计划" description="真实请求有总超时；可终止当前运行，不会自动生成演示计划。" />
+          )}
+          {["failed", "timeout", "interrupted", "cancelled"].includes(artifacts?.model_stage?.status || "") && (
+            <Alert
+              type="error"
+              showIcon
+              message="DeepSeek 模型阶段未成功"
+              description={artifacts?.model_stage?.error || "请求已取消，未生成可执行计划。"}
+            />
           )}
 
           {showDesignPreview && (
@@ -1190,7 +1227,7 @@ export default function Workstation() {
 
           <div className="canvas-body">
             {!activeRunId ? (
-              runsList === undefined ? null : <div className="hero">
+              availableRuns === undefined ? null : <div className="hero">
                 <h1>
                   把一句想法，
                   <br />

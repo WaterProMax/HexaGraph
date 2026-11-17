@@ -193,6 +193,28 @@ export default function DesignSpecPreview({ artifacts, result }: Props) {
               </span>
             </div>
           ))}
+          {(design.decisions || []).length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div className="section-title">
+                <span>设计决策与默认选择</span>
+                <span className="hint">{design.decisions.length} 项</span>
+              </div>
+              {design.decisions.map((item: any, index: number) => (
+                <div className="row" key={item.code || index} style={{ cursor: "default" }}>
+                  <span className="dot in_progress" />
+                  <span className="row-main">
+                    <span className="row-meta">
+                      <span className="code">{item.code || `D${index + 1}`}</span>
+                    </span>
+                    <span className="row-title">
+                      <span className="text">{item.decision || item.title || item.text || "设计决策"}</span>
+                    </span>
+                    {item.reason && <span className="row-sub">{item.reason}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           {checks && (
             <div className="mono muted" style={{ marginTop: 8 }}>
               SPEC 检查 {checks.spec?.length || 0} 项 · DESIGN 检查 {checks.design?.length || 0} 项

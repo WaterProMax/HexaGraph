@@ -30,6 +30,7 @@ class DesignRunCreate(BaseModel):
     text: str
     source: DesignSource = Field(default_factory=DesignSource)
     title: str = ""
+    provider: Literal["existing", "deepseek"] = "existing"
 
 
 class SpecIntake(BaseModel):

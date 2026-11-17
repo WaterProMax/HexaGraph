@@ -85,7 +85,7 @@ async def create_design_run(project_id: str, body: DesignRunCreate, request: Req
     if project_id not in bench.projects:
         raise HTTPException(404, "project not found")
     try:
-        return await bench.create_design_run(project_id, body.text, body.source, body.title)
+        return await bench.create_design_run(project_id, body.text, body.source, body.title, body.provider)
     except ImportInProgress as exc:
         raise HTTPException(
             status_code=409,

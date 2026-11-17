@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(ROOT / ".env"), extra="ignore")
 
     dashscope_api_key: str = ""
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_timeout_s: float = 120.0
+    deepseek_stage_timeout_s: float = 600.0
     feedback_hash_key: str = ""
     test3_data_dir: str = ""
     test3_llm_provider: str = "scripted"

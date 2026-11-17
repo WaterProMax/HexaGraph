@@ -309,3 +309,19 @@
 }
 .ws-left .composer .design-file > .ant-btn { min-height: 28px; padding: 3px 10px; background: #ffffffd9; color: #0054c9; }
 .ws-left .composer .design-file .mono.muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-left .composer .composer-fields > .ant-alert { margin: 6px 10px 10px; }
+.ws-left .composer .design-boundaries {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+.ws-left .composer .design-boundaries input {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--glass-radius-field);
+  background: var(--glass-field);
+  color: var(--glass-ink);
+  font-size: 12px;
+}

@@ -45,6 +45,7 @@ from app.listening.known import match_known
 from app.listening.mask import hash_author, mask_text
 from app.listening.route import route as route_feedback
 from app.llm.gateway import USAGE_ACCUMULATOR, Gateway
+from app.llm.providers import DeepSeekProvider
 from app.orchestrator.budget import check_budget, tokens_budget
 from app.orchestrator.classify import classify, failure_signature
 from app.orchestrator.control import require_control
@@ -69,7 +70,7 @@ from app.schemas.docs import (
     TaskGraph,
 )
 from app.services import design_input as design_input_service
-from app.settings import load_limits, load_models, load_profile, load_roles
+from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
@@ -125,6 +126,8 @@ _SNAPSHOT_KINDS = {
     "design_input.rejected",
     "design_input.needs_input",
     "design_input.accepted",
+    "model.stage_started",
+    "model.stage_failed",
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
@@ -159,6 +162,8 @@ class Workbench:
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._schedule_locks: dict[str, asyncio.Lock] = {}
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
+        self._model_stage_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._run_gateways: dict[str, Gateway] = {}
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
         self.schedule_mode = "manual"
@@ -177,6 +182,8 @@ class Workbench:
             self._loop_stop.set()
         for import_task in list(self._import_tasks.values()):
             import_task.cancel()
+        for stage_task in list(self._model_stage_tasks.values()):
+            stage_task.cancel()
         if self._loop_task:
             self._loop_task.cancel()
             try:
@@ -319,6 +326,11 @@ class Workbench:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
             self._interrupt_stale_import(run)
+            if (run.artifacts.get("model_stage") or {}).get("status") == "running":
+                message = "服务重启中断了 DeepSeek 任务分解，未自动生成或执行计划；请人工重试"
+                run.artifacts["model_stage"]["status"] = "interrupted"
+                run.artifacts["model_stage"]["error"] = message
+                self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
@@ -500,8 +512,21 @@ class Workbench:
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
 
-    def _provenance(self) -> dict[str, Any]:
+    def _provenance(self, mode: str = "existing") -> dict[str, Any]:
         """区分“计划/文档由谁生成”和“任务如何执行”，供页面与验收记录使用。"""
+        if mode == "deepseek":
+            settings = get_settings()
+            model = settings.deepseek_model
+            return {
+                "generation": "model",
+                "generation_label": f"DeepSeek 真实模型生成（{model}）",
+                "execution": "real_tool",
+                "execution_label": "真实工具执行（受限写集与命令白名单）",
+                "provider": "DeepSeekProvider",
+                "mode": "deepseek",
+                "model": model,
+                "base_url": settings.deepseek_base_url,
+            }
         provider = type(self.gateway.provider).__name__
         model = str(self.models.slots["flagship"].model)
         if provider == "ScriptedProvider":
@@ -528,6 +553,29 @@ class Workbench:
             "provider": provider,
             "model": model,
         }
+
+    def _gateway_for(self, run: RunState) -> Gateway:
+        if (run.artifacts.get("provenance") or {}).get("mode") != "deepseek":
+            return self.gateway
+        cached = self._run_gateways.get(run.id)
+        if cached is not None:
+            return cached
+        settings = get_settings()
+        source = run.artifacts.get("provenance") or {}
+        model = str(source.get("model") or settings.deepseek_model)
+        base_url = str(source.get("base_url") or settings.deepseek_base_url)
+        models = copy.deepcopy(self.models)
+        models.provider = "deepseek"
+        models.base_url = base_url
+        models.api_key_env = "DEEPSEEK_API_KEY"
+        for slot in models.slots.values():
+            slot.model = model
+            slot.fallback = ""
+            slot.json_mode = True
+            slot.extra_body = {}
+        gateway = Gateway(models, DeepSeekProvider(base_url=base_url), data_dir=self.data_dir / "runs" / run.id)
+        self._run_gateways[run.id] = gateway
+        return gateway
 
     def _active_import_run(self, project_id: str) -> RunState | None:
         for run in self.runs.values():
@@ -621,6 +669,7 @@ class Workbench:
         text: str,
         source: DesignSource,
         title: str = "",
+        provider: str = "existing",
     ) -> dict[str, Any]:
         """从设计规格原文创建一次运行：尽快返回 run_id，后台整理 SPEC/DESIGN。
 
@@ -654,7 +703,7 @@ class Workbench:
             "sha256": meta.sha256,
             "text": text,
         }
-        run.artifacts["provenance"] = self._provenance()
+        run.artifacts["provenance"] = self._provenance(provider)
         run.artifacts["design_input_status"] = "importing"
         run.artifacts["design_input_step"] = ""
         run.artifacts["design_input_started_at"] = _iso_utc(started)
@@ -761,14 +810,14 @@ class Workbench:
         try:
             with self._usage_scope(run):
                 spec_intake = await design_input_service.intake_spec(
-                    text, title, source, meta, gateway=self.gateway, registry=self.registry
+                    text, title, source, meta, gateway=self._gateway_for(run), registry=self.registry
                 )
                 if not self._import_writable(run, generation):
                     return
                 run.artifacts["design_input_step"] = "design"
                 self._persist_snapshot(run)
                 design_intake = await design_input_service.intake_design(
-                    text, title, source, meta, spec_intake, gateway=self.gateway, registry=self.registry
+                    text, title, source, meta, spec_intake, gateway=self._gateway_for(run), registry=self.registry
                 )
             if not self._import_writable(run, generation):
                 return
@@ -876,8 +925,9 @@ class Workbench:
         provider.queue = list(scripted_full_queue())
 
     def _drain_gateway(self, run: RunState) -> None:
-        while self.gateway.events:
-            ev = self.gateway.events.pop(0)
+        gateway = self._gateway_for(run)
+        while gateway.events:
+            ev = gateway.events.pop(0)
             self.emit(run, ev.get("kind") or "llm.fallback", str(ev.get("slot") or ""), ev)
 
     def _emit_budget(self, run: RunState, task: dict[str, Any] | None = None) -> None:
@@ -935,7 +985,7 @@ class Workbench:
         last_doc: Any = None
         errors: list[str] = []
         for attempt in range(max_rewrites + 1):
-            doc = await call_agent(role, payload, registry=self.registry, gateway=self.gateway)
+            doc = await call_agent(role, payload, registry=self.registry, gateway=self._gateway_for(run))
             self._require_model(doc, expected, role)
             last_doc = doc
             errors = check(doc)
@@ -950,12 +1000,12 @@ class Workbench:
     async def start_idea(self, run: RunState) -> dict[str, Any]:
         with self._usage_scope(run):
             card = IdeaCard(raw=run.idea)
-            check = await call_agent("idea_checker", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
+            check = await call_agent("idea_checker", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self._gateway_for(run))
             self._require_model(check, IdeaCheck, "idea_checker")
             card.user, card.problem, card.needs_payer, card.payer = check.user, check.problem, check.needs_payer, check.payer
             if check.missing and not check.ok:
                 return self._gate(run, "想法补充", {"missing": check.missing, "card": card.model_dump()})
-            draft = await call_agent("pm_draft", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self.gateway)
+            draft = await call_agent("pm_draft", {"idea_card": card.model_dump()}, registry=self.registry, gateway=self._gateway_for(run))
             self._require_model(draft, IdeaDraft, "pm_draft")
             card.approach = draft.approach
             card.features = draft.features
@@ -1133,6 +1183,10 @@ class Workbench:
         for name, key in (("SPEC.json", "spec"), ("DESIGN.json", "design"), ("PLAN.json", "plan"), ("acceptance.json", "acceptance")):
             (dest / name).write_text(json.dumps(run.artifacts.get(key) or {}, ensure_ascii=False, indent=2), encoding="utf-8")
         (dest / "trace.json").write_text(json.dumps(run.trace.matrix(), ensure_ascii=False, indent=2), encoding="utf-8")
+        (dest / "RUN_SOURCE.json").write_text(
+            json.dumps(run.artifacts.get("provenance") or {}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         run.artifacts["release_dir"] = str(dest)
         return dest
 
@@ -1149,7 +1203,7 @@ class Workbench:
             result = await run_discussion(
                 card,
                 registry=self.registry,
-                gateway=self.gateway,
+                gateway=self._gateway_for(run),
                 ids=run.ids,
                 reopen=reopen,
                 review_opinions=review_opinions,
@@ -1193,7 +1247,7 @@ class Workbench:
                     role,
                     {"idea_card": run.artifacts["idea_card"], "proposal": run.artifacts["proposal"]},
                     registry=self.registry,
-                    gateway=self.gateway,
+                    gateway=self._gateway_for(run),
                 )
                 self._require_model(sheet, ReviewSheet, role)
                 for op in sheet.opinions:
@@ -1345,7 +1399,7 @@ class Workbench:
                 role,
                 {"spec": spec.model_dump(), "design": design.model_dump()},
                 registry=self.registry,
-                gateway=self.gateway,
+                gateway=self._gateway_for(run),
             )
             self._require_model(sheet, ReviewSheet, role)
             for op in sheet.opinions:
@@ -1355,6 +1409,49 @@ class Workbench:
         return sheets
 
     async def run_plan(self, run: RunState) -> dict[str, Any]:
+        if (run.artifacts.get("provenance") or {}).get("mode") != "deepseek":
+            return await self._generate_plan(run)
+        timeout_s = max(1.0, float(get_settings().deepseek_stage_timeout_s))
+        started = float(self.clock())
+        run.artifacts["model_stage"] = {
+            "stage": "PLAN",
+            "status": "running",
+            "started_at": _iso_utc(started),
+            "deadline_at": _iso_utc(started + timeout_s),
+        }
+        current = asyncio.current_task()
+        if current is not None:
+            self._model_stage_tasks[run.id] = current
+        self.emit(run, "model.stage_started", "PLAN", {"timeout_s": timeout_s})
+        try:
+            result = await asyncio.wait_for(self._generate_plan(run), timeout=timeout_s)
+            run.artifacts["model_stage"]["status"] = "completed"
+            return result
+        except TimeoutError:
+            message = "DeepSeek 任务分解超时，未生成可执行计划；可重试或终止运行"
+            run.artifacts["model_stage"]["status"] = "timeout"
+            run.artifacts["model_stage"]["error"] = message
+            self.emit(run, "model.stage_failed", "PLAN", {"category": "timeout", "message": message})
+            return self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "timeout"})
+        except asyncio.CancelledError:
+            run.artifacts["model_stage"]["status"] = "cancelled"
+            if run.status == "terminated":
+                self._persist_snapshot(run)
+                return {"status": "terminated", "stage": run.engine.current}
+            raise
+        except Exception as exc:  # noqa: BLE001
+            category = classify_llm_error(exc) or "invalid_structure"
+            message = user_message_for_category(category) or "DeepSeek 任务分解失败，请检查模型响应"
+            run.artifacts["model_stage"]["status"] = "failed"
+            run.artifacts["model_stage"]["error"] = message
+            run.artifacts["model_stage"]["error_category"] = category
+            self.emit(run, "model.stage_failed", "PLAN", {"category": category, "message": message})
+            return self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": category})
+        finally:
+            if current is not None and self._model_stage_tasks.get(run.id) is current:
+                self._model_stage_tasks.pop(run.id, None)
+
+    async def _generate_plan(self, run: RunState) -> dict[str, Any]:
         with self._usage_scope(run):
             spec = SpecDoc.model_validate(run.artifacts["spec"])
             design = DesignDoc.model_validate(run.artifacts["design"])
@@ -1550,7 +1647,7 @@ class Workbench:
                         visible,
                         tools,
                         registry=self.registry,
-                        gateway=self.gateway,
+                        gateway=self._gateway_for(run),
                         max_steps=int(card.budget.max_tool_steps or (run.limits.get("orchestrator") or {}).get("max_tool_steps") or 30),
                     )
                     break
@@ -1643,7 +1740,7 @@ class Workbench:
             "code_reviewer",
             {"task_card": card.model_dump(), "interfaces": [], "diff": "", "command_output": output},
             registry=self.registry,
-            gateway=self.gateway,
+            gateway=self._gateway_for(run),
         )
         issues = list(getattr(review, "issues", []) or [])
         task["review_issues"] = [i.model_dump() if hasattr(i, "model_dump") else i for i in issues]
@@ -1857,7 +1954,7 @@ class Workbench:
                 "decomposer",
                 {"spec": spec.model_dump(), "design": design.model_dump(), "rewrite": payload},
                 registry=self.registry,
-                gateway=self.gateway,
+                gateway=self._gateway_for(run),
             )
         self._require_model(graph, TaskGraph, "decomposer")
         result = propose_replan(graph, spec, design, int((run.limits.get("plan") or {})["capacity_points"]))
@@ -1945,6 +2042,9 @@ class Workbench:
                 generation = int(run.artifacts.get("design_input_generation") or 0)
                 self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
             self._cancel_import_task(run.id)
+            stage_task = self._model_stage_tasks.get(run.id)
+            if stage_task and not stage_task.done():
+                stage_task.cancel()
             for task in run.tasks.values():
                 if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
                     self._set_state(run, task, "cancel", actor=actor)
@@ -2100,7 +2200,7 @@ class Workbench:
                         role,
                         {"change_request": {"description": description, "kind": kind}, "impact": impact, "baseline": run.artifacts.get("spec")},
                         registry=self.registry,
-                        gateway=self.gateway,
+                        gateway=self._gateway_for(run),
                     )
                     scores.append(int(getattr(score, "score", 0)))
                     any_red = any_red or bool(getattr(score, "red_line", False))
@@ -2353,7 +2453,7 @@ class Workbench:
             imported.append(item)
         texts = [r["text_masked"] for r in imported]
         try:
-            vectors = await self.gateway.embed(texts)
+            vectors = await self._gateway_for(run).embed(texts)
             if not vectors or len(vectors) != len(texts) or any(not vec for vec in vectors):
                 raise RuntimeError("embedding unavailable")
             groups = cluster(vectors, threshold=float((run.limits.get("listening") or {}).get("cluster_threshold") or 0.78))
@@ -2378,7 +2478,7 @@ class Workbench:
             )
         distilled: list[dict[str, Any]] = []
         try:
-            batch = await call_agent("distiller", {"feedback_group": group_payload}, registry=self.registry, gateway=self.gateway)
+            batch = await call_agent("distiller", {"feedback_group": group_payload}, registry=self.registry, gateway=self._gateway_for(run))
             distilled = list(getattr(batch, "items", None) or [])
         except Exception:  # noqa: BLE001
             distilled = []
@@ -2391,7 +2491,7 @@ class Workbench:
                         role,
                         {"feedback_group": distilled, "baseline": run.artifacts.get("spec")},
                         registry=self.registry,
-                        gateway=self.gateway,
+                        gateway=self._gateway_for(run),
                     )
                     scores[getattr(score, "dimension", role)] = int(getattr(score, "score", 0))
                     any_red = any_red or bool(getattr(score, "red_line", False))
@@ -2430,7 +2530,7 @@ class Workbench:
                 "cluster_fast",
                 {"feedback_group": [{"index": idx, "text": text} for idx, text in enumerate(texts)]},
                 registry=self.registry,
-                gateway=self.gateway,
+                gateway=self._gateway_for(run),
             )
             groups: list[list[int]] = []
             seen: set[int] = set()

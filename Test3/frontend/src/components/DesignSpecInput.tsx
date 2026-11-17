@@ -29,6 +29,7 @@ interface Props {
   projectId?: string;
   onProjectId?: (id: string) => void;
   runId?: string;
+  provider?: "existing" | "deepseek";
 }
 
 function fieldsFromInput(input?: DesignInputFields | null): { title: string; text: string; fileName: string } {
@@ -71,11 +72,13 @@ export default function DesignSpecInput({
   projectId,
   onProjectId,
   runId,
+  provider = "existing",
 }: Props) {
   const initial = fieldsFromInput(importArtifacts?.design_input);
   const [title, setTitle] = useState(initial.title);
   const [text, setText] = useState(initial.text);
   const [fileName, setFileName] = useState(initial.fileName);
+  const [boundaries, setBoundaries] = useState({ language: "", framework: "", storage: "", deployment: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pollStep, setPollStep] = useState("");
@@ -180,8 +183,11 @@ export default function DesignSpecInput({
       setError("设计规格为空");
       return;
     }
-    if (byteLength(text) > MAX_BYTES) {
-      setError("设计规格超过 100 KiB 上限");
+    const submissionText = provider === "deepseek"
+      ? `${text.trim()}\n\n## 本次真实运行边界\n- 目标语言：${boundaries.language.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 目标框架：${boundaries.framework.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 存储：${boundaries.storage.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 部署边界：${boundaries.deployment.trim() || "本地受限工作区，不假定外网、安装依赖或部署凭据"}`
+      : text;
+    if (byteLength(submissionText) > MAX_BYTES) {
+      setError("设计规格与运行边界超过 100 KiB 上限");
       return;
     }
     abortRef.current?.abort();
@@ -201,9 +207,10 @@ export default function DesignSpecInput({
       if (!pid) throw new Error("未能创建或复用项目");
       const result = await api.createDesignRun(
         pid,
-        text,
-        { kind: fileName ? "file" : "text", name: fileName, note: "" },
+        submissionText,
+        { kind: fileName ? "file" : "text", name: fileName, note: provider === "deepseek" ? "DeepSeek 真实运行" : "" },
         title.trim(),
+        provider,
         { signal: ac.signal },
       );
       onCreated(result);
@@ -236,10 +243,38 @@ export default function DesignSpecInput({
 
   const disabled = busy || watchingImport;
   const retryable = RETRY_STATUSES.has(importArtifacts?.design_input_status || "");
-  const submitLabel = retryable ? "修改原文后重新提交" : "整理并检查";
+  const submitLabel = retryable
+    ? "修改原文后重新提交"
+    : provider === "deepseek"
+      ? "调用 DeepSeek 并检查"
+      : "整理并检查";
 
   return (
-    <div className="composer-fields" data-testid="design-spec-input">
+    <div className="composer-fields" data-testid="design-spec-input" data-provider={provider}>
+      {provider === "deepseek" && (
+        <>
+          <Alert type="warning" showIcon message="DeepSeek" />
+          <div className="design-boundaries" aria-label="DeepSeek 运行边界">
+            {([
+              ["language", "目标语言", "例如 Python 3.11"],
+              ["framework", "目标框架", "例如 FastAPI；未指定可留空"],
+              ["storage", "存储", "例如 SQLite；未指定可留空"],
+              ["deployment", "部署边界", "默认：本地受限工作区"],
+            ] as const).map(([key, label, placeholder]) => (
+              <input
+                key={key}
+                aria-label={label}
+                value={boundaries[key]}
+                placeholder={placeholder}
+                onChange={(e) => {
+                  markDirty();
+                  setBoundaries((current) => ({ ...current, [key]: e.target.value }));
+                }}
+              />
+            ))}
+          </div>
+        </>
+      )}
       <input
         className="composer-name"
         aria-label="项目名称"
@@ -290,8 +325,9 @@ export default function DesignSpecInput({
         placeholder="粘贴设计规格：目标、功能、模块、接口或数据要求、业务规则、约束与验收条件…"
       />
       <div className="mono muted" data-testid="design-demo-hint" style={{ lineHeight: 1.45 }}>
-        离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted
-        使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。
+        {provider === "deepseek"
+          ? "请提供明确的功能、模块、接口或数据要求和验收条件。整理后仍需你确认 DESIGN，再生成 PLAN；确认 PLAN 后才会物化并调度任务。"
+          : "离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted 使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。"}
       </div>
       <div className="composer-actions" style={{ justifyContent: "space-between" }}>
         <span className="mono muted">

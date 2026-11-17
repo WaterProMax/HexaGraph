@@ -130,10 +130,11 @@ def _retryable(exc: Exception) -> bool:
 
 
 def _redact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    key = get_settings().dashscope_api_key
+    settings = get_settings()
     blob = json.dumps(messages, ensure_ascii=False)
-    if key:
-        blob = blob.replace(key, "[REDACTED]")
+    for key in (settings.dashscope_api_key, settings.deepseek_api_key):
+        if key:
+            blob = blob.replace(key, "[REDACTED]")
     return json.loads(blob)
 
 
