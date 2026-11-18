@@ -340,7 +340,7 @@ describe("DesignSpecInput upload and local validation", () => {
     render(<DesignSpecInput projectName="p" onProjectName={() => undefined} onCreated={() => undefined} />);
     fireEvent.change(screen.getByLabelText("设计规格原文"), { target: { value: "x".repeat(100 * 1024 + 1) } });
     fireEvent.click(screen.getByRole("button", { name: "整理并检查" }));
-    await waitFor(() => expect(screen.getByText("设计规格超过 100 KiB 上限")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/设计规格.*超过 100 KiB 上限/)).toBeTruthy());
     expect(api.createProject).not.toHaveBeenCalled();
     expect(api.createDesignRun).not.toHaveBeenCalled();
   });

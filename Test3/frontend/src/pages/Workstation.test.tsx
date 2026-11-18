@@ -422,7 +422,8 @@ describe("Workstation buttons follow backend status", () => {
     const successSpy = vi.spyOn(message, "success");
     api.resolveGate.mockRejectedValue(new Error("关卡冲突"));
     renderWorkstation();
-    await waitFor(() => expect(screen.getByRole("button", { name: "批准并推进" })).toBeTruthy());
+    // Wait for the run query to render the gate before resolving its accessible controls.
+    await screen.findByText("DESIGN基线确认", { selector: "#gate-heading" });
     fireEvent.click(screen.getByRole("button", { name: "批准并推进" }));
     await waitFor(() => expect(errorSpy).toHaveBeenCalled());
     expect(String(errorSpy.mock.calls[0][0])).toMatch(/关卡处理失败|关卡冲突/);

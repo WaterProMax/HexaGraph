@@ -7,6 +7,7 @@ os.environ['TEST3_LLM_PROVIDER'] = 'scripted'
 os.environ['TEST3_SCRIPTED_FIXTURE'] = 'study-room'
 os.environ['DASHSCOPE_API_KEY'] = ''
 os.environ['OPENAI_API_KEY'] = ''
+os.environ['DEEPSEEK_API_KEY'] = ''
 
 if __name__ == '__main__':
     import sys

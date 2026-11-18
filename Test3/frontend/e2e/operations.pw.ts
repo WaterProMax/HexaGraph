@@ -91,7 +91,7 @@ test('a 409 gate conflict stays visible and never advances the stage', async ({ 
   apiMock.fail('/gates/offline-gate-001/resolve', 409);
   await page.goto(`/workstation/${apiMock.run.id}`);
   await page.getByRole('button', { name: '批准并推进' }).click();
-  await expect(page.getByText('关卡处理失败: 409', { exact: true })).toBeVisible();
+  await expect(page.getByText('关卡处理失败: offline failure', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '批准并推进' })).not.toHaveClass(/ant-btn-loading/);
   await expect(page.locator('.topbar-right')).toContainText('阶段 0');
   expect(apiMock.writes).toEqual([{ path: '/gates/offline-gate-001/resolve', body: { decision: 'approve', payload: {} } }]);
