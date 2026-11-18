@@ -121,6 +121,25 @@ async def test_call_agent_retry_and_boundary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_agent_reports_truncated_output() -> None:
+    models = load_models()
+    roles = load_roles()
+    provider = ScriptedProvider(
+        [
+            LLMResult(text='{"tasks": [', finish_reason="length"),
+            LLMResult(text='{"tasks": [', finish_reason="length"),
+        ]
+    )
+    gw = Gateway(models, provider)
+    with pytest.raises(AgentOutputError) as caught:
+        await call_agent("decomposer", {"spec": {}, "design": {}}, registry=RoleRegistry(roles), gateway=gw)
+    assert caught.value.category == "invalid_structure"
+    assert "截断" in caught.value.message
+    retry = provider.calls[1]["messages"][-1]["content"]
+    assert "max_tokens" in retry and "截断" in retry
+
+
+@pytest.mark.asyncio
 async def test_replay_missing(tmp_path: Path) -> None:
     provider = ReplayProvider(tmp_path)
     with pytest.raises(ReplayMissing, match="missing replay"):

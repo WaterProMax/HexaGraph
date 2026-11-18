@@ -84,6 +84,7 @@ npm --prefix Test3/frontend run dev -- --host 127.0.0.1 --port 5173
    DEEPSEEK_MODEL=deepseek-v4-flash
    DEEPSEEK_TIMEOUT_S=120
    DEEPSEEK_STAGE_TIMEOUT_S=600
+   DEEPSEEK_MAX_TOKENS=16384
    ```
 
    默认模型名与 Base URL 依据 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/)；如需更换模型，以官方当前文档为准。

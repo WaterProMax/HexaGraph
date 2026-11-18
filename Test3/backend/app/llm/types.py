@@ -13,6 +13,7 @@ class LLMResult:
     tokens_out: int = 0
     latency_ms: int = 0
     model: str = ""
+    finish_reason: str = ""
     raw: Any = None
 
 

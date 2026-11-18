@@ -14,6 +14,12 @@
 - 如果规格要求的技术栈无法在该边界内验证，应在对应任务描述和 pass_criteria 中明确限制，不要谎称支持。
 - code 使用 T1/T2…；points 只能为 1/2/3/5/8；priority 只能为 P0/P1/P2；role 只能为 coder/tester。
 
+## 输出预算
+- 整份 JSON 必须一次输出完整：任务数 5–7 个，不要超过 7 个。
+- 每个任务 description ≤ 60 字；acceptance 写 1–2 条，pass_criteria ≤ 40 字。
+- write_set 与 outputs 只列关键文件，各 ≤ 5 个；不要重复粘贴 spec/design 原文。
+- notes ≤ 80 字；整个响应控制在 12000 token 以内，优先保证 JSON 闭合。
+
 ## 输出格式
 只输出一个 JSON 对象，不要 Markdown，不要额外解释：
 {

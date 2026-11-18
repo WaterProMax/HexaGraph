@@ -117,6 +117,7 @@ class DeepSeekProvider:
         self.api_key = settings.deepseek_api_key.strip()
         self.base_url = (base_url if base_url is not None else settings.deepseek_base_url).strip().rstrip("/")
         self.timeout_s = max(1.0, float(settings.deepseek_timeout_s))
+        self.max_tokens = max(1024, int(settings.deepseek_max_tokens))
         self.trust_env = bool(settings.test3_http_trust_env)
 
     async def complete(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
@@ -132,7 +133,7 @@ class DeepSeekProvider:
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": int(kwargs.get("max_tokens") or 8192),
+            "max_tokens": int(kwargs.get("max_tokens") or self.max_tokens),
         }
         for key in ("temperature", "max_tokens", "tools", "tool_choice"):
             if key in kwargs and kwargs[key] is not None:
@@ -162,7 +163,9 @@ class DeepSeekProvider:
             raise AgentOutputError("DeepSeek 返回了无法读取的响应", category="invalid_structure") from exc
 
         try:
-            choice = data["choices"][0]["message"]
+            first = data["choices"][0]
+            choice = first["message"]
+            finish_reason = str(first.get("finish_reason") or "")
             text = choice.get("content") or ""
             calls: list[dict[str, Any]] = []
             for index, item in enumerate(choice.get("tool_calls") or []):
@@ -192,6 +195,7 @@ class DeepSeekProvider:
                 tokens_out=int(usage.get("completion_tokens") or 0),
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 model=str(data.get("model") or model),
+                finish_reason=finish_reason,
                 raw=data,
             )
         except (KeyError, IndexError, TypeError, ValueError) as exc:
