@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import time
+import traceback
 import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -131,6 +132,7 @@ _SNAPSHOT_KINDS = {
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
+UNEXPECTED_IMPORT_FAILURE = "设计规格整理失败（本地异常，详见运行目录 import-error.txt）"
 
 
 def _iso_utc(ts: float) -> str:
@@ -640,6 +642,20 @@ class Workbench:
         self.emit(run, "design_input.rejected", "", {"reason": message, "error_category": category}, "system")
         self._persist_snapshot(run)
 
+    def _record_import_exception(self, run: RunState, exc: BaseException) -> None:
+        """把未预期的整理异常写进运行目录，便于事后定位；不写回界面，避免泄露密钥。"""
+        try:
+            text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            settings = get_settings()
+            for key in (settings.dashscope_api_key, settings.deepseek_api_key, settings.feedback_hash_key):
+                if key:
+                    text = text.replace(key, "[REDACTED]")
+            folder = self.data_dir / "runs" / run.id
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "import-error.txt").write_text(text, encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _interrupt_stale_import(self, run: RunState) -> None:
         if run.artifacts.get("design_input_status") != "importing":
             return
@@ -771,7 +787,9 @@ class Workbench:
             raise
         except Exception as exc:  # noqa: BLE001
             category = classify_llm_error(exc)
-            message = user_message_for_category(category) or "设计规格整理失败"
+            message = user_message_for_category(category) or UNEXPECTED_IMPORT_FAILURE
+            if category is None:
+                self._record_import_exception(run, exc)
             self._fail_import(run, generation, message, category=category)
         finally:
             if self._import_writable(run, generation):
@@ -826,7 +844,9 @@ class Workbench:
             raise
         except Exception as exc:  # noqa: BLE001
             category = classify_llm_error(exc)
-            message = user_message_for_category(category) or "设计规格整理失败"
+            message = user_message_for_category(category) or UNEXPECTED_IMPORT_FAILURE
+            if category is None:
+                self._record_import_exception(run, exc)
             self._fail_import(run, generation, message, category=category)
             return
 
@@ -2458,7 +2478,7 @@ class Workbench:
                 raise RuntimeError("embedding unavailable")
             groups = cluster(vectors, threshold=float((run.limits.get("listening") or {}).get("cluster_threshold") or 0.78))
         except Exception:  # noqa: BLE001
-            groups = await self._cluster_fast(texts)
+            groups = await self._cluster_fast(run, texts)
         if not groups:
             groups = [[idx] for idx in range(len(imported))]
         known_texts = []
@@ -2524,7 +2544,7 @@ class Workbench:
             run.feedback.append(item)
         return imported
 
-    async def _cluster_fast(self, texts: list[str]) -> list[list[int]]:
+    async def _cluster_fast(self, run: RunState, texts: list[str]) -> list[list[int]]:
         try:
             batch = await call_agent(
                 "cluster_fast",

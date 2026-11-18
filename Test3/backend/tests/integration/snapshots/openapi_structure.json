@@ -362,6 +362,7 @@
     },
     "DesignRunCreate": {
       "properties": {
+        "provider": "string",
         "source": "DesignSource",
         "text": "string",
         "title": "string"

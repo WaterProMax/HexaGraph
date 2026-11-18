@@ -31,9 +31,10 @@ class HttpStatusError(Exception):
         (TimeoutError("timed out"), "timeout"),
         (asyncio.TimeoutError(), "timeout"),
         (AgentOutputError("spec_importer output invalid after retry: field required", category="invalid_structure"), "invalid_structure"),
+        (ImportError("Using SOCKS proxy, but the 'socksio' package is not installed."), "environment"),
     ],
 )
-def test_classify_llm_error_maps_six_categories(exc: BaseException, category: str) -> None:
+def test_classify_llm_error_maps_categories(exc: BaseException, category: str) -> None:
     assert classify_llm_error(exc) == category
 
 
@@ -49,6 +50,7 @@ def test_user_messages_match_ui_titles_and_exclude_secrets() -> None:
         "timeout": "整理超过 10 分钟，未进入设计确认",
         "missing_fields": "文档缺项",
         "invalid_structure": "模型输出未通过结构校验",
+        "environment": "本地运行环境错误，未完成整理",
     }
     for category, title in expected.items():
         message = user_message_for_category(category)

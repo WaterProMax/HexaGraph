@@ -7,6 +7,7 @@ DESIGN_ERROR_CATEGORIES = (
     "timeout",
     "missing_fields",
     "invalid_structure",
+    "environment",
 )
 
 CATEGORY_TITLES = {
@@ -16,6 +17,7 @@ CATEGORY_TITLES = {
     "timeout": "整理超过 10 分钟，未进入设计确认",
     "missing_fields": "文档缺项",
     "invalid_structure": "模型输出未通过结构校验",
+    "environment": "本地运行环境错误，未完成整理",
 }
 
 _AUTH_STATUSES = {401, 403}
@@ -119,6 +121,10 @@ def classify_llm_error(exc: BaseException | None) -> str | None:
             statuses.append(status)
     name_blob = " ".join(names)
     text_blob = " ".join(texts)
+    # 依赖缺失/本机代理配置（如 all_proxy=socks5h:// 但未装 socksio）会在发请求前抛 ImportError，
+    # 既不是网络错误也不是模型输出错误，单独归为本地环境问题。
+    if isinstance(exc, ImportError) or "importerror" in name_blob or "socksio" in text_blob:
+        return "environment"
     if any(status in _AUTH_STATUSES for status in statuses):
         return "auth"
     if any(status in _RATE_STATUSES for status in statuses) or "ratelimit" in name_blob or "rate_limit" in name_blob:

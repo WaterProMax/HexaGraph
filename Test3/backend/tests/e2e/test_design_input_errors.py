@@ -71,6 +71,7 @@ def _assert_not_success(run, result: dict) -> None:
         (HttpStatusError(401, "Authorization: Bearer sk-secret-key"), "auth"),
         (HttpStatusError(429, "Too Many Requests"), "rate_limit"),
         (TimeoutError("read timed out talking to dashscope"), "timeout"),
+        (ImportError("Using SOCKS proxy, but the 'socksio' package is not installed."), "environment"),
     ],
 )
 async def test_design_import_llm_failures_set_error_category(tmp_path, exc: Exception, category: str) -> None:

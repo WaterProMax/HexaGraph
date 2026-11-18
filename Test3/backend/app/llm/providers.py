@@ -117,6 +117,7 @@ class DeepSeekProvider:
         self.api_key = settings.deepseek_api_key.strip()
         self.base_url = (base_url if base_url is not None else settings.deepseek_base_url).strip().rstrip("/")
         self.timeout_s = max(1.0, float(settings.deepseek_timeout_s))
+        self.trust_env = bool(settings.test3_http_trust_env)
 
     async def complete(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
         if not self.api_key:
@@ -142,7 +143,7 @@ class DeepSeekProvider:
             body.update(kwargs["extra_body"])
         started = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=self.trust_env) as client:
                 resp = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -280,7 +281,16 @@ class DashScopeProvider:
             # 【修改点】没有密钥时显式报错，不要带 "missing" 去发请求
             if not key:
                 raise AgentOutputError("模型配置或凭据不可用", category="auth")
-            self._client = AsyncOpenAI(base_url=self.models.base_url, api_key=key)
+            # 与 DeepSeekProvider 一致：默认不继承 shell 里的 http(s)_proxy / all_proxy，
+            # 避免 socks5h:// 未装 socksio 时在建连接前就失败。
+            self._client = AsyncOpenAI(
+                base_url=self.models.base_url,
+                api_key=key,
+                http_client=httpx.AsyncClient(
+                    timeout=httpx.Timeout(600.0, connect=10.0),
+                    trust_env=bool(settings.test3_http_trust_env),
+                ),
+            )
         return self._client
 
     async def complete(

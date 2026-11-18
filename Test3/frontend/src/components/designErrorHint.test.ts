@@ -9,6 +9,7 @@ describe("designErrorHint", () => {
     ["timeout", "整理超过 10 分钟，未进入设计确认", "保留原文，再次提交"],
     ["missing_fields", "文档缺项", "修改原文"],
     ["invalid_structure", "模型输出未通过结构校验", "查看具体校验项"],
+    ["environment", "本地运行环境错误，未完成整理", "检查依赖与代理设置"],
   ] as const)("maps %s to title and next step", (category, title, nextStep) => {
     const hint = designErrorHint({ errorCategory: category, missing: ["未给出并发上限"], errors: ["SPEC: 缺验收"] });
     expect(hint).toEqual(expect.objectContaining({ title, nextStep }));

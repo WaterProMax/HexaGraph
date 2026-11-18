@@ -69,7 +69,19 @@ async def main() -> None:
         sys.exit(1)
 
     from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url=models.base_url, api_key=key)
+    import httpx
+
+    from app.settings import get_settings
+
+    # 与后端一致：默认不继承 shell 的 http(s)_proxy / all_proxy，避免 socks5h:// 未装 socksio 时直接失败。
+    client = AsyncOpenAI(
+        base_url=models.base_url,
+        api_key=key,
+        http_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(600.0, connect=10.0),
+            trust_env=bool(get_settings().test3_http_trust_env),
+        ),
+    )
 
     print(f"{'slot':<14}{'model':<22}{'chat':<16}{'json':<8}{'tools':<22}{'ms':<8}{'tokens'}")
     

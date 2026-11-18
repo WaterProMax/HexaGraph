@@ -3,6 +3,7 @@ import { Alert, Button, message } from "antd";
 import { FileTextOutlined, UploadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { UX_TIMEOUT_MS, startedAtMs, useImportWaitText } from "./designImportWait";
+import { composeDeepSeekSubmission, stripRuntimeBoundary } from "./designSpecText";
 
 const MAX_BYTES = 100 * 1024;
 const POLL_MS = 1000;
@@ -35,7 +36,8 @@ interface Props {
 function fieldsFromInput(input?: DesignInputFields | null): { title: string; text: string; fileName: string } {
   return {
     title: input?.title || "",
-    text: input?.text || "",
+    // 导入结果里的 text 含系统追加的运行边界小节；回填时去掉，避免重试时重复叠加。
+    text: stripRuntimeBoundary(input?.text || ""),
     fileName: input?.source?.name || "",
   };
 }
@@ -183,11 +185,9 @@ export default function DesignSpecInput({
       setError("设计规格为空");
       return;
     }
-    const submissionText = provider === "deepseek"
-      ? `${text.trim()}\n\n## 本次真实运行边界\n- 目标语言：${boundaries.language.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 目标框架：${boundaries.framework.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 存储：${boundaries.storage.trim() || "未指定，请依据原文；原文也未明确时报告缺项"}\n- 部署边界：${boundaries.deployment.trim() || "本地受限工作区，不假定外网、安装依赖或部署凭据"}`
-      : text;
+    const submissionText = provider === "deepseek" ? composeDeepSeekSubmission(text, boundaries) : text;
     if (byteLength(submissionText) > MAX_BYTES) {
-      setError("设计规格与运行边界超过 100 KiB 上限");
+      setError(provider === "deepseek" ? "设计规格与运行边界超过 100 KiB 上限" : "设计规格超过 100 KiB 上限");
       return;
     }
     abortRef.current?.abort();

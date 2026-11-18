@@ -59,13 +59,15 @@
 {
   "text": "设计规格原文（必填）",
   "source": {"kind": "text|file", "name": "可选文件名", "note": "可选备注"},
-  "title": "可选标题"
+  "title": "可选标题",
+  "provider": "existing|deepseek（可选，默认 existing；deepseek 仅本次运行使用 DeepSeek）"
 }
 ```
 
 - 空文本或超过 100 KiB 返回 400/422；超过 24000 字符返回 `status: needs_split`（已知限制，不静默截断）。
 - 成功整理后进入阶段 5 并停在 `DESIGN基线确认`；**不生成任务、不自动调度**。
 - 响应 `status`：`awaiting_confirmation` / `needs_input` / `needs_split` / `failed`；附 `input{bytes,chars,sha256}`、`spec`、`design`、`missing`、`errors`、`checks`、`gate`、`provenance`。
+- `failed` 时 `error_category` 取 `connection|auth|rate_limit|timeout|invalid_structure|environment`；未分类的本地异常写运行目录 `import-error.txt`，不回传细节。
 - `provenance` 区分 `generation: preset|model` 与 `execution: simulated|real_tool`，页面据此标注“预置输出/真实模型”。
 - 导入运行在 DESIGN 关卡被驳回时不原地改写，置 `stopped`，需修改原文后重新创建运行。
 - 后续复用既有 `DESIGN` → `PLAN` 关卡：DESIGN 批准走 `run_plan`，PLAN 批准走 `_materialize_tasks`；同一计划指纹重复确认不重建任务。

@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_s: float = 120.0
     deepseek_stage_timeout_s: float = 600.0
+    # 本机 shell 常导出 all_proxy=http(s):// 或 socks5h://；httpx 默认读取这些变量，
+    # 未安装 socksio 时会在建连接前直接报 ImportError。本地工作台默认直连，
+    # 确需走代理时在 .env 设 TEST3_HTTP_TRUST_ENV=1。
+    test3_http_trust_env: bool = False
     feedback_hash_key: str = ""
     test3_data_dir: str = ""
     test3_llm_provider: str = "scripted"

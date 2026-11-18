@@ -29,6 +29,7 @@ cp .env.example .env   # 按需填写密钥
 | `TEST3_LLM_PROVIDER` | `scripted`（默认）/ `replay` / `dashscope` |
 | `TEST3_SCRIPTED_FIXTURE` | `scripted` 时默认 `study-room`，灌入自习室 M1 队列 |
 | `TEST3_DATA_DIR` | 覆盖数据目录，默认 `Test3/data/` |
+| `TEST3_HTTP_TRUST_ENV` | `1` 时 HTTP 客户端读取 shell 的 `http(s)_proxy` / `all_proxy`；默认 `0` 直连（本机代理常把 `all_proxy` 指到未装的 SOCKS 端口） |
 
 槽位与角色见 `config/models.yaml`、`config/roles.yaml`。硬上限见 `config/limits.yaml`：并发 6、修复 6 轮、每点 150 万令牌、P1 通过线 0.9。
 
@@ -114,5 +115,6 @@ cd frontend && npm test   # vitest：控制按钮可用状态
 - **导入反馈 400**：设置 `FEEDBACK_HASH_KEY`。
 - **任务页没有图数据**：需要先走到 PLAN 关卡并物化任务；M1 脚本只到 SPEC。
 - **密钥进仓库**：`.gitignore` 忽略 `.env`；日志会替换 `DASHSCOPE_API_KEY` 与 `DEEPSEEK_API_KEY` 明文，运行快照只保存供应商、模型标识和非敏感 Base URL。
+- **DeepSeek 整理瞬间失败、界面只显示“设计规格整理失败”**：先看 `Test3/data/runs/<run_id>/import-error.txt`。常见原因是 shell 导出了 `all_proxy=socks5h://127.0.0.1:7891`，而 httpx 没装 `socksio`，会在建连接前抛 `ImportError`。默认 `TEST3_HTTP_TRUST_ENV=0` 直连可绕开；确需代理时安装 `httpx[socks]` 并设 `TEST3_HTTP_TRUST_ENV=1`。
 
 偏差与未完成项见 `docs/Handoff.md`。

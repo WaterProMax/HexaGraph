@@ -264,5 +264,9 @@ async def test_commit_exception_marks_failed_not_importing(tmp_path, monkeypatch
     assert "/etc/passwd" not in blob
     assert run.artifacts.get("design_input_status") != "importing"
     assert run.gates == []
+    # 未预期异常要留现场：写运行目录，但不能出现在界面/接口返回里。
+    error_file = tmp_path / "runs" / result["run_id"] / "import-error.txt"
+    assert error_file.exists()
+    assert "commit exploded" in error_file.read_text(encoding="utf-8")
     task = getattr(bench, "_import_tasks", {}).get(result["run_id"])
     assert task is None or task.done()
