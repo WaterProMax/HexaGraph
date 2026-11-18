@@ -18,3 +18,5 @@
 最小复现执行阻塞：在 Test3/backend 的 Python 环境中执行 `python -m pytest -o addopts='' -q tests/e2e/test_design_spec_http_server.py::test_offline_queue_is_one_success_one_missing_then_exhausted`。期望两个任务 `done`，实测依次为 `needs_human` 和 `blocked`。同一基线另有 OpenAPI 快照差异和 WinError 1314 等失败。恢复、完整任务执行和真实模型联调仍需团队继续验收，#18 保持 Open。
 
 静态课堂验收在浏览器中确认了十条预置讨论、四道人为确认、T-02 与 T-03 同时运行而 T-04 等待、刷新恢复、三次复位及暂停播放。静态验收面板展示的是教学案例的预置结果。仓库测试数来自上表的实际执行。
+
+实测截图：[课堂分叉与等待汇合](classroom-parallel.png) · [无密钥认证失败](deepseek-no-key.png)。
