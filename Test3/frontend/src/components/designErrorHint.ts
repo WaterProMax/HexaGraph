@@ -1,6 +1,6 @@
 export const ERROR_CATEGORY_HINTS: Record<string, { title: string; nextStep: string }> = {
   connection: { title: "无法连接模型服务，未完成整理", nextStep: "确认运行结束后重试" },
-  auth: { title: "模型配置或凭据不可用", nextStep: "检查配置，不改文档" },
+  auth: { title: "模型配置或凭据不可用", nextStep: "检查 Test3/.env 中对应模型的 API Key，保存后重启后端并重新提交" },
   rate_limit: { title: "模型服务繁忙或请求受限", nextStep: "稍后重试" },
   timeout: { title: "整理超过 10 分钟，未进入设计确认", nextStep: "保留原文，再次提交" },
   missing_fields: { title: "文档缺项", nextStep: "修改原文" },

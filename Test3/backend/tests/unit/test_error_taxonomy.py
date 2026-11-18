@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from app.errors import AgentOutputError, classify_llm_error, user_message_for_category
+from app.errors import AgentOutputError, classified_llm_error, classify_llm_error, user_message_for_category, user_message_for_error
 from app.llm.gateway import Gateway
 from app.llm.providers import DashScopeProvider, ScriptedProvider
 from app.llm.types import LLMResult
@@ -40,6 +40,22 @@ def test_classify_llm_error_maps_categories(exc: BaseException, category: str) -
 
 def test_unclassified_agent_output_is_not_invalid_structure() -> None:
     assert classify_llm_error(AgentOutputError("模型调用失败")) is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_diagnostic_survives_wrapping_without_exposing_upstream_text(status: int) -> None:
+    original = HttpStatusError(status, "Authorization: Bearer sk-secret-key /etc/passwd")
+    wrapped = classified_llm_error(original)
+    wrapped.__cause__ = original
+    message = user_message_for_error(wrapped)
+    assert str(status) in message
+    if status == 401:
+        assert "重启后端" in message
+    else:
+        assert "权限" in message
+    assert "sk-secret" not in message
+    assert "Authorization" not in message
+    assert "/etc/passwd" not in message
 
 
 def test_user_messages_match_ui_titles_and_exclude_secrets() -> None:

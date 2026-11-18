@@ -9,7 +9,7 @@ import json
 import pytest
 
 from app.agents.runtime import RoleRegistry
-from app.errors import CATEGORY_TITLES, user_message_for_category
+from app.errors import CATEGORY_TITLES, user_message_for_error
 from app.llm.gateway import Gateway
 from app.schemas.design_input import DesignSource
 from app.services.runtime import Workbench
@@ -81,7 +81,7 @@ async def test_design_import_llm_failures_set_error_category(tmp_path, exc: Exce
         bench, await bench.create_design_run(project["id"], "目标：学生查看空位。", DesignSource())
     )
     run = bench.runs[result["run_id"]]
-    title = user_message_for_category(category)
+    title = user_message_for_error(exc)
     assert result["error_category"] == category
     assert run.artifacts.get("design_input_error_category") == category
     assert result["status"] == "failed"

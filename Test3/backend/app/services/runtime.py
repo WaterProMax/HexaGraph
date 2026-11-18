@@ -37,6 +37,7 @@ from app.errors import (
     ValidationFailed,
     classify_llm_error,
     user_message_for_category,
+    user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
 from app.ids import IdAllocator
@@ -787,7 +788,7 @@ class Workbench:
             raise
         except Exception as exc:  # noqa: BLE001
             category = classify_llm_error(exc)
-            message = user_message_for_category(category) or UNEXPECTED_IMPORT_FAILURE
+            message = user_message_for_error(exc) or UNEXPECTED_IMPORT_FAILURE
             if category is None:
                 self._record_import_exception(run, exc)
             self._fail_import(run, generation, message, category=category)
@@ -844,7 +845,7 @@ class Workbench:
             raise
         except Exception as exc:  # noqa: BLE001
             category = classify_llm_error(exc)
-            message = user_message_for_category(category) or UNEXPECTED_IMPORT_FAILURE
+            message = user_message_for_error(exc) or UNEXPECTED_IMPORT_FAILURE
             if category is None:
                 self._record_import_exception(run, exc)
             self._fail_import(run, generation, message, category=category)
@@ -1461,7 +1462,7 @@ class Workbench:
             raise
         except Exception as exc:  # noqa: BLE001
             category = classify_llm_error(exc) or "invalid_structure"
-            message = user_message_for_category(category) or "DeepSeek 任务分解失败，请检查模型响应"
+            message = user_message_for_error(exc) or user_message_for_category(category) or "DeepSeek 任务分解失败，请检查模型响应"
             run.artifacts["model_stage"]["status"] = "failed"
             run.artifacts["model_stage"]["error"] = message
             run.artifacts["model_stage"]["error_category"] = category

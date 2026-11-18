@@ -81,7 +81,7 @@ npm --prefix Test3/frontend run dev -- --host 127.0.0.1 --port 5173
    ```dotenv
    DEEPSEEK_API_KEY=填写你的密钥
    DEEPSEEK_BASE_URL=https://api.deepseek.com
-   DEEPSEEK_MODEL=deepseek-v4-flash
+   DEEPSEEK_MODEL=deepseek-flash
    DEEPSEEK_TIMEOUT_S=120
    DEEPSEEK_STAGE_TIMEOUT_S=600
    DEEPSEEK_MAX_TOKENS=16384

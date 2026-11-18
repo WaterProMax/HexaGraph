@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_model: str = "deepseek-flash"
     deepseek_timeout_s: float = 120.0
     deepseek_stage_timeout_s: float = 600.0
     # 任务图 JSON 常超过 8192 token；DeepSeek 接口接受更大上限，默认放到 16384。

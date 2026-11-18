@@ -160,5 +160,18 @@ def user_message_for_category(category: str | None) -> str:
 
 def classified_llm_error(exc: BaseException | None) -> AgentOutputError:
     category = classify_llm_error(exc)
-    message = user_message_for_category(category) or "模型调用失败"
+    message = user_message_for_error(exc) or "模型调用失败"
     return AgentOutputError(message, category=category)
+
+
+def user_message_for_error(exc: BaseException | None) -> str:
+    """Expose controlled diagnostics, never upstream exception text or credentials."""
+    category = classify_llm_error(exc)
+    if category == "auth" and exc is not None:
+        for item in _walk_exceptions(exc):
+            status = _status_of(item)
+            if status == 401:
+                return "模型服务返回 401：API 密钥无效或已失效，请更新对应服务的 API Key，重启后端后重新提交"
+            if status == 403:
+                return "模型服务返回 403：当前凭据无权访问，请检查 API Key 的权限与模型访问范围"
+    return user_message_for_category(category)
