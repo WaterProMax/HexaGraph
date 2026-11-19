@@ -15,13 +15,23 @@ import {
   Handle,
   Position,
   ReactFlow,
-  useReactFlow,
   type Edge,
   type Node,
 } from "@xyflow/react";
 import { Link } from "react-router-dom";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { readableFlowEdge } from "../flowEdgeStyle";
+import {
+  FLOW_MAX_ZOOM,
+  FLOW_MIN_ZOOM,
+  FlowAutoFit,
+  FlowResetButton,
+  nodesBounds,
+  useFlowViewportMemory,
+  useMeasuredElement,
+} from "../FlowViewport";
+import { LEFT_PANEL_ID, WorkstationLayoutControls, WorkstationSplitter } from "../components/WorkstationSplitter";
+import { useWorkstationLayout } from "../workstationLayout";
 import {
   canAdvanceStaticDemo,
   createStaticDemoState,
@@ -90,15 +100,6 @@ function StaticFlowNode({ data }: { data: any }) {
 
 const nodeTypes = { staticDemoNode: StaticFlowNode };
 
-function AutoFit({ signature }: { signature: string }) {
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    const timer = window.setTimeout(() => fitView({ padding: 0.12, duration: 160 }), 50);
-    return () => window.clearTimeout(timer);
-  }, [fitView, signature]);
-  return null;
-}
-
 function stageStatus(state: StaticDemoState, id: string): "completed" | "in_progress" | "pending" {
   const approved = state.approvedGates;
   if (id === "DISCUSSION") return approved.includes("DISCUSSION") ? "completed" : state.started ? "in_progress" : "pending";
@@ -133,6 +134,9 @@ export default function StaticClassroomDemo() {
   const [advanceLocked, setAdvanceLocked] = useState(false);
   const advanceLockRef = useRef(false);
   const lockTimerRef = useRef<number | null>(null);
+  const layout = useWorkstationLayout();
+  const viewport = useFlowViewportMemory();
+  const graphBox = useMeasuredElement();
   const gate = currentStaticGate(state);
   const tasks = useMemo(() => getStaticTasks(state), [state]);
   const visibility = staticArtifactVisibility(state);
@@ -247,6 +251,8 @@ export default function StaticClassroomDemo() {
     return { flowNodes: nodes, flowEdges: edges };
   }, [visibility.plan, tasks, state, selectedId]);
 
+  const flowBounds = useMemo(() => nodesBounds(flowNodes.map((node) => node.position), 224, 88), [flowNodes]);
+
   const selectedTask = tasks.find((task) => task.code === selectedId);
   const selectedStage = STAGE_NODES.find((stage) => stage.id === selectedId) || STAGE_NODES[0];
   const selected = selectedTask ? { code: selectedTask.code, title: selectedTask.card.title } : selectedStage;
@@ -306,8 +312,8 @@ export default function StaticClassroomDemo() {
         </div>
       </header>
 
-      <div className="ws-body">
-        <aside className="ws-left" aria-label="静态课堂演示面板">
+      <div className={layout.bodyClassName} style={layout.bodyStyle} ref={layout.bodyRef}>
+        <aside className="ws-left" id={LEFT_PANEL_ID} aria-label="静态课堂演示面板" ref={layout.leftRef} tabIndex={-1}>
           <section className="composer glass-panel static-requirement" aria-labelledby="static-demo-heading">
             <div className="panel-heading"><h2 id="static-demo-heading">静态课堂演示</h2></div>
             <p className="static-intro">人工编写的完整教学案例；不创建真实项目、不读取密钥、不执行开发任务。</p>
@@ -336,7 +342,7 @@ export default function StaticClassroomDemo() {
             <section className="gate-card glass-panel" aria-labelledby="static-gate-heading" data-testid="static-gate">
               <div>
                 <div className="gate-kicker">等待你确认 · 自动播放已暂停</div>
-                <h2 className="gate-head" id="static-gate-heading"><span className="dot error" />{STATIC_GATE_TITLE[gate]}</h2>
+                <h2 className="gate-head" id="static-gate-heading"><span className="dot awaiting" />{STATIC_GATE_TITLE[gate]}</h2>
               </div>
               <p className="static-gate-copy">请先查看对应{gate === "DISCUSSION" ? "讨论与结论" : "预置产物"}，再由人工批准。</p>
               <div className="gate-actions">
@@ -397,8 +403,11 @@ export default function StaticClassroomDemo() {
           </section>
         </aside>
 
+        <WorkstationSplitter layout={layout} />
+
         <section className="canvas">
           <div className="canvas-toolbar">
+            <WorkstationLayoutControls layout={layout} attention={gate ? `待确认：${STATIC_GATE_TITLE[gate]}` : undefined} />
             <div className="chips">
               {tabs.map((tab) => (
                 <button type="button" key={tab.key} className={`chip ${activeTab === tab.key ? "active" : ""}`} aria-pressed={activeTab === tab.key} onClick={() => setActiveTab(tab.key)}>
@@ -412,21 +421,34 @@ export default function StaticClassroomDemo() {
           <div className="canvas-body">
             {activeTab === "graph" && (
               <div className="graph-pane">
-                <div className="graph-flow" data-testid="static-demo-graph">
+                <div className="graph-flow" data-testid="static-demo-graph" ref={graphBox.attach}>
                   <ReactFlow
                     nodes={flowNodes}
                     edges={flowEdges}
                     nodeTypes={nodeTypes}
-                    fitView
-                    fitViewOptions={{ padding: 0.12 }}
-                    minZoom={0.3}
+                    defaultViewport={{ x: 24, y: 24, zoom: 1 }}
+                    minZoom={FLOW_MIN_ZOOM}
+                    maxZoom={FLOW_MAX_ZOOM}
                     nodesDraggable={false}
                     nodesConnectable={false}
+                    onMoveStart={viewport.onMoveStart}
                     onNodeClick={(_, node) => setSelectedId(node.id)}
                   >
                     <Background variant={BackgroundVariant.Dots} gap={22} size={0.7} color="#e3ebf0" />
-                    <Controls position="top-right" showInteractive={false} />
-                    <AutoFit signature={`${visibility.plan}:${state.stage}:${selectedId}`} />
+                    <Controls
+                      position="top-right"
+                      showInteractive={false}
+                      onZoomIn={viewport.markUserMoved}
+                      onZoomOut={viewport.markUserMoved}
+                    />
+                    {/* Structure only: stage changes, node selection and container resizes never refit. */}
+                    <FlowAutoFit
+                      structure={`static|${visibility.plan ? "plan" : "stages"}`}
+                      userMoved={viewport.userMoved}
+                      bounds={flowBounds}
+                      getSize={graphBox.getSize}
+                    />
+                    <FlowResetButton userMoved={viewport.userMoved} bounds={flowBounds} getSize={graphBox.getSize} />
                   </ReactFlow>
                 </div>
                 <div className="dock">

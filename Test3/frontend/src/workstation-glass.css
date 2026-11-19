@@ -88,7 +88,6 @@
 .sidebar.collapsed .nav-item .anticon { font-size: 18px; }
 
 /* Workstation tray: quiet surfaces leave the graph as the primary visual. */
-.ws-body { grid-template-columns: 320px 1fr; }
 .ws-left {
   padding: 14px 12px 20px;
   gap: 12px;
@@ -268,7 +267,6 @@
 }
 
 @media (max-width: 1280px) {
-  .ws-body { grid-template-columns: 280px 1fr; }
   .sidebar { padding: 16px 8px 10px; }
   .sidebar .brand { gap: 6px; }
   .sidebar .brand-name { font-size: 17px; }
@@ -277,12 +275,6 @@
   .ws-left { padding: 12px 10px 18px; }
   .ws-left .composer, .ws-left .gate-card { padding: 12px; }
   .ws-left .composer-actions > .ant-btn:first-child { flex-basis: 100%; }
-}
-
-/* This is a desktop workbench: preserve useful panel widths on small screens. */
-@media (max-width: 960px) {
-  .main:has(.ws) { overflow-x: auto; }
-  .ws { min-width: 760px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -324,4 +316,112 @@
   background: var(--glass-field);
   color: var(--glass-ink);
   font-size: 12px;
+}
+
+/* ---------- Layout v2: resizable info column, stage overview, layered graph ---------- */
+.ws-left { min-width: 0; overflow-x: hidden; }
+.ws-left:focus { outline: none; }
+.ws-body > .canvas { min-width: 0; }
+.ws-body.ws-mode-collapsed,
+.ws-body.ws-mode-drawer { grid-template-columns: minmax(0, 1fr); }
+.ws-body.left-hidden > .ws-left { display: none; }
+.ws-body.ws-mode-drawer > .ws-left {
+  position: absolute; z-index: 30; inset: 0 auto 0 0;
+  width: min(360px, calc(100% - 24px));
+  box-shadow: 14px 0 34px -18px rgba(18, 45, 66, 0.45);
+}
+.ws-drawer-backdrop { position: absolute; z-index: 25; inset: 0; background: rgba(18, 45, 66, 0.2); }
+
+.ws-splitter { position: relative; z-index: 6; cursor: col-resize; touch-action: none; background: #e6eef3; transition: background 140ms ease-out; outline: none; }
+.ws-splitter::before { content: ""; position: absolute; inset: 0 -7px; }
+.ws-splitter-grip { position: absolute; left: 50%; top: 50%; width: 4px; height: 44px; border-radius: 4px; background: #9db4c4; transform: translate(-50%, -50%); transition: background 140ms ease-out, height 140ms ease-out; }
+.ws-splitter:hover, .ws-body.dragging .ws-splitter { background: #d5e4ee; }
+.ws-splitter:hover .ws-splitter-grip, .ws-body.dragging .ws-splitter-grip { background: var(--glass-accent); height: 64px; }
+.ws-splitter:focus-visible { background: #d5e4ee; box-shadow: inset 0 0 0 2px var(--glass-accent); }
+.ws-body.dragging { user-select: none; cursor: col-resize; }
+.ws-body.dragging .react-flow, .ws-body.dragging .canvas-body { pointer-events: none; }
+
+.ws-layout-controls { display: inline-flex; align-items: center; gap: 4px; }
+.ws-icon-btn { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--glass-secondary); font-size: 15px; cursor: pointer; transition: background 140ms ease-out; }
+.ws-icon-btn:hover:not(:disabled) { background: #ffffffb8; color: #004dbb; }
+.ws-icon-btn:disabled { color: #8aa0b0; cursor: default; }
+.ws-icon-btn:focus-visible, .ws-attention:focus-visible, .graph-reset:focus-visible, .ws-splitter:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
+.ws-attention { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 11px; border: 0; border-radius: 999px; background: #fff3dc; color: #7a4d00; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
+.ws .canvas-toolbar { justify-content: flex-start; }
+.ws .canvas-toolbar .legend { margin-left: auto; }
+
+/* Status colours: a human gate that is merely waiting must never look like success or failure. */
+.ws .dot.awaiting { background: #fff; box-shadow: inset 0 0 0 2px #d9930d, 0 0 0 3px rgba(217, 147, 13, 0.16); }
+.ws .dot.error { background: #d12f3a; box-shadow: 0 0 0 3px rgba(209, 47, 58, 0.16); }
+.ws-left .row[data-status="awaiting"] .row-state { background: #fff1d6; color: #7a4d00; }
+.ws-left .row[data-status="error"] .row-state { background: #fde4e6; color: #9b1c27; }
+
+/* Summary: project, one mode badge, one status sentence. */
+.ws-left .ws-summary { display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 0; }
+.ws-left .ws-summary-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ws-left .ws-summary-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--glass-ink); font-size: 14px; font-weight: 650; letter-spacing: -0.2px; }
+.ws-left .mode-badge { flex: 0 0 auto; padding: 2px 9px; border-radius: 999px; background: #deecff; color: #0054b8; font-size: 10.5px; font-weight: 600; }
+.ws-left .ws-status-line { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 1.5; color: var(--glass-secondary); overflow-wrap: anywhere; }
+.ws-left .ws-status-line.tone-error { color: #9b1c27; font-weight: 600; }
+.ws-left .ws-status-line.tone-awaiting { color: #7a4d00; font-weight: 600; }
+
+/* Design input: raw text folds away once an import produced a result, hints stay one tap away. */
+.ws-left .composer .design-raw > summary,
+.ws-left .composer .design-hint > summary,
+.ws-left .design-advanced > summary,
+.ws-left .design-fold > summary,
+.ws-left .node-list > summary { cursor: pointer; color: var(--glass-secondary); font-size: 11.5px; font-weight: 550; list-style-position: inside; }
+.ws-left .composer .design-raw > summary .mono { margin-left: 8px; font-size: 10.5px; }
+.ws-left .composer .design-raw textarea { margin-top: 4px; min-height: 96px; resize: vertical; }
+.ws-left .composer .design-hint { padding: 2px 10px 8px; }
+.ws-left .design-fold > summary.section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ws-left .design-fold[open] > summary { margin-bottom: 6px; }
+.ws-left .design-source { display: flex; flex-direction: column; gap: 2px; font-size: 11px; overflow-wrap: anywhere; }
+.ws-left .node-list { padding: 0 2px; }
+.ws-left .node-list > summary { padding: 6px 4px; }
+.ws-left .node-list[open] > summary { margin-bottom: 6px; }
+.ws-left .node-list > summary .hint { margin-left: 6px; color: var(--glass-muted); font-size: 10px; }
+
+/* Stage overview: progress only, never modules or tasks. */
+.ws .graph-pane { position: relative; }
+.ws .stage-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 4px; margin: 0; padding: 8px 14px; list-style: none; border-bottom: 1px solid #e0e8ed; background: #f7fafbd9; flex-shrink: 0; }
+.ws .stage-step { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; color: var(--glass-secondary); font-size: 11px; }
+.ws .stage-step + .stage-step::before { content: ""; width: 10px; height: 1px; margin-left: -14px; margin-right: 4px; background: #b6c9d6; }
+.ws .stage-step .stage-state { color: var(--glass-muted); font-size: 10px; }
+.ws .stage-step.current { background: #e4edf2; color: var(--glass-ink); font-weight: 650; }
+.ws .stage-step[data-status="skipped"] { opacity: 0.75; }
+.ws .stage-step[data-status="error"] { color: #9b1c27; }
+.ws .stage-step[data-status="error"] .stage-state { color: #9b1c27; font-weight: 600; }
+.ws .stage-step[data-status="awaiting"] .stage-state { color: #7a4d00; font-weight: 600; }
+.ws .stage-caption { margin-left: auto; padding-left: 12px; color: var(--glass-secondary); font-size: 11px; font-weight: 550; }
+.ws .graph-flow { position: relative; }
+.ws .graph-empty { position: absolute; z-index: 4; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; color: var(--glass-secondary); font-size: 12px; line-height: 1.7; pointer-events: none; }
+.ws .graph-empty strong { color: var(--glass-ink); font-size: 14px; }
+.ws .graph-empty.tone-error strong { color: #9b1c27; }
+.ws .graph-reset { position: absolute; z-index: 5; right: 12px; bottom: 12px; height: 30px; padding: 0 12px; border: 1px solid #e0e8ed; border-radius: 999px; background: #f8fbfcf2; color: var(--glass-secondary); font: inherit; font-size: 11px; font-weight: 550; cursor: pointer; }
+.ws .graph-reset:hover { background: #fff; color: #004dbb; }
+
+/* Nodes: fixed card size so the layered layout can reserve space, labels truncate with a title. */
+.ws .flow-node, .static-demo .flow-node { box-sizing: border-box; width: 224px; height: 88px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; padding: 8px 12px; }
+.ws .flow-node:focus-visible, .ws .react-flow__node:focus-visible .flow-node { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
+.ws .react-flow__node:focus { outline: none; }
+.ws .react-flow__node:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 3px; border-radius: 10px; }
+.ws .flow-node .head { margin-bottom: 4px; }
+.ws .flow-node .code { font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ws .flow-node .state { max-width: 82px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 9px; }
+.ws .flow-node .title { font-size: 12.5px; }
+.ws .flow-node .sub { height: auto; line-height: 1.4; visibility: visible; font-size: 10.5px; }
+.ws .flow-node[data-status="error"] { border-color: #e3a0a6; background: #fff8f8; }
+.ws .flow-node[data-status="error"] .state { color: #9b1c27; font-weight: 600; }
+.ws .flow-node[data-status="awaiting"] { border-color: #ecc77a; background: #fffaf0; }
+.ws .flow-node[data-status="awaiting"] .state { color: #7a4d00; font-weight: 600; }
+.ws .flow-node.selected { border-color: #4f86b3; box-shadow: 0 0 0 3px rgba(0, 102, 250, 0.14); }
+.ws .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
+
+/* Dock: the full title must be readable without a mouse. */
+.ws .dock-info .title { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.ws .dock-info { align-items: flex-start; }
+
+@media (max-width: 1280px) {
+  .ws .canvas-toolbar .legend { display: none; }
 }

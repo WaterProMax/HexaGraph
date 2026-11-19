@@ -31,6 +31,8 @@ interface Props {
   onProjectId?: (id: string) => void;
   runId?: string;
   provider?: "existing" | "deepseek";
+  /** Bump to open the original text and focus it (e.g. "去改原文" in the preview). */
+  editSourceSignal?: number;
 }
 
 function fieldsFromInput(input?: DesignInputFields | null): { title: string; text: string; fileName: string } {
@@ -75,6 +77,7 @@ export default function DesignSpecInput({
   onProjectId,
   runId,
   provider = "existing",
+  editSourceSignal = 0,
 }: Props) {
   const initial = fieldsFromInput(importArtifacts?.design_input);
   const [title, setTitle] = useState(initial.title);
@@ -89,6 +92,11 @@ export default function DesignSpecInput({
   const abortRef = useRef<AbortController | null>(null);
   const dirtyRef = useRef(false);
   const lastRunIdRef = useRef(runId);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const rawToggledRef = useRef(false);
+  // Once an import produced a status the source is round-trippable: fold it away but keep it editable.
+  const backfilled = Boolean(importArtifacts?.design_input_status);
+  const [rawOpen, setRawOpen] = useState(!backfilled);
 
   const waitText = useImportWaitText({
     active: busy || watchingImport,
@@ -108,6 +116,7 @@ export default function DesignSpecInput({
     if (lastRunIdRef.current !== runId) {
       lastRunIdRef.current = runId;
       dirtyRef.current = false;
+      rawToggledRef.current = false;
     }
     if (dirtyRef.current) return;
     const next = fieldsFromInput(importArtifacts?.design_input);
@@ -116,6 +125,20 @@ export default function DesignSpecInput({
     setText(next.text);
     setFileName(next.fileName);
   }, [runId, importArtifacts]);
+
+  useEffect(() => {
+    if (rawToggledRef.current) return;
+    // Never fold the text away under a user who is typing in it.
+    if (backfilled && document.activeElement === textRef.current) return;
+    setRawOpen(!backfilled);
+  }, [backfilled, runId]);
+
+  useEffect(() => {
+    if (!editSourceSignal) return;
+    rawToggledRef.current = true;
+    setRawOpen(true);
+    window.setTimeout(() => textRef.current?.focus(), 0);
+  }, [editSourceSignal]);
 
   const markDirty = () => {
     dirtyRef.current = true;
@@ -253,7 +276,6 @@ export default function DesignSpecInput({
     <div className="composer-fields" data-testid="design-spec-input" data-provider={provider}>
       {provider === "deepseek" && (
         <>
-          <Alert type="warning" showIcon message="DeepSeek" />
           <div className="design-boundaries" aria-label="DeepSeek 运行边界">
             {([
               ["language", "目标语言", "例如 Python 3.11"],
@@ -314,21 +336,41 @@ export default function DesignSpecInput({
           </span>
         )}
       </label>
-      <textarea
-        aria-label="设计规格原文"
-        rows={10}
-        value={text}
-        onChange={(e) => {
-          markDirty();
-          setText(e.target.value);
+      <details
+        className="design-raw"
+        open={rawOpen}
+        onToggle={(e) => {
+          const open = (e.currentTarget as HTMLDetailsElement).open;
+          if (open !== rawOpen) {
+            rawToggledRef.current = true;
+            setRawOpen(open);
+          }
         }}
-        placeholder="粘贴设计规格：目标、功能、模块、接口或数据要求、业务规则、约束与验收条件…"
-      />
-      <div className="mono muted" data-testid="design-demo-hint" style={{ lineHeight: 1.45 }}>
-        {provider === "deepseek"
-          ? "请提供明确的功能、模块、接口或数据要求和验收条件。整理后仍需你确认 DESIGN，再生成 PLAN；确认 PLAN 后才会物化并调度任务。"
-          : "离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted 使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。"}
-      </div>
+      >
+        <summary>
+          设计规格原文
+          <span className="mono muted">{rawOpen ? "" : backfilled ? "已折叠 · 展开可修改后重新提交" : ""}</span>
+        </summary>
+        <textarea
+          ref={textRef}
+          aria-label="设计规格原文"
+          rows={5}
+          value={text}
+          onChange={(e) => {
+            markDirty();
+            setText(e.target.value);
+          }}
+          placeholder="粘贴设计规格：目标、功能、模块、接口或数据要求、业务规则、约束与验收条件…"
+        />
+      </details>
+      <details className="design-hint" data-testid="design-demo-hint">
+        <summary>输入说明</summary>
+        <div className="mono muted" style={{ lineHeight: 1.5 }}>
+          {provider === "deepseek"
+            ? "请提供明确的功能、模块、接口或数据要求和验收条件。整理后仍需你确认 DESIGN，再生成 PLAN；确认 PLAN 后才会物化并调度任务。"
+            : "离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted 使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。"}
+        </div>
+      </details>
       <div className="composer-actions" style={{ justifyContent: "space-between" }}>
         <span className="mono muted">
           {byteLength(text).toLocaleString()} / {MAX_BYTES.toLocaleString()} 字节

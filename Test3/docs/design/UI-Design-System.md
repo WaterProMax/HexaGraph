@@ -1,8 +1,8 @@
-# HexaGraph UI 设计规范 · Ice Glass v1.3
+# HexaGraph UI 设计规范 · Ice Glass v1.4
 
-版本：1.3 · 2026-11-17（北京时间）
+版本：1.4 · 2026-11-18（北京时间）
 适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条），以及任务依赖图的共享边样式。
-实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`App.tsx`、`pages/Workstation.tsx`。
+实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`frontend/src/flowLayout.ts`、`frontend/src/workstationLayout.ts`、`frontend/src/workstationGraph.ts`、`App.tsx`、`pages/Workstation.tsx`。
 过程与验证：[UI-Redesign-Log.md](UI-Redesign-Log.md)。
 
 ## 1. 设计目标与边界
@@ -104,6 +104,16 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - 无条目显示“尚无条目”。0/0 仍表示尚未生成，不伪造完成率。
 - 阶段名称、数据计算、选中后联动与右侧节点均保持原业务逻辑。
 
+### 可拖分栏与分层图（v1.4）
+
+- 中间信息栏与流程图之间是 8px 的 `role="separator"` 分栏条：指针拖动、键盘 ←/→（16px）、Shift+←/→（64px）、Home 复位；宽度 280–560px，画布不少于 480px，宽度与折叠状态保存在 `hexagraph.workstation.layout.v1`（不与静态课堂的存储键共用）。
+- 画布不足 480px 时信息栏自动折叠；视口小于 1100px 时以抽屉形式覆盖，不挤压画布；Esc 关闭抽屉。
+- 信息栏只保留一份“运行摘要 + 阶段总览条 + 一行状态”；重复的运行来源、DeepSeek 说明、规格原文与指纹默认折叠，原文与完整 sha256 仍在 DOM 中且可展开。
+- 流程图由 `layoutLayered()`（`@dagrejs/dagre`）分层布局，节点固定 224×88，列间距随边数加大；长边使用车道直线穿过节点列、只在列间隙弯曲，反向边走节点下方通道，不穿过非端点节点。无依赖的节点进入下方网格。
+- 主图只展示“当前”一张图：未到执行阶段显示模块图（边来自 `depends_on`，没有就不画）；执行阶段显示真实任务 DAG。不再伪造 S-PLAN 扇入；等待关卡使用琥珀色 `awaiting`，与红色 `error` 区分且保留文字。
+- 视口只在结构变化或点击“重置视口”时适应；缩放不低于可读下限 0.6（左对齐），拖分栏、选中和悬停不触发重新适应；节点不可拖动、Handle 不可连线。
+
+
 ### 顶栏、右侧与浮动操作
 
 - 顶栏为浅蓝玻璃带；历史运行 Select、状态与预算为胶囊。下拉浮层使用 `.glass-select-popup`，和触发器保持一致。
@@ -138,9 +148,8 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 
 ## 6. 响应式与可访问性
 
-- 大于 1280px：沿用 232px 应用栏 + 360px 运行栏。
-- 小于等于 1280px：沿用 200px + 300px；运行栏内边距压缩，输入操作上下排。
-- 小于等于 960px：工作台最小宽度 760px，主区域可横向滚动。不是完整移动端重构；不要声称支持手机原生布局。
+- 运行栏宽度由分栏条决定（默认 320px，280–560px）；应用栏在窗口小于 1100px 时自动收起。
+- 画布保持 ≥ 480px；不足时信息栏折叠，小于 1100px 用抽屉。页面无横向滚动。不是完整移动端重构；不要声称支持手机原生布局。
 - 两列分别纵向滚动，保持 `min-height: 0` 与稳定滚动槽；禁止为了“全屏展示所有卡片”无限压缩字号。
 - 标题和长 code 可以换行；副文可省略；按钮可换行，不能遮挡点击区域。
 - 键盘焦点必须清晰；不要去掉 `:focus-visible`。
@@ -212,3 +221,10 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - 给密集列表套连续多层模糊或高成本滤镜。
 - 用图片、外部 UI 库或全新字体替代现有组件，只为增加装饰。
 - 未经范围确认，把本次左栏视觉改动扩展到后端、路由或流程图布局。
+
+分栏与分层图（v1.4，1440×900 等，隔离 mock 数据，未连接真实后端）：
+
+- [修改前](screenshots/flow-layout/before/dag-1440x900.png) / [修改后](screenshots/flow-layout/after/dag-1440x900.png)
+- [信息栏折叠](screenshots/flow-layout/after/dag-panel-collapsed-1440x900.png) / [信息栏加宽](screenshots/flow-layout/after/dag-panel-widened-1440x900.png)
+- [设计关卡等待](screenshots/flow-layout/after/design-gate-1440x900.png) / [需补充输入](screenshots/flow-layout/after/needs-input-expanded-1440x900.png)
+- [720px 抽屉](screenshots/flow-layout/after/narrow-drawer-open-720x760.png)

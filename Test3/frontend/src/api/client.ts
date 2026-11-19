@@ -19,11 +19,16 @@ export class ApiError extends Error {
   }
 }
 
+/** Empty 5xx bodies usually mean the dev proxy could not reach the backend. */
+function emptyServerErrorMessage(status: number): string {
+  return `后端没有响应（HTTP ${status}）。请确认后端已启动：cd Test3 && make dev-backend（127.0.0.1:8765）`;
+}
+
 function parseApiError(status: number, text: string): ApiError {
   let category: string | undefined;
   let summary: string | undefined;
   let runId: string | undefined;
-  let message = text || String(status);
+  let message = text.trim() || (status >= 500 ? emptyServerErrorMessage(status) : String(status));
   try {
     const body = JSON.parse(text) as { detail?: unknown };
     const detail = body?.detail ?? body;

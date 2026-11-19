@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DesignSpecPreview from "./DesignSpecPreview";
 
@@ -152,5 +152,85 @@ describe("DesignSpecPreview error taxonomy", () => {
     );
     expect(screen.getByTestId("design-error-hint").textContent).toContain("模型配置或凭据不可用");
     expect(screen.getByTestId("design-error-hint").textContent).toContain("检查 Test3/.env 中对应模型的 API Key，保存后重启后端并重新提交");
+  });
+});
+
+describe("DesignSpecPreview compact summary", () => {
+  const six = ["缺 A", "缺 B", "缺 C", "缺 D", "缺 E", "缺 F"];
+  const base = {
+    design_input_status: "needs_input",
+    design_input_error_category: "missing_fields",
+    design_input_missing: six,
+    design_input: { source: { kind: "file", name: "study.md" }, chars: 321, sha256: "0123456789abcdef0123456789abcdef" },
+  };
+
+  it("shows three missing items plus the total and expands to all of them", () => {
+    render(<DesignSpecPreview result={null} artifacts={base} />);
+    const hint = screen.getByTestId("design-error-hint");
+    expect(hint.textContent).toContain("缺 A");
+    expect(hint.textContent).toContain("缺 C");
+    expect(hint.textContent).not.toContain("缺 D");
+    const toggle = screen.getByRole("button", { name: /共 6 项，展开全部/ });
+    fireEvent.click(toggle);
+    for (const item of six) expect(screen.getByTestId("design-error-hint").textContent).toContain(item);
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.getByTestId("design-error-hint").textContent).not.toContain("缺 D");
+  });
+
+  it("never truncates the validation errors behind the first few either", () => {
+    const errors = Array.from({ length: 10 }, (_, i) => `DESIGN: 校验项 ${i}`);
+    render(
+      <DesignSpecPreview
+        result={null}
+        artifacts={{ design_input_status: "needs_input", design_input_error_category: "invalid_structure", design_input_errors: errors }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /共 10 项，展开全部/ }));
+    expect(screen.getByTestId("design-error-hint").textContent).toContain("校验项 9");
+  });
+
+  it("offers 去改原文 only when the page can open the source, and calls it", () => {
+    const { rerender } = render(<DesignSpecPreview result={null} artifacts={base} />);
+    expect(screen.queryByRole("button", { name: "去改原文" })).toBeNull();
+    const onEditSource = vi.fn();
+    rerender(<DesignSpecPreview result={null} artifacts={base} onEditSource={onEditSource} />);
+    fireEvent.click(screen.getByRole("button", { name: "去改原文" }));
+    expect(onEditSource).toHaveBeenCalledTimes(1);
+  });
+
+  it("summarises the source on one line with a short fingerprint and keeps the full sha256 under 高级", () => {
+    render(<DesignSpecPreview result={null} artifacts={base} />);
+    const line = screen.getByTestId("design-source");
+    expect(line.textContent).toContain("文件 · study.md · 321 字符 · #01234567");
+    expect(line.textContent).toContain("高级");
+    const advanced = line.querySelector("details") as HTMLDetailsElement;
+    expect(advanced.open).toBe(false);
+    expect(advanced.textContent).toContain("0123456789abcdef0123456789abcdef");
+  });
+
+  it("drops its own provenance line when the page already shows the persistent declaration", () => {
+    const provenance = { generation_label: "预置测试输出（scripted）", execution_label: "模拟执行（预置工具调用）" };
+    const { rerender } = render(<DesignSpecPreview result={null} artifacts={{ ...base, provenance }} />);
+    expect(screen.getByTestId("design-provenance").textContent).toContain("模拟执行");
+    rerender(<DesignSpecPreview result={null} artifacts={{ ...base, provenance }} hideProvenance />);
+    expect(screen.queryByTestId("design-provenance")).toBeNull();
+  });
+
+  it("folds long SPEC and DESIGN lists behind a count summary", () => {
+    render(
+      <DesignSpecPreview
+        result={null}
+        artifacts={{
+          design_input_status: "awaiting_confirmation",
+          spec: { features: [{ code: "F1", title: "查看空位", priority: "P0", acceptance: [] }], nonfunc: [] },
+          design: { modules: [{ code: "M1", name: "座位查询", sources: ["F1"] }], interfaces: [] },
+        }}
+      />,
+    );
+    const folds = Array.from(document.querySelectorAll("details.design-fold")) as HTMLDetailsElement[];
+    expect(folds).toHaveLength(2);
+    expect(folds.every((fold) => !fold.open)).toBe(true);
+    expect(folds[0].textContent).toContain("1 功能");
+    expect(folds[1].textContent).toContain("1 模块");
   });
 });

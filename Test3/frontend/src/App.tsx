@@ -1,5 +1,5 @@
 import { ApiOutlined, DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined, SettingOutlined } from "@ant-design/icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { api } from "./api/client";
@@ -15,6 +15,7 @@ import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 import StaticClassroomDemo from "./pages/StaticClassroomDemo";
+import { COMPACT_VIEWPORT } from "./workstationLayout";
 
 export function runDot(run: any): string {
   if (run?.status === "done") return "completed";
@@ -121,7 +122,20 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
 }
 
 export default function App() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Narrow viewports start with the navigation folded; the user can still expand it by hand.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < COMPACT_VIEWPORT,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(`(max-width: ${COMPACT_VIEWPORT - 1}px)`);
+    const onChange = (event: MediaQueryListEvent) => {
+      if (event.matches) setSidebarCollapsed(true);
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   return (
     <div className={`shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>

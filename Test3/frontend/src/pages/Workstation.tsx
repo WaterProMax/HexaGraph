@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Empty, Input, Segmented, Select, Switch, Tooltip, message } from "antd";
 import {
   ArrowRightOutlined,
@@ -16,9 +16,9 @@ import {
   Handle,
   Position,
   ReactFlow,
-  useReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
 } from "@xyflow/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
@@ -31,6 +31,26 @@ import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
 import { readableFlowEdge } from "../flowEdgeStyle";
 import { useFlowNodeHover } from "../useFlowNodeHover";
+import { layoutLayered, structureKey } from "../flowLayout";
+import { layeredEdgeTypes } from "../LayeredEdge";
+import {
+  FLOW_MAX_ZOOM,
+  FLOW_MIN_ZOOM,
+  FlowAutoFit,
+  FlowResetButton,
+  useFlowViewportMemory,
+  useMeasuredElement,
+} from "../FlowViewport";
+import { WorkstationLayoutControls, WorkstationSplitter, LEFT_PANEL_ID } from "../components/WorkstationSplitter";
+import { useWorkstationLayout } from "../workstationLayout";
+import {
+  buildMainGraph,
+  buildStageOverview,
+  buildWorkstationItems,
+  emptyGraphNotice,
+  runStatusLine,
+  type ItemStatus,
+} from "../workstationGraph";
 import {
   autoAdvanceAllowed,
   gateActionsLocked,
@@ -44,26 +64,12 @@ import {
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
 
-type ItemStatus = "completed" | "in_progress" | "pending" | "error" | "skipped";
-
-interface PhaseTaskItem {
-  id: string;
-  code: string;
-  title: string;
-  subtitle?: string;
-  status: ItemStatus;
-  rawState?: string;
-  phaseKey: string;
-  dependsOn: string[];
-  kind: "stage" | "spec" | "design" | "task";
-  detail?: any;
-}
-
 const STATUS_META: Record<ItemStatus, { label: string }> = {
   completed: { label: "已完成" },
   in_progress: { label: "进行中" },
+  awaiting: { label: "待确认" },
   pending: { label: "待开始" },
-  error: { label: "需处理" },
+  error: { label: "失败/需处理" },
   skipped: { label: "不适用" },
 };
 
@@ -87,79 +93,21 @@ const TASK_ACTIONS = [
 
 const PIPELINE = ["想法", "讨论", "方案", "评审", "SPEC", "DESIGN", "PLAN", "执行", "验收"];
 
-function mapTaskState(state: string): ItemStatus {
-  if (state === "done") return "completed";
-  if (state === "skipped" || state === "cancelled") return "skipped";
-  if (["running", "verifying", "ready"].includes(state)) return "in_progress";
-  if (["failed", "needs_human", "blocked", "stale"].includes(state)) return "error";
-  return "pending";
-}
-
 function fmtNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
 
-const NODE_W = 216;
-const NODE_H = 72;
-const COL_W = 236;
-const ROW_H = 88;
-const GROUP_PAD = 14;
-const GROUP_HEAD = 48;
-const GROUP_GAP = 32;
-
-interface GroupBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  cols: number;
-}
-
-function phaseLayout(phases: { items: unknown[] }[], orientation: "row" | "column") {
-  const sizes = phases.map((p) => {
-    const n = p.items.length;
-    const cols = orientation === "row" ? (n > 4 ? 2 : 1) : 3;
-    const rows = Math.max(1, Math.ceil(n / cols));
-    return {
-      cols,
-      w: GROUP_PAD * 2 + (cols - 1) * COL_W + NODE_W,
-      h: GROUP_HEAD + (rows - 1) * ROW_H + NODE_H + GROUP_PAD,
-    };
-  });
-  const maxW = Math.max(...sizes.map((s) => s.w));
-  const maxH = Math.max(...sizes.map((s) => s.h));
-  let offset = 0;
-  const groups: GroupBox[] = sizes.map((s) => {
-    const box =
-      orientation === "row"
-        ? { x: offset, y: 0, w: s.w, h: maxH, cols: s.cols }
-        : { x: 0, y: offset, w: maxW, h: s.h, cols: s.cols };
-    offset += (orientation === "row" ? s.w : s.h) + GROUP_GAP;
-    return box;
-  });
-  const span = offset - GROUP_GAP;
-  return { groups, bounds: orientation === "row" ? { w: span, h: maxH } : { w: maxW, h: span } };
-}
-
-function PhaseGroupNode({ data }: { data: any }) {
-  return (
-    <div className="flow-group">
-      <span className="label">
-        <span className="no">{data.no}</span>
-        <span>{data.title}</span>
-        <span className="pct">{data.progressText}</span>
-      </span>
-    </div>
-  );
-}
-
 function TwinTaskNode({ data }: { data: any }) {
   const status: ItemStatus = data.status || "pending";
   return (
-    <div className={`flow-node ${data.selected ? "selected" : ""}`} data-status={status}>
-      <Handle type="target" position={Position.Left} />
+    <div
+      className={`flow-node ${data.selected ? "selected" : ""}`}
+      data-status={status}
+      title={`${data.code} · ${data.title}（${STATUS_META[status].label}）`}
+    >
+      <Handle type="target" position={Position.Left} isConnectable={false} />
       <div className="head">
         <span className={`dot ${status}`} />
         <span className="code">{data.code}</span>
@@ -168,25 +116,18 @@ function TwinTaskNode({ data }: { data: any }) {
       <div className="title" title={data.title}>
         {data.title}
       </div>
-      {data.subtitle && <div className="sub">{data.subtitle}</div>}
-      <Handle type="source" position={Position.Right} />
+      {data.subtitle && <div className="sub" title={data.subtitle}>{data.subtitle}</div>}
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }
 
-const nodeTypes = {
-  phaseGroup: PhaseGroupNode,
-  twinTask: TwinTaskNode,
-};
+const nodeTypes = { twinTask: TwinTaskNode };
 
-function AutoFit({ signature }: { signature: string }) {
-  const { fitView } = useReactFlow();
-  useEffect(() => {
-    // New nodes need a frame to be measured before fitView sees their size.
-    const timer = setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 60);
-    return () => clearTimeout(timer);
-  }, [signature, fitView]);
-  return null;
+/** Quantised so small container changes (splitter drags) do not reshuffle edge-less grids. */
+function aspectBucket(w: number, h: number): number {
+  if (!w || !h) return 0;
+  return Math.min(3, Math.max(1, Math.round((w / h) * 2) / 2));
 }
 
 export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: boolean }) {
@@ -207,8 +148,13 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
   const [flowMode, setFlowMode] = useState<"idea" | "design" | "deepseek">(deepSeekOnly ? "deepseek" : "idea");
   const [designResult, setDesignResult] = useState<any>(null);
   const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
-  const flowRef = useRef<HTMLDivElement>(null);
-  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
+  const [canvasAspect, setCanvasAspect] = useState(0);
+  // The aspect is taken from the first measurement only (it just shapes edge-less grids), so later
+  // container changes - splitter drags, window resizes - never re-lay-out or refit the view.
+  const graphBox = useMeasuredElement((w, h) => setCanvasAspect((previous) => previous || aspectBucket(w, h)));
+  const layout = useWorkstationLayout();
+  const viewport = useFlowViewportMemory();
+  const [editSourceSignal, setEditSourceSignal] = useState(0);
 
   const { data: runsList } = useQuery({
     queryKey: ["runs"],
@@ -467,248 +413,12 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     return () => clearTimeout(timer);
   }, [autoAdvance, activeRunId, run, pendingGate, gatesLocked]);
 
-  useEffect(() => {
-    const el = flowRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      setCanvasSize({ w: Math.round(width), h: Math.round(height) });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [activeTab, activeRunId]);
-
-  const { phases, allItems } = useMemo(() => {
-    const stageStr = String(run?.stage ?? "0");
-    const stageNum = stageStr === "done" ? 9 : stageStr === "stopped" ? -1 : Number(stageStr);
-    const hasSpec = Boolean(artifacts?.spec);
-    const hasDesign = Boolean(artifacts?.design);
-    const hasPlan = Boolean(artifacts?.plan);
-    const skipDiscussion = Boolean(isDesignRun || artifacts?.design_input);
-    const designImportStatus = artifacts?.design_input_status;
-    const designImportStopped = Boolean(
-      isDesignRun && ["needs_input", "needs_split", "failed"].includes(designImportStatus),
-    );
-
-    const p1Items: PhaseTaskItem[] = [
-      {
-        id: "S-IDEA",
-        code: "STAGE-0",
-        title: "想法解析与初步做法",
-        subtitle: skipDiscussion
-          ? "设计规格入口跳过讨论"
-          : artifacts?.idea_card?.approach || "idea_checker / pm_draft",
-        status: !run
-          ? "pending"
-          : skipDiscussion
-          ? "skipped"
-          : stageNum >= 1
-          ? "completed"
-          : pendingGate
-          ? "error"
-          : "in_progress",
-        rawState: skipDiscussion ? "不适用" : stageNum >= 1 ? "confirmed" : pendingGate?.kind || "stage-0",
-        phaseKey: "phase1",
-        dependsOn: [],
-        kind: "stage",
-        detail: artifacts?.idea_card,
-      },
-      {
-        id: "S-DISC",
-        code: "STAGE-1..3",
-        title: "多体讨论与方案评审",
-        subtitle: skipDiscussion
-          ? "不适用（从设计规格开始）"
-          : `争议 ${(artifacts?.issues || []).length} 项 · 发言 ${(artifacts?.utterances || []).length} 条`,
-        status: !run
-          ? "pending"
-          : skipDiscussion
-          ? "skipped"
-          : stageNum >= 4
-          ? "completed"
-          : stageNum >= 1
-          ? pendingGate
-            ? "error"
-            : "in_progress"
-          : "pending",
-        rawState: skipDiscussion ? "不适用" : stageNum >= 4 ? "reviewed" : stageNum >= 1 ? "discussing" : "pending",
-        phaseKey: "phase1",
-        dependsOn: ["S-IDEA"],
-        kind: "stage",
-        detail: { issues: artifacts?.issues, reviews: artifacts?.reviews },
-      },
-      {
-        id: "S-SPEC",
-        code: "SPEC",
-        title: "需求规格基线",
-        subtitle: hasSpec
-          ? `功能 ${(artifacts?.spec?.features || []).length} 项 · 基线 v${artifacts?.baseline_SPEC || "draft"}`
-          : skipDiscussion
-          ? "由设计规格整理得到"
-          : "spec_writer / check_spec",
-        status: !run
-          ? "pending"
-          : designImportStopped
-          ? "error"
-          : stageNum >= 5 && hasSpec
-          ? "completed"
-          : hasSpec
-          ? pendingGate?.kind === "SPEC基线确认"
-            ? "error"
-            : "in_progress"
-          : "pending",
-        rawState: designImportStopped
-          ? designImportStatus
-          : artifacts?.baseline_SPEC
-          ? `v${artifacts.baseline_SPEC}`
-          : hasSpec
-          ? "await_gate"
-          : "pending",
-        phaseKey: "phase1",
-        dependsOn: skipDiscussion ? [] : ["S-DISC"],
-        kind: "spec",
-        detail: artifacts?.spec,
-      },
-    ];
-
-    const designModules: any[] = artifacts?.design?.modules || [];
-    const p2Items: PhaseTaskItem[] = [
-      {
-        id: "S-DESIGN",
-        code: "DESIGN",
-        title: "架构与设计规格",
-        subtitle: designImportStopped
-          ? "导入未完成，未形成待确认设计"
-          : hasDesign
-          ? `模块 ${designModules.length} 个 · 接口 ${(artifacts?.design?.interfaces || []).length} 个`
-          : "architect + 双评审背靠背打分",
-        status: !run
-          ? "pending"
-          : designImportStopped
-          ? "error"
-          : stageNum >= 6
-          ? "completed"
-          : stageNum === 5 || hasDesign
-          ? pendingGate?.kind === "DESIGN基线确认"
-            ? "error"
-            : "in_progress"
-          : "pending",
-        rawState: designImportStopped
-          ? designImportStatus
-          : artifacts?.baseline_DESIGN
-          ? `v${artifacts.baseline_DESIGN}`
-          : hasDesign
-          ? "await_gate"
-          : "pending",
-        phaseKey: "phase2",
-        dependsOn: ["S-SPEC"],
-        kind: "design",
-        detail: artifacts?.design,
-      },
-      ...designModules.map((m: any) => ({
-        id: `MOD-${m.code}`,
-        code: m.code,
-        title: m.name,
-        subtitle: m.responsibility || `追溯 ${(m.sources || []).join(", ") || "-"}`,
-        status: (designImportStopped ? "error" : stageNum >= 6 ? "completed" : "in_progress") as ItemStatus,
-        rawState: designImportStopped ? designImportStatus : stageNum >= 6 ? "frozen" : "draft",
-        phaseKey: "phase2",
-        dependsOn: ["S-DESIGN"],
-        kind: "design" as const,
-        detail: m,
-      })),
-    ];
-
-    const planTasks: any[] = artifacts?.plan?.tasks || [];
-    const runtimeTaskList: any[] = Array.isArray(tasks) ? tasks : [];
-    const runtimeByCode = new Map(runtimeTaskList.map((t: any) => [t.code, t]));
-
-    const p3Items: PhaseTaskItem[] = [
-      {
-        id: "S-PLAN",
-        code: "PLAN",
-        title: "任务分解与 DAG 校验",
-        subtitle: hasPlan
-          ? `${planTasks.length} 个开发任务 · 容量 ${artifacts?.plan?.capacity || 40} 点`
-          : "decomposer / check_task_graph",
-        status: !run
-          ? "pending"
-          : stageNum >= 7
-          ? "completed"
-          : stageNum === 6 || hasPlan
-          ? pendingGate?.kind === "PLAN基线确认"
-            ? "error"
-            : "in_progress"
-          : "pending",
-        rawState: artifacts?.baseline_PLAN ? `v${artifacts.baseline_PLAN}` : hasPlan ? "await_gate" : "pending",
-        phaseKey: "phase3",
-        dependsOn: designModules.length > 0 ? designModules.map((m: any) => `MOD-${m.code}`) : ["S-DESIGN"],
-        kind: "stage",
-        detail: artifacts?.plan,
-      },
-    ];
-
-    const taskSourceList =
-      runtimeTaskList.length > 0
-        ? runtimeTaskList
-        : planTasks.map((card: any) => ({
-            code: card.code,
-            state: "pending",
-            revision: 1,
-            card,
-          }));
-
-    const p4Items: PhaseTaskItem[] = taskSourceList.map((t: any) => {
-      const card = t.card || {};
-      const deps: string[] = card.depends_on || [];
-      return {
-        id: t.code,
-        code: t.code,
-        title: card.title || t.code,
-        subtitle: `${card.role || "coder"} · ${card.kind || "impl"} · ${card.module || "M1"} · ${card.points || 1}pt`,
-        status: mapTaskState(t.state),
-        rawState: t.state,
-        phaseKey: "phase4",
-        dependsOn: deps.length > 0 ? deps : ["S-PLAN"],
-        kind: "task",
-        detail: runtimeByCode.get(t.code) || t,
-      };
-    });
-
-    if (stageNum >= 8 || artifacts?.acceptance) {
-      p4Items.push({
-        id: "S-ACCEPT",
-        code: "ACCEPT",
-        title: "集成回归与交付验收",
-        subtitle: artifacts?.build_tag
-          ? `已发布标签 ${artifacts.build_tag}`
-          : pendingGate?.kind === "验收确认"
-          ? "待人工确认验收关卡"
-          : "就绪，可触发验收",
-        status:
-          run?.status === "done"
-            ? "completed"
-            : pendingGate?.kind === "验收确认"
-            ? "error"
-            : "in_progress",
-        rawState: run?.status === "done" ? "done" : "stage-8",
-        phaseKey: "phase4",
-        dependsOn: taskSourceList.length > 0 ? taskSourceList.map((t: any) => t.code) : ["S-PLAN"],
-        kind: "stage",
-        detail: artifacts?.acceptance,
-      });
-    }
-
-    const phaseDefs = [
-      { key: "phase1", no: "Phase 1", title: "想法与需求规格", items: p1Items },
-      { key: "phase2", no: "Phase 2", title: "设计规格与模块契约", items: p2Items },
-      { key: "phase3", no: "Phase 3", title: "开发任务分解", items: p3Items },
-      { key: "phase4", no: "Phase 4", title: "编排执行与验收", items: p4Items },
-    ];
-
-    const flat = phaseDefs.flatMap((p) => p.items);
-    return { phases: phaseDefs, allItems: flat };
-  }, [run, artifacts, tasks, pendingGate, isDesignRun]);
+  const { phases, allItems } = useMemo(
+    () => buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDesignRun }),
+    [run, artifacts, tasks, pendingGate, isDesignRun],
+  );
+  const overview = useMemo(() => buildStageOverview(allItems, run), [allItems, run]);
+  const mainGraph = useMemo(() => buildMainGraph(allItems), [allItems]);
 
   const progressItems = allItems.filter((i) => i.status !== "skipped");
   const completedCount = progressItems.filter((i) => i.status === "completed").length;
@@ -716,76 +426,78 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
   const overallPercent = run ? Math.round((completedCount / totalCount) * 100) : 0;
 
   const selectedItem = useMemo(
-    () => allItems.find((i) => i.id === selectedId) || allItems.find((i) => i.kind === "task") || allItems[0] || null,
-    [allItems, selectedId],
+    () => allItems.find((i) => i.id === selectedId) || mainGraph.items[0] || allItems[0] || null,
+    [allItems, mainGraph, selectedId],
   );
 
-  const orientation = useMemo<"row" | "column">(() => {
-    if (!canvasSize.w || !canvasSize.h) return "row";
-    const row = phaseLayout(phases, "row");
-    const column = phaseLayout(phases, "column");
-    const fit = (b: { w: number; h: number }) => Math.min(canvasSize.w / b.w, canvasSize.h / b.h);
-    return fit(row.bounds) >= fit(column.bounds) ? "row" : "column";
-  }, [phases, canvasSize]);
+  const graphIds = useMemo(() => mainGraph.items.map((item) => item.id), [mainGraph]);
+  const graphStructure = structureKey(graphIds, mainGraph.edges);
+  // Re-layout only when the structure (or the quantised container shape) changes, not on status polls.
+  const layered = useMemo(
+    () => layoutLayered(graphIds, mainGraph.edges, { aspect: canvasAspect || undefined }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [graphStructure, canvasAspect],
+  );
 
-  const { flowNodes, flowEdges } = useMemo(() => {
-    const nodes: Node[] = [];
-    const edges: Edge[] = [];
-    const { groups } = phaseLayout(phases, orientation);
-
-    phases.forEach((phase, phaseIdx) => {
-      const items = phase.items;
-      const g = groups[phaseIdx];
-      const countable = items.filter((i) => i.status !== "skipped");
-      const doneInPhase = countable.filter((i) => i.status === "completed").length;
-
-      nodes.push({
-        id: `group-${phase.key}`,
-        type: "phaseGroup",
-        position: { x: g.x, y: g.y },
-        style: { width: g.w, height: g.h, zIndex: 0 },
-        selectable: false,
+  const flowNodes = useMemo<Node[]>(
+    () =>
+      mainGraph.items.map((item) => ({
+        id: item.id,
+        type: "twinTask",
+        position: layered.positions[item.id] || { x: 0, y: 0 },
         draggable: false,
-        data: {
-          no: phase.no,
-          title: phase.title,
-          progressText: `${doneInPhase}/${countable.length || items.length}`,
-        },
-      });
+        connectable: false,
+        ariaLabel: `${item.code} ${item.title}，${STATUS_META[item.status].label}`,
+        data: { ...item, selected: selectedItem?.id === item.id },
+      })),
+    [mainGraph, layered, selectedItem?.id],
+  );
 
-      items.forEach((item, idx) => {
-        const col = idx % g.cols;
-        const row = Math.floor(idx / g.cols);
-        nodes.push({
-          id: item.id,
-          type: "twinTask",
-          position: {
-            x: g.x + GROUP_PAD + col * COL_W,
-            y: g.y + GROUP_HEAD + row * ROW_H,
-          },
-          style: { zIndex: 2 },
-          data: {
-            ...item,
-            selected: selectedItem?.id === item.id,
-          },
-        });
+  const flowEdges = useMemo<Edge[]>(
+    () =>
+      mainGraph.edges.map((edge) => ({
+        ...readableFlowEdge({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: "layered",
+          focusNodeId: hoveredNodeId || selectedId,
+        }),
+        data: { route: layered.routes[edge.id] },
+      })),
+    [mainGraph, layered, hoveredNodeId, selectedId],
+  );
 
-        item.dependsOn.forEach((depId) => {
-          edges.push(
-            readableFlowEdge({
-              id: `e-${depId}-${item.id}`,
-              source: depId,
-              target: item.id,
-              inactive: item.status === "skipped",
-              focusNodeId: hoveredNodeId || selectedId,
-            }),
-          );
-        });
-      });
-    });
+  const onNodesChange = (changes: NodeChange[]) => {
+    // Keyboard selection (Enter on a focused node) arrives as a select change; nothing else is applied.
+    for (const change of changes) {
+      if (change.type === "select" && change.selected) setSelectedId(change.id);
+    }
+  };
 
-    return { flowNodes: nodes, flowEdges: edges };
-  }, [phases, orientation, selectedItem?.id, hoveredNodeId, selectedId]);
+  const designImportStatus: string | undefined = artifacts?.design_input_status;
+  const emptyNotice = emptyGraphNotice({ run, designImportStatus, importing: importingDesign, isDesignRun });
+  const statusLine = runStatusLine({
+    run,
+    artifacts,
+    pendingGate,
+    importing: importingDesign,
+    queryFailed: runQueryFailed,
+    allItems,
+    isDesignRun,
+  });
+  const modeBadge =
+    deepSeekOnly || run?.provenance?.mode === "deepseek" || composerMode === "deepseek"
+      ? "DeepSeek"
+      : isDesignRun || composerMode === "design"
+        ? "设计规格"
+        : "完整流程";
+  const graphCaption =
+    mainGraph.kind === "tasks"
+      ? `任务依赖图 · ${mainGraph.items.length} 个任务`
+      : mainGraph.kind === "modules"
+        ? `设计模块 · ${mainGraph.items.length} 个（仅属于 DESIGN）`
+        : "暂无可展示的图";
 
   const hasReadyTasks = useMemo(
     () => (tasks || []).some((t: any) => t.state === "ready" || t.state === "stale"),
@@ -855,7 +567,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
         <div className="topbar-left">
           <span className="crumb">
             {deepSeekOnly ? "DeepSeek" : "工作台"} <span style={{ color: "var(--ink-4)" }}>/</span>
-            <strong>{run ? run.idea?.slice(0, 18) || "运行" : "新运行"}</strong>
+            <strong>{run ? `运行 #${String(run.id).slice(0, 6)}` : "新运行"}</strong>
           </span>
           {Array.isArray(availableRuns) && availableRuns.length > 0 && (
             <Select
@@ -942,8 +654,31 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
         )}
       </header>
 
-      <div className="ws-body">
-        <aside className="ws-left" aria-label="工作台运行面板">
+      <div className={layout.bodyClassName} style={layout.bodyStyle} ref={layout.bodyRef}>
+        <aside
+          className="ws-left"
+          id={LEFT_PANEL_ID}
+          aria-label="工作台运行面板"
+          ref={layout.leftRef}
+          tabIndex={-1}
+        >
+          {activeRunId && (
+            <section className="ws-summary" aria-label="运行摘要" data-testid="run-summary">
+              <div className="ws-summary-head">
+                <strong className="ws-summary-name" title={run?.idea || projectName}>
+                  {run?.idea || projectName}
+                </strong>
+                <span className="mode-badge" data-testid="mode-badge">{modeBadge}</span>
+              </div>
+              <div className={`ws-status-line tone-${statusLine.tone}`} role="status" data-testid="run-status-line">
+                <span
+                  className={`dot ${statusLine.tone === "done" ? "completed" : statusLine.tone === "awaiting" ? "awaiting" : statusLine.tone === "error" ? "error" : statusLine.tone === "progress" ? "in_progress" : "pending"}`}
+                  aria-hidden="true"
+                />
+                {statusLine.text}
+              </div>
+            </section>
+          )}
           <section className="composer glass-panel" aria-labelledby="composer-heading">
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
@@ -984,6 +719,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                 onProjectId={setSessionProjectId}
                 runId={activeRunId}
                 provider={composerMode === "deepseek" ? "deepseek" : "existing"}
+                editSourceSignal={editSourceSignal}
               />
             ) : (
               <>
@@ -1061,7 +797,12 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
           )}
 
           {showDesignPreview && (
-            <DesignSpecPreview artifacts={artifacts} result={designView} />
+            <DesignSpecPreview
+              artifacts={artifacts}
+              result={designView}
+              hideProvenance={persistentProvenance.length > 0}
+              onEditSource={() => setEditSourceSignal((n) => n + 1)}
+            />
           )}
 
           {pendingGate && !runQueryFailed && (
@@ -1069,7 +810,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
               <div>
                 <div className="gate-kicker">等待你确认</div>
                 <h2 className="gate-head" id="gate-heading">
-                  <span className="dot error" />
+                  <span className="dot awaiting" />
                   {pendingGate.kind}
                 </h2>
               </div>
@@ -1150,6 +891,10 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             </div>
             </div>
 
+            <details className="node-list">
+            <summary>
+              节点列表 <span className="hint mono">{allItems.length} 项 · 点选后在右侧查看详情</span>
+            </summary>
             <div className="phase-list">
             {phases.map((phase) => {
               const countable = phase.items.filter((i) => i.status !== "skipped");
@@ -1195,11 +940,18 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
               );
             })}
             </div>
+            </details>
           </section>
         </aside>
 
+        <WorkstationSplitter layout={layout} />
+
         <section className="canvas">
           <div className="canvas-toolbar">
+            <WorkstationLayoutControls
+              layout={layout}
+              attention={pendingGate && !runQueryFailed ? `待确认：${pendingGate.kind}` : undefined}
+            />
             <div className="chips">
               {tabs.map((t) => (
                 <button
@@ -1253,30 +1005,63 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
               <>
                 {activeTab === "graph" && (
                   <div className="graph-pane">
-                    <div className="graph-flow" ref={flowRef}>
+                    <ol className="stage-strip" aria-label="阶段概览" data-testid="stage-overview">
+                      {overview.map((stage) => (
+                        <li
+                          key={stage.key}
+                          className={`stage-step ${stage.current ? "current" : ""}`}
+                          data-status={stage.status}
+                          aria-current={stage.current ? "step" : undefined}
+                          title={`${stage.label}：${STATUS_META[stage.status].label}${stage.rawState ? `（${stage.rawState}）` : ""}`}
+                        >
+                          <span className={`dot ${stage.status}`} aria-hidden="true" />
+                          <span className="stage-label">{stage.label}</span>
+                          <span className="stage-state">{STATUS_META[stage.status].label}</span>
+                        </li>
+                      ))}
+                      <li className="stage-caption" data-testid="graph-caption">{graphCaption}</li>
+                    </ol>
+                    <div className="graph-flow" ref={graphBox.attach}>
+                      {mainGraph.kind === "empty" && (
+                        <div className={`graph-empty tone-${emptyNotice.tone}`} role="status" data-testid="graph-empty">
+                          <strong>{emptyNotice.title}</strong>
+                          <span>{emptyNotice.detail}</span>
+                        </div>
+                      )}
                       <ReactFlow
                         nodes={flowNodes}
                         edges={flowEdges}
                         nodeTypes={nodeTypes}
-                        fitView
-                        fitViewOptions={{ padding: 0.1 }}
-                        minZoom={0.3}
-                        onNodeClick={(_, node) => {
-                          if (!node.id.startsWith("group-")) {
-                            setSelectedId(node.id);
-                          }
-                        }}
-                        onNodeMouseEnter={(_, node) => {
-                          if (!node.id.startsWith("group-")) hoverNode(node.id);
-                        }}
-                        onNodeMouseLeave={(_, node) => {
-                          if (!node.id.startsWith("group-")) leaveNode(node.id);
-                        }}
+                        edgeTypes={layeredEdgeTypes}
+                        defaultViewport={{ x: 24, y: 24, zoom: 1 }}
+                        minZoom={FLOW_MIN_ZOOM}
+                        maxZoom={FLOW_MAX_ZOOM}
+                        nodesDraggable={false}
+                        nodesConnectable={false}
+                        elementsSelectable
+                        onMoveStart={viewport.onMoveStart}
+                        onNodesChange={onNodesChange}
+                        onNodeClick={(_, node) => setSelectedId(node.id)}
+                        onNodeMouseEnter={(_, node) => hoverNode(node.id)}
+                        onNodeMouseLeave={(_, node) => leaveNode(node.id)}
                       >
                         <Background variant={BackgroundVariant.Dots} gap={22} size={0.7} color="#e3ebf0" />
-                        <Controls position="top-right" showInteractive={false} />
-                        <AutoFit
-                          signature={`${orientation}:${flowNodes.length}:${canvasSize.w}x${canvasSize.h}`}
+                        <Controls
+                          position="top-right"
+                          showInteractive={false}
+                          onZoomIn={viewport.markUserMoved}
+                          onZoomOut={viewport.markUserMoved}
+                        />
+                        <FlowAutoFit
+                          structure={`${activeRunId}|${graphStructure}|${canvasAspect}`}
+                          userMoved={viewport.userMoved}
+                          bounds={{ width: layered.width, height: layered.height }}
+                          getSize={graphBox.getSize}
+                        />
+                        <FlowResetButton
+                          userMoved={viewport.userMoved}
+                          bounds={{ width: layered.width, height: layered.height }}
+                          getSize={graphBox.getSize}
                         />
                       </ReactFlow>
                     </div>

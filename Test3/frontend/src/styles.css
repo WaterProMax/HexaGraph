@@ -361,6 +361,11 @@ body {
   background: var(--warn);
   box-shadow: 0 0 0 3px rgba(247, 104, 8, 0.16);
 }
+/* Waiting on a human gate: not a failure, not progress. Amber ring so it never reads as "done". */
+.dot.awaiting {
+  background: #fff;
+  box-shadow: inset 0 0 0 2px #d9930d, 0 0 0 3px rgba(217, 147, 13, 0.16);
+}
 
 @keyframes pulse {
   50% {
@@ -399,8 +404,11 @@ body {
 .ws-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  position: relative;
   display: grid;
-  grid-template-columns: 360px 1fr;
+  /* info column | splitter | canvas. The width is driven by useWorkstationLayout (clamped, persisted). */
+  grid-template-columns: var(--ws-left-w, 320px) 8px minmax(0, 1fr);
 }
 
 .ws-left {
@@ -628,9 +636,6 @@ body {
   .shell {
     grid-template-columns: 200px 1fr;
   }
-  .ws-body {
-    grid-template-columns: 300px 1fr;
-  }
   .legend,
   .crumb {
     display: none;
@@ -654,7 +659,7 @@ body {
 }
 
 .flow-node {
-  width: 216px;
+  width: 224px;
   background: #fff;
   border-radius: 12px;
   box-shadow: var(--shadow-layer);

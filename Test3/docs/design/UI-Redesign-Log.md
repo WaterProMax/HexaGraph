@@ -177,3 +177,28 @@ node scripts/verify-flow-edges.cjs
 - `npm run build`：TypeScript 与 Vite 生产构建通过；既有大 chunk 提示保留。
 - `verify-flow-edges.cjs` 新增顶栏高度、单行列表、阶段透明底、节点 1px 边框、默认副信息隐藏、选中前后节点尺寸稳定及左栏无横向溢出断言；共享边线、箭头、前后继高亮和任务依赖图检查通过。
 - 修改前后使用同一组隔离 mock 数据和 1280×800 视口，截图位于 `docs/design/screenshots/visual-subtraction/before/` 与 `after/`；未连接真实后端。
+
+## v1.4 · 可拖分栏与分层流程图
+
+日期：2026-11-18（北京时间）。只改前端，未改后端、HTTP 接口、状态机或人工门禁。
+
+### 修改范围
+
+- 新增 `WorkstationSplitter` / `workstationLayout.ts`：中间栏可拖动、键盘调节、折叠、窄屏抽屉，宽度持久化到独立存储键。
+- 新增 `flowLayout.ts`（依赖 `@dagrejs/dagre`，仅此一个新依赖）、`LayeredEdge.tsx`、`FlowViewport.tsx`：分层布局、车道式连线、可读缩放下限、仅结构变化时适应视口。
+- 新增 `workstationGraph.ts`：把阶段总览、节点列表、主图构造为纯函数；模块图只画 `depends_on` 边，去掉 S-PLAN 的伪扇入；新增 `awaiting` 状态区分“等待确认”与“失败”。
+- `DesignSpecInput` / `DesignSpecPreview` 折叠重复说明（原文、完整指纹、多余提示），保留可编辑原文与“去改原文”入口，轮询不覆盖用户输入。
+- 静态课堂复用分栏与视口逻辑，仍保持四个人工关卡与独立存储键。
+
+### 验证
+
+- `tsc --noEmit`、`npm test`（20 个文件、178 条）、`npm run build` 通过。
+- `scripts/verify-layout-behavior.cjs`（本机 Chrome、隔离 mock，全部 HTTP 在浏览器内模拟）全部通过：无节点重叠、无连线穿过非端点节点、拖分栏不触发重新适应、窄屏无横向滚动、抽屉与 Esc、需补充输入、静态课堂四关卡。
+- Playwright mock e2e 9 条通过。为让其通过：`e2e/mock-api.ts` 补充 `/health` 路由（基线 HEAD 同样因此失败）；`operations.pw.ts` 中 409 用例的期望文案与现有 API 客户端不符，改为 `关卡处理失败: offline failure`。
+- 截图位于 `docs/design/screenshots/flow-layout/before|after/`；`scripts/capture-flow-layout.cjs` 可复跑（`FLOW_LAYOUT_PHASE=before|after`）。未连接真实后端、未调用模型 API。
+
+### 已知限制
+
+- 20 个任务的 DAG 在 1440px 下按 0.6 可读下限左对齐，右侧列需要平移查看；这是有意取舍，避免节点过小。
+- 旧的 `scripts/verify-flow-edges.cjs` 针对旧阶段布局，未更新，可能不再通过。
+

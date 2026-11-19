@@ -37,14 +37,36 @@ vi.mock("../hooks/useRunEvents", () => ({
 }));
 
 vi.mock("@xyflow/react", () => ({
-  ReactFlow: ({ children }: { children?: ReactNode }) => <div data-testid="flow">{children}</div>,
+  ReactFlow: ({
+    children,
+    nodes = [],
+    edges = [],
+    nodesDraggable,
+    nodesConnectable,
+  }: {
+    children?: ReactNode;
+    nodes?: Array<{ id: string; data?: { status?: string } }>;
+    edges?: Array<{ id: string; source: string; target: string; type?: string }>;
+    nodesDraggable?: boolean;
+    nodesConnectable?: boolean;
+  }) => (
+    <div data-testid="flow" data-draggable={String(nodesDraggable)} data-connectable={String(nodesConnectable)}>
+      {nodes.map((node) => (
+        <div key={node.id} data-testid="flow-node" data-node-id={node.id} data-status={node.data?.status} />
+      ))}
+      {edges.map((edge) => (
+        <div key={edge.id} data-testid="flow-edge" data-source={edge.source} data-target={edge.target} data-type={edge.type} />
+      ))}
+      {children}
+    </div>
+  ),
   Background: () => null,
   BackgroundVariant: { Dots: "dots" },
   Controls: () => null,
   Handle: () => null,
   MarkerType: { ArrowClosed: "arrow" },
   Position: { Left: "left", Right: "right" },
-  useReactFlow: () => ({ fitView: vi.fn() }),
+  useReactFlow: () => ({ fitView: vi.fn(), setViewport: vi.fn() }),
 }));
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
@@ -428,5 +450,89 @@ describe("Workstation buttons follow backend status", () => {
     expect(String(errorSpy.mock.calls[0][0])).toMatch(/关卡处理失败|关卡冲突/);
     expect(successSpy).not.toHaveBeenCalled();
     expect((screen.getByRole("button", { name: "批准并推进" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+function flowNodes() {
+  return Array.from(document.querySelectorAll('[data-testid="flow-node"]')).map((el) => ({
+    id: el.getAttribute("data-node-id"),
+    status: el.getAttribute("data-status"),
+  }));
+}
+
+function flowEdges() {
+  return Array.from(document.querySelectorAll('[data-testid="flow-edge"]')).map(
+    (el) => `${el.getAttribute("data-source")}->${el.getAttribute("data-target")}`,
+  );
+}
+
+const cards = [
+  { code: "T-01", title: "骨架", role: "coder", kind: "impl", module: "M1", points: 1, depends_on: [] },
+  { code: "T-02", title: "查询", role: "coder", kind: "impl", module: "M2", points: 1, depends_on: ["T-01"] },
+  { code: "T-03", title: "展示", role: "coder", kind: "impl", module: "M3", points: 1, depends_on: ["T-01", "T-02"] },
+];
+
+describe("Workstation layered graph and compact summary", () => {
+  it("shows the design-module graph with only declared module edges, never the PLAN stage or a fan-in", async () => {
+    api.artifacts.mockResolvedValue(
+      designArtifacts({
+        design: {
+          modules: [
+            { code: "M1", name: "座位数据", sources: ["F1"] },
+            { code: "M2", name: "座位查询", sources: ["F1"] },
+            { code: "M3", name: "界面", sources: ["F1"], depends_on: ["M1"] },
+          ],
+          interfaces: [],
+        },
+      }),
+    );
+    renderWorkstation();
+    await waitFor(() => expect(flowNodes()).toHaveLength(3));
+    expect(flowNodes().map((n) => n.id)).toEqual(["MOD-M1", "MOD-M2", "MOD-M3"]);
+    expect(flowNodes().every((n) => n.status === "awaiting")).toBe(true);
+    expect(flowEdges()).toEqual(["MOD-M1->MOD-M3"]);
+    expect(screen.getByTestId("graph-caption").textContent).toContain("设计模块 · 3");
+    const flow = screen.getByTestId("flow");
+    expect(flow.getAttribute("data-draggable")).toBe("false");
+    expect(flow.getAttribute("data-connectable")).toBe("false");
+    expect(document.querySelector('[data-type="layered"]')).toBeTruthy();
+  });
+
+  it("shows the real task DAG once PLAN tasks exist, using only depends_on edges", async () => {
+    api.run.mockResolvedValue(designRun({ status: "active", stage: "7", gates: [] }));
+    api.artifacts.mockResolvedValue(designArtifacts({ design_input_status: "plan_confirmed", plan: { tasks: cards } }));
+    api.tasks.mockResolvedValue(
+      cards.map((card, index) => ({ code: card.code, state: index === 0 ? "done" : "pending", revision: 1, card })),
+    );
+    renderWorkstation();
+    await waitFor(() => expect(flowNodes().map((n) => n.id)).toEqual(["T-01", "T-02", "T-03"]));
+    expect(flowEdges().sort()).toEqual(["T-01->T-02", "T-01->T-03", "T-02->T-03"]);
+    expect(flowNodes().find((n) => n.id === "T-01")?.status).toBe("completed");
+    expect(screen.getByTestId("graph-caption").textContent).toContain("任务依赖图 · 3");
+  });
+
+  it("renders a stopped import as an error with an empty graph, never as a success", async () => {
+    api.run.mockResolvedValue(designRun({ status: "needs_input", gates: [] }));
+    api.artifacts.mockResolvedValue({
+      design_input_status: "needs_input",
+      design_input_error_category: "missing_fields",
+      design_input_missing: ["缺 A", "缺 B", "缺 C", "缺 D"],
+      design_input: { title: "t", text: "x", source: { kind: "text" } },
+    });
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("graph-empty").className).toContain("tone-error"));
+    expect(flowNodes()).toHaveLength(0);
+    await waitFor(() => expect(screen.getByTestId("run-status-line").className).toContain("tone-error"));
+    expect(screen.getByTestId("design-error-hint").textContent).not.toContain("缺 D");
+    expect(screen.getByRole("button", { name: /共 4 项，展开全部/ })).toBeTruthy();
+  });
+
+  it("keeps a waiting gate visually separate from a failure and always shows the stage overview", async () => {
+    renderWorkstation();
+    await waitFor(() => expect(screen.getByTestId("run-status-line").className).toContain("tone-awaiting"));
+    expect(screen.getByTestId("run-status-line").className).not.toContain("tone-error");
+    expect(screen.getByTestId("stage-overview").querySelectorAll(".stage-step").length).toBeGreaterThanOrEqual(7);
+    expect(screen.getByTestId("mode-badge").textContent).toBe("设计规格");
+    expect(screen.getByRole("separator", { name: "调整信息栏宽度" })).toBeTruthy();
   });
 });

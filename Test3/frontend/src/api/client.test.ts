@@ -7,6 +7,19 @@ afterEach(() => {
 });
 
 describe("api error parsing", () => {
+  it("explains an empty 5xx body as an unreachable backend", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, text: async () => "" }));
+    await expect(api.health()).rejects.toMatchObject({
+      status: 500,
+      message: expect.stringContaining("make dev-backend"),
+    });
+  });
+
+  it("keeps a plain status code for an empty 4xx body", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404, text: async () => "" }));
+    await expect(api.health()).rejects.toMatchObject({ status: 404, message: "404" });
+  });
+
   it("keeps 409 category, summary, and run_id from JSON", async () => {
     vi.stubGlobal(
       "fetch",

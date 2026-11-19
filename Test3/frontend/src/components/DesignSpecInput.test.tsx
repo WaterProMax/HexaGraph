@@ -386,3 +386,51 @@ describe("DesignSpecInput offline demo hint", () => {
     expect(hint).not.toMatch(/社团文档生成座位/);
   });
 });
+
+describe("DesignSpecInput compact source panel", () => {
+  const restored = {
+    design_input_status: "awaiting_confirmation",
+    design_input: { title: "自习室规格", text: "目标：学生查看空闲座位。", source: { kind: "text", name: "" } },
+  };
+  const props = { projectName: "p", onProjectName: () => undefined, onCreated: () => undefined };
+  const rawDetails = () => screen.getByLabelText("设计规格原文").closest("details") as HTMLDetailsElement;
+
+  it("starts with a short, open textarea and a collapsed hint", () => {
+    render(<DesignSpecInput {...props} />);
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).rows).toBe(5);
+    expect(rawDetails().open).toBe(true);
+    expect((screen.getByTestId("design-demo-hint") as HTMLDetailsElement).open).toBe(false);
+  });
+
+  it("folds the original text once an import has a status but keeps it in the form for editing", () => {
+    render(<DesignSpecInput {...props} importArtifacts={restored} />);
+    expect(rawDetails().open).toBe(false);
+    expect((screen.getByLabelText("设计规格原文") as HTMLTextAreaElement).value).toBe("目标：学生查看空闲座位。");
+  });
+
+  it("opens and focuses the text when the preview asks to edit the source", async () => {
+    const { rerender } = render(<DesignSpecInput {...props} importArtifacts={restored} />);
+    expect(rawDetails().open).toBe(false);
+    rerender(<DesignSpecInput {...props} importArtifacts={restored} editSourceSignal={1} />);
+    await waitFor(() => expect(rawDetails().open).toBe(true));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("设计规格原文")));
+  });
+
+  it("does not fold the text under a user who is typing when the status arrives", () => {
+    const { rerender } = render(<DesignSpecInput {...props} />);
+    const textarea = screen.getByLabelText("设计规格原文") as HTMLTextAreaElement;
+    textarea.focus();
+    fireEvent.change(textarea, { target: { value: "正在输入的内容" } });
+    rerender(<DesignSpecInput {...props} importArtifacts={{ design_input_status: "failed" }} />);
+    expect(rawDetails().open).toBe(true);
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value).toBe("正在输入的内容");
+  });
+
+  it("keeps the DeepSeek entry free of a banner while still exposing the run boundaries", () => {
+    render(<DesignSpecInput {...props} provider="deepseek" />);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("目标语言")).toBeTruthy();
+    expect(screen.getByTestId("design-demo-hint").textContent).toMatch(/确认 DESIGN/);
+  });
+});

@@ -25,7 +25,7 @@ vi.mock("@xyflow/react", () => ({
   Handle: () => null,
   MarkerType: { ArrowClosed: "arrow" },
   Position: { Left: "left", Right: "right" },
-  useReactFlow: () => ({ fitView: vi.fn() }),
+  useReactFlow: () => ({ fitView: vi.fn(), setViewport: vi.fn() }),
 }));
 
 function renderDemo() {

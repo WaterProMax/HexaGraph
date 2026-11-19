@@ -28,6 +28,7 @@ export async function mockApi(page: Page) {
       if (path === `/runs/${run.id}/terminate`) { run.status = 'terminated'; return json(run); }
     }
     if (method === 'GET') {
+      if (path === '/health') return json({ status: 'ok', schedule_mode: 'manual' });
       if (path === '/runs') return json(created ? [run] : []);
       if (path === `/runs/${run.id}`) return json(run);
       if (path === `/runs/${run.id}/artifacts`) return json({});
