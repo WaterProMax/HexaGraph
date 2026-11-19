@@ -67,13 +67,6 @@ def test_revoked_grant_wins_over_empty_request() -> None:
     assert grant_stale_reason(grant, approved_baseline_hashes={"PLAN": "aaa"}, requested_task_codes=set()) == "grant_revoked"
 
 
-def test_revision_is_not_an_input() -> None:
-    grant = _grant()
-    run_revision = 5  # deliberately external: callers may bump it, the policy must not see it
-    assert grant_stale_reason(grant, approved_baseline_hashes={"PLAN": "aaa"}, requested_task_codes={"T-01"}) is None
-    assert run_revision == 5  # keep the external value used above
-
-
 def test_signature_has_no_revision_parameter() -> None:
     params = set(inspect.signature(grant_stale_reason).parameters)
     assert params == {"grant", "approved_baseline_hashes", "requested_task_codes"}
