@@ -10,9 +10,20 @@ from app.errors import GitHubWriteDenied
 from app.execution.github_auth import GitHubWriteAuth, parse_github_write_auth
 from app.tools.live_git import create_pr_idempotent, push_once
 
-AUTH_TEXT = (
-    "授权 github_write：owner=WaterProMax repo=HexaGraph remote=origin "
-    "base_branch=teamwork-001 feature_branch=feat/p1-demo"
+AUTH_TEXT = json.dumps(
+    {
+        "type": "github_write_grant_v1",
+        "verb": "authorize",
+        "owner": "WaterProMax",
+        "repo": "HexaGraph",
+        "remote": "origin",
+        "base_branch": "teamwork-001",
+        "feature_branch": "feat/p1-demo",
+        "allow_push": True,
+        "allow_pr_create": True,
+        "allow_merge": False,
+        "allow_deploy": False,
+    }
 )
 
 
