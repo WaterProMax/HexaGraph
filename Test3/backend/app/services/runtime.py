@@ -1984,7 +1984,7 @@ class Workbench:
     ) -> dict[str, Any]:
         # Retry/resume/takeover can re-enter the model or scheduler. On a retired
         # DeepSeek-only run they must fail clearly instead of silently using 百炼.
-        if action in {"retry", "resume", "takeover", "submit-takeover"}:
+        if action in {"retry", "resume", "skip", "force-pass", "takeover", "submit-takeover"}:
             self._reject_retired(run)
         task = run.tasks[code]
         if task["revision"] != expected_revision:
@@ -2094,6 +2094,7 @@ class Workbench:
         return info
 
     async def accept(self, run: RunState) -> dict[str, Any]:
+        self._reject_retired(run)
         self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"
@@ -2191,6 +2192,7 @@ class Workbench:
         return ok, evidence, reason or ("\n".join(outputs)[:200] if not ok else "")
 
     async def submit_cr(self, run: RunState, description: str, impact_codes: list[str], **flags: Any) -> dict[str, Any]:
+        self._reject_retired(run)
         open_crs = [c for c in run.crs if c.get("status") not in {"closed", "rejected", "applied"}]
         if len(open_crs) >= int((run.limits.get("change") or {}).get("max_open") or 3):
             run.artifacts.setdefault("cr_queue", []).append({"description": description, "codes": impact_codes, **flags})
@@ -2234,6 +2236,7 @@ class Workbench:
         return self._gate(run, "变更决定", {"cr": cr})
 
     async def decide_cr(self, run: RunState, payload: dict[str, Any]) -> dict[str, Any]:
+        self._reject_retired(run)
         code = payload.get("code")
         if not code:
             for gate in reversed(run.gates):
@@ -2444,6 +2447,7 @@ class Workbench:
                     raise ValidationFailed(f"未受影响条目被改写: {code}")
 
     async def import_feedback(self, run: RunState, rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+        self._reject_retired(run)
         with self._usage_scope(run):
             return await self._import_feedback_body(run, rows, key)
 
