@@ -434,10 +434,10 @@ async def create_execution_grant(run_id: str, request: Request) -> JSONResponse:
 
 
 @router.get("/runs/{run_id}/execution-grants")
-async def list_execution_grants(run_id: str, request: Request) -> dict[str, Any]:
+async def list_execution_grants(run_id: str, request: Request) -> Any:
     bench = wb(request)
     if run_id not in bench.runs:
-        raise HTTPException(404, "run not found")
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
     grants = await bench.grants_for_run(run_id)
     return {"items": [grant.model_dump() for grant in grants]}
 
