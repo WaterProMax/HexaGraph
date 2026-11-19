@@ -9,7 +9,7 @@ import shutil
 import time
 import traceback
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +41,13 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
+from app.execution.grant_repo import GrantRepo
+from app.execution.run_profile import (
+    set_approved_baseline_hashes,
+)
+from app.execution.run_profile import (
+    set_run_execution_profile as _apply_run_execution_profile,
+)
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
 from app.listening.distill import validate_distill
@@ -71,9 +78,11 @@ from app.schemas.docs import (
     TaskCard,
     TaskGraph,
 )
+from app.schemas.execution_grant import ExecutionGrant, ExecutionProfile
 from app.services import design_input as design_input_service
 from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
+from app.storage.db import create_all, make_engine, session_factory, sqlite_url
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
@@ -171,6 +180,12 @@ class Workbench:
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
         self.schedule_mode = "manual"
+        self.db_path = self.data_dir / "test3.db"
+        self._db_engine = None
+        self._db_factory = None
+        self._db_ready = False
+        self._db_lock: asyncio.Lock | None = None
+        self._grant_write_lock: asyncio.Lock | None = None
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -544,6 +559,61 @@ class Workbench:
         run.artifacts["idea_raw"] = idea
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
+
+    # --- ExecutionGrant domain (P1) ---------------------------------------------
+    async def _ensure_db(self) -> None:
+        if self._db_ready:
+            return
+        if self._db_lock is None:
+            self._db_lock = asyncio.Lock()
+        async with self._db_lock:
+            if self._db_ready:
+                return
+            engine = make_engine(sqlite_url(self.db_path))
+            await create_all(engine)
+            self._db_engine = engine
+            self._db_factory = session_factory(engine)
+            self._db_ready = True
+
+    @asynccontextmanager
+    async def db_session(self):
+        await self._ensure_db()
+        assert self._db_factory is not None
+        async with self._db_factory() as session:
+            yield session
+
+    async def close(self) -> None:
+        if self._db_engine is not None:
+            await self._db_engine.dispose()
+            self._db_engine = None
+            self._db_factory = None
+            self._db_ready = False
+
+    def set_run_execution_profile(self, run_id: str, profile: ExecutionProfile) -> None:
+        """Internal/test fixture only; no HTTP route exposes this setter."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        _apply_run_execution_profile(run, profile)
+
+    def set_run_approved_baseline_hashes(self, run_id: str, hashes: dict[str, str]) -> None:
+        """Internal/test fixture: mirror a human-approved artifact baseline."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        set_approved_baseline_hashes(run, hashes)
+
+    async def add_grant(self, grant: ExecutionGrant) -> None:
+        if self._grant_write_lock is None:
+            self._grant_write_lock = asyncio.Lock()
+        async with self._grant_write_lock:
+            async with self.db_session() as session:
+                await GrantRepo(session).add(grant)
+                await session.commit()
+
+    async def grants_for_run(self, run_id: str) -> list[ExecutionGrant]:
+        async with self.db_session() as session:
+            return await GrantRepo(session).list_for_run(run_id)
 
     @staticmethod
     def _is_retired_run(run: RunState) -> bool:

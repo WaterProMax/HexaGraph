@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.workbench.stop_loop()
+        await app.state.workbench.close()
 
 
 def create_app() -> FastAPI:

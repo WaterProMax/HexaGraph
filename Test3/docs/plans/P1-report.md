@@ -60,3 +60,46 @@ collected 19 items
 ```
 
 并发：`test_two_sessions_duplicate_pk_only_one_row` 覆盖同一 PK 双写；SQLite 仅保留一行。无真实网络/模型调用。
+
+## P1-T03 · ExecutionGrant HTTP 与 execution_profile 服务端所有
+
+修改/新增：
+
+- `[MODIFY] Test3/backend/app/api/routes.py`：新增 `POST/GET /api/runs/{run_id}/execution-grants`；新错误体为顶层 `{"error_category", "detail"}`；未新增任何 profile 降级路由。
+- `[MODIFY] Test3/backend/app/services/runtime.py`：仅追加 ExecutionGrant 域方法（惰性 SQLite 引擎、`db_session`、`set_run_execution_profile`、`set_run_approved_baseline_hashes`、`add_grant`、`grants_for_run`、`close`），未改既有调度/退休/legacy 分支。
+- `[MODIFY] Test3/backend/app/errors.py`：追加 `GrantRejected`、`GitHubWriteDenied`。
+- `[MODIFY] Test3/backend/app/main.py`：lifespan 关闭时 `await workbench.close()`。
+- `[MODIFY] Test3/backend/app/storage/models.py`：沿用 P1-T02 的 `ExecutionGrantRow`。
+- `[NEW] Test3/backend/app/execution/run_profile.py`：profile / `approved_baseline_hashes` 的读写 helper（存 `run.artifacts`，P0 未发现对应 SQLite 列）。
+- `[MODIFY] Test3/backend/tests/integration/snapshots/openapi_structure.json`：新增两条路由后按既有测试说明用 `UPDATE_OPENAPI_SNAPSHOT=1` 重生成。
+- `[NEW] Test3/backend/tests/integration/test_execution_grant_api.py`
+
+数据库路径：`Workbench.data_dir / "test3.db"`，首次使用 grant 域时惰性 `create_all`；测试全部用 `tmp_path`，未触碰 `Test3/data/`。C.6 的 `execution_grants` 仍是该域唯一写权威。
+
+行为：
+
+- 201 返回 `status=active`、回显 `task_codes`、含 `grant_id`；GET 返回 `{items: [...]}`。
+- run 不存在 → 404 `run_not_found`；legacy run → 403 `profile_not_granted_v1`；hashes 与 run 当前基线不一致 → 409 `baseline_stale`；`task_codes` 空 → 400 `validation_error`（进入仓库前失败）。
+- `PATCH /api/runs/{id}` 与 `POST /api/runs/{id}` 均非路由（405/404），profile 仍是 `granted_v1`。
+- 并发双 POST 由 `Workbench._grant_write_lock` 串行化，两条 grant 均 201 且无半截行；允许同一 run 保留多条历史 grant，调度取最新一条（P1-T04）。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/integration/test_execution_grant_api.py -v
+collected 7 items
+tests/integration/test_execution_grant_api.py .......  [100%]
+7 passed in 0.82s
+
+$ cd Test3/backend && uv run pytest tests/unit/test_grant_policy.py tests/unit/test_execution_grant_schema.py tests/unit/test_grant_repo.py tests/integration/test_alembic_execution_grants.py tests/integration/test_execution_grant_api.py tests/integration/test_api_contract.py -q
+54 passed
+```
+
+人工验收 curl（本轮未启动 uvicorn，按任务卡允许以 pytest 断言为准；以下为等价请求体）：
+
+```bash
+curl -sS -D - -X POST http://127.0.0.1:<port>/api/runs/<granted-run>/execution-grants \
+  -H 'Content-Type: application/json' \
+  -d '{"execution_profile":"granted_v1","task_codes":["T-01"],"approved_baseline_hashes":{"PLAN":"aaa"},"repo_remote":"origin","repo_owner":"WaterProMax","repo_name":"HexaGraph","base_branch":"teamwork-001","feature_branch":"feat-p1-demo","allowed_tool_refs":[]}'
+# 期望 201 + "status":"active"
+```

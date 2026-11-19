@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ValidationError
 
 from app.errors import (
     AgentOutputError,
@@ -18,7 +20,9 @@ from app.errors import (
     ValidationFailed,
 )
 from app.events.bus import BUS
+from app.execution.run_profile import run_approved_baseline_hashes, run_execution_profile
 from app.schemas.design_input import DesignRunCreate
+from app.schemas.execution_grant import ExecutionGrant, ExecutionGrantCreate
 from app.services.runtime import Workbench
 
 router = APIRouter()
@@ -377,12 +381,60 @@ async def put_models(body: dict[str, Any], request: Request) -> dict[str, Any]:
 @router.post("/config/models/test")
 async def test_models() -> dict[str, Any]:
     # 【修改点】不再返回假成功，真实检查密钥
-    from app.settings import get_settings
     import os
+
+    from app.settings import get_settings
     
     if not os.getenv("DASHSCOPE_API_KEY") and not get_settings().dashscope_api_key:
         raise HTTPException(status_code=400, detail="DASHSCOPE_API_KEY is not set. Cannot run live probe.")
     return {"ok": True, "note": "API key found. Use 'make check-models' to execute the live probe."}
+
+
+def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
+    """contracts C.5 error body: {"error_category": ..., "detail": ...}."""
+    return JSONResponse(status_code=status_code, content={"error_category": category, "detail": detail})
+
+
+@router.post("/runs/{run_id}/execution-grants", status_code=201)
+async def create_execution_grant(run_id: str, request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    if not isinstance(payload, dict):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ExecutionGrantCreate.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    # execution_profile is server-owned. A legacy run cannot opt into grants via
+    # this endpoint, and there is no route that downgrades granted_v1 to legacy.
+    if run_execution_profile(run) != "granted_v1":
+        return _json_error(403, "profile_not_granted_v1", "run is not granted_v1")
+    if body.approved_baseline_hashes != run_approved_baseline_hashes(run):
+        return _json_error(409, "baseline_stale", "approved_baseline_hashes do not match the run baseline")
+    grant = ExecutionGrant(
+        grant_id=str(uuid.uuid4()),
+        run_id=run_id,
+        status="active",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        **body.model_dump(),
+    )
+    await bench.add_grant(grant)
+    return JSONResponse(status_code=201, content=grant.model_dump())
+
+
+@router.get("/runs/{run_id}/execution-grants")
+async def list_execution_grants(run_id: str, request: Request) -> dict[str, Any]:
+    bench = wb(request)
+    if run_id not in bench.runs:
+        raise HTTPException(404, "run not found")
+    grants = await bench.grants_for_run(run_id)
+    return {"items": [grant.model_dump() for grant in grants]}
 
 
 @router.post("/runs/{run_id}/schedule")
