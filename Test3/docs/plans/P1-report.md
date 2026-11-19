@@ -302,3 +302,28 @@ $ cd Test3/backend && uv run pytest -m "not live" -q
 1. **BLOCKED**：缺 C.7 `github_write` 授权句，无法执行真实 push / `gh pr create`；`MV-04` 未完成。
 2. P1-T06 的 granted 执行目前只在任务携带 `granted_execution`（writes + command）计划时启用；完整 DAG 连续执行与缺陷回流在 P5 实现，本阶段未越界。
 3. 若后续授权真实 PR，必须使用 C.7 原句与独立 feature 分支，仍禁止 merge / deploy / push base。
+
+## 提交记录与最终回归（本地分支）
+
+```text
+05d226b P1-T01 add grant_stale_reason subset-safe policy
+187fcf1 P1-T02 add ExecutionGrant schema, SQLite table and repo
+728852c P1-T03 add execution-grant HTTP with server-owned profile
+47bc415 P1-T04 guard granted_v1 schedule scope without legacy change
+7d3e44f P1-T05 record approved baseline hashes and refresh grants
+ad7c90e P1-T06 run granted tasks in isolated worktree with evidence
+140d1cc P1-T07 add idempotent git/PR adapters with BLOCKED record
+f079ae6 style(test3): sort execution-grant alembic test imports
+2902308 P1-T03 return ErrorBody for unknown run on grant list
+```
+
+最终后端全量（非 live）：
+
+```text
+$ cd Test3/backend && uv run pytest -m "not live"
+250 passed, 2 deselected in 22.81s
+```
+
+`2 deselected` 为 `@pytest.mark.live`（真实模型 / 真实 PR 探测），本轮未运行。
+
+本报告附注 commit 仅登记上述 SHA 与输出，不改变业务代码。P1 本地部分到此停止；**未进入 P2**，未 push，未创建真实 PR。
