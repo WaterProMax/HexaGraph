@@ -153,7 +153,7 @@ async function main() {
     // persistence + keyboard
     const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key) || 'null'), LAYOUT_KEY);
     check('splitter: width saved under hexagraph.workstation.layout.v1', saved && saved.width >= 280 && saved.width <= 560, JSON.stringify(saved));
-    check('splitter: static classroom key untouched', (await page.evaluate((key) => localStorage.getItem(key), STATIC_KEY)) === null);
+    check('splitter: retired static classroom key untouched', (await page.evaluate(() => localStorage.getItem('hexagraph.static-classroom-demo.v1'))) === null);
     const before = await leftWidth(page);
     await page.reload();
     await page.locator('.react-flow__node').first().waitFor();
