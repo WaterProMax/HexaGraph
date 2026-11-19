@@ -10,8 +10,10 @@ Selection is explicit and fail-closed:
 
 * ``docker`` is the only backend.  It is reused only when the daemon is already
   reachable, the image is already present locally (no pull) and a probe
-  container proves no network, no host home, no docker socket and no write
-  outside the mounted worktree.
+  container proves no network, no host home, no docker socket, no write
+  outside the mounted worktree, and a working ``python -m pytest``.
+  An image without pytest (and the project toolchain) is a failed preflight,
+  never an "available but empty" backend.
 * Nothing here installs or starts Docker, and nothing falls back to running the
   test command directly on the host.
 """
@@ -42,6 +44,10 @@ MEMORY_LIMIT = "512m"
 CPU_LIMIT = "1"
 PIDS_LIMIT = "128"
 TMPFS_SIZE = "64m"
+CONTAINER_PATH = "/usr/local/bin:/usr/bin:/bin"
+_RESERVED_ENV = frozenset(
+    {"PATH", "HOME", "TMPDIR", "PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH", "VIRTUAL_ENV"}
+)
 
 _PROBE_MARKER = "TEST3_ISOLATION_PROBE="
 
@@ -210,6 +216,8 @@ def _probe_failures(checks: dict[str, Any]) -> list[str]:
         failures.append("HOME is not redirected to /tmp")
     if not checks.get("work_mounted"):
         failures.append("/work is not a mount")
+    if not checks.get("pytest_available"):
+        failures.append("pytest is not available in the isolation image")
     return failures
 
 
@@ -262,6 +270,8 @@ def _docker_argv(
         "--ulimit=nofile=256:256",
         f"--user={os.getuid()}:{os.getgid()}",
         "-e",
+        f"PATH={CONTAINER_PATH}",
+        "-e",
         "HOME=/tmp",
         "-e",
         "TMPDIR=/tmp",
@@ -275,6 +285,8 @@ def _docker_argv(
         "/work",
     ]
     for key, value in (env or {}).items():
+        if key in _RESERVED_ENV:
+            continue
         argv.extend(["-e", f"{key}={value}"])
     argv.append(image)
     argv.extend(command)
@@ -282,10 +294,17 @@ def _docker_argv(
 
 
 def safe_env(env_allow: list[str] | None) -> dict[str, str]:
-    """Only explicitly allowed, non-sensitive host values reach the container."""
+    """Only explicitly allowed, non-sensitive host values reach the container.
+
+    Host PATH/HOME/PYTHON* are never forwarded: the container gets its own
+    fixed PATH and ``HOME=/tmp``.  The docker CLI process keeps its own env via
+    ``_docker_cli_env``; that env is not a source for in-container tools.
+    """
     sensitive = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
     env: dict[str, str] = {}
     for name in env_allow or []:
+        if name in _RESERVED_ENV:
+            continue
         if any(token in name.upper() for token in sensitive):
             continue
         value = os.environ.get(name)

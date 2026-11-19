@@ -1,8 +1,10 @@
 """Isolated granted-v1 execution worker.
 
-The worker only writes under an explicit isolation root (the per-task worktree),
-runs an offline, whitelisted command, and records replayable evidence. It never
-uses the user's dirty workspace and never performs network or model calls.
+The worker stages validated writes under the task worktree, runs the offline
+command inside a preflighted container on a throw-away copy of that worktree,
+and applies back only changes whose paths are inside the task's ``write_set``.
+Scope-external and symlink changes are discarded.  It never uses the user's
+dirty workspace and never performs network or model calls.
 """
 
 from __future__ import annotations
@@ -19,6 +21,12 @@ from app.errors import EvidenceWriteFailed, GrantRejected, IsolationUnavailable,
 from app.execution import evidence as evidence_store
 from app.execution.isolation import preflight_isolation, run_isolated
 from app.execution.tool_policy import DEFAULT_PLATFORM_WHITELIST, authorize_granted_command
+from app.execution.workspace_scope import (
+    apply_changes,
+    cleanup_worktree_copy,
+    collect_changes,
+    prepare_worktree_copy,
+)
 from app.schemas.execution_grant import ExecutionGrant
 from app.tools.sandbox import in_write_set, normalize_under
 
@@ -203,12 +211,20 @@ async def execute_task_granted(
             details=preflight.details,
         )
     written = stage_writes(root, writes, write_set)
-    result = await run_isolated(
-        argv,
-        cwd=root,
-        timeout=timeout,
-        env_allow=list(env_allow or ["PATH"]),
-    )
+    # F-06 closeout: the container only sees a throw-away copy.  Afterwards only
+    # write_set changes are applied back; scope-external and symlink changes are
+    # discarded and recorded.
+    work_copy = prepare_worktree_copy(root)
+    try:
+        result = await run_isolated(
+            argv,
+            cwd=work_copy.work,
+            timeout=timeout,
+            env_allow=list(env_allow or []),
+        )
+        scope = apply_changes(work_copy, collect_changes(work_copy), write_set)
+    finally:
+        cleanup_worktree_copy(work_copy)
     output = redact_secrets(str(result.get("output") or ""), secret_refs)
     stamp = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
     evidence_dir = evidence_store.create_evidence_dir()
@@ -238,6 +254,12 @@ async def execute_task_granted(
             "host_home": "not mounted",
             "timeout": bool(result.get("timeout")),
             "truncated": bool(result.get("truncated")),
+        }
+        evidence["scope"] = {
+            "mount": "isolated-copy",
+            "write_set": list(write_set or []),
+            "applied": list(scope.applied),
+            "discarded": list(scope.discarded),
         }
         evidence_path = evidence_store.write_evidence_file(
             evidence_dir,

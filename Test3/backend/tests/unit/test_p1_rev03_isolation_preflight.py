@@ -240,6 +240,12 @@ async def test_escape_is_contained_when_backend_available(tmp_path: Path) -> Non
     )
     assert not outside.exists()
     assert result.exit_code != 0
+    output = (result.output or "").lower()
+    # A non-zero exit alone is not evidence: fail-closed "module not found"
+    # must not be counted as isolation.  Pytest has to have actually started.
+    assert "pytest" in output or "test session starts" in output
+    assert "no module named 'pytest'" not in output
+    assert "no module named pytest" not in output
     assert result.evidence["isolation"]["backend"] == preflight.backend
 
 
@@ -270,6 +276,43 @@ def test_container_argv_has_no_host_mounts_and_has_limits(tmp_path: Path, monkey
     assert "docker.sock" not in " ".join(argv)
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
-    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("PATH", "/host/bin")
     env = safe_env(["PATH", "OPENAI_API_KEY"])
-    assert env == {"PATH": "/usr/bin"}
+    assert env == {}
+    joined = " ".join(argv)
+    assert "PATH=/usr/local/bin:/usr/bin:/bin" in joined
+    assert "PATH=/usr/bin" not in joined
+    assert "/host/bin" not in joined
+
+
+def test_probe_fails_when_the_image_lacks_pytest() -> None:
+    from app.execution.isolation import _probe_failures
+
+    checks = {
+        "work_write": True,
+        "outside_write": False,
+        "network": False,
+        "host_home_visible": False,
+        "docker_socket": False,
+        "home": "/tmp",
+        "work_mounted": True,
+        "pytest_available": False,
+    }
+    failures = _probe_failures(checks)
+    assert any("pytest" in item for item in failures)
+
+
+def test_probe_accepts_only_complete_checks() -> None:
+    from app.execution.isolation import _probe_failures
+
+    checks = {
+        "work_write": True,
+        "outside_write": False,
+        "network": False,
+        "host_home_visible": False,
+        "docker_socket": False,
+        "home": "/tmp",
+        "work_mounted": True,
+        "pytest_available": True,
+    }
+    assert _probe_failures(checks) == []
