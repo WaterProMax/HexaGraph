@@ -31,3 +31,32 @@ grant, approved_baseline_hashes, requested_task_codes
 ```
 
 并发：纯函数无共享可变状态，按任务卡不写并发用例。权限：纯函数无调用者身份，超集用例覆盖范围越权。无网络访问。
+## P1-T02 · ExecutionGrant 模式、表与仓库
+
+新增：
+
+- `Test3/backend/app/schemas/execution_grant.py`
+- `Test3/backend/app/execution/grant_repo.py`
+- `Test3/backend/app/storage/models.py`（仅追加 `ExecutionGrantRow`）
+- `Test3/backend/alembic/versions/0002_execution_grants.py`（P0 `next_alembic_hint=0002`）
+- `Test3/backend/tests/unit/test_execution_grant_schema.py`
+- `Test3/backend/tests/unit/test_grant_repo.py`
+- `Test3/backend/tests/integration/test_alembic_execution_grants.py`
+
+要点：
+
+- `ExecutionGrantCreate.task_codes` 使用 `Field(min_length=1)`；空列表在模型层 `ValidationError`，`loc` 含 `task_codes`。
+- `execution_profile` 为 `Literal["granted_v1"]`；传 `"legacy"` 校验失败。
+- `execution_grants` 表含 `grant_id` PK、`run_id` 索引 `ix_execution_grants_run`、`status`、`payload`；升级/降级在独立临时 SQLite 上验证。
+- `GrantRepo.add` 使用调用方 session，调用方 rollback 后新 session 查询为空；`list_for_run` 只返回该 run；重复 PK 第二次插入抛 `IntegrityError` 且库中仅一行。
+- 数据库路径：P0 未发现 `TEST3_DB`；仓库既有 `Settings.test3_data_dir()` / `Test3/data`。本卡不改既有默认路径，测试一律用 `tmp_path`；P1-T03 起由 Workbench 在 `data_dir/test3.db` 惰性建库（见 §P1-T03）。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/unit/test_execution_grant_schema.py tests/unit/test_grant_repo.py tests/integration/test_alembic_execution_grants.py tests/unit/test_grant_policy.py -v
+collected 19 items
+... 19 passed in 0.31s
+```
+
+并发：`test_two_sessions_duplicate_pk_only_one_row` 覆盖同一 PK 双写；SQLite 仅保留一行。无真实网络/模型调用。

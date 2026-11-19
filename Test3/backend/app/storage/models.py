@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -225,3 +225,15 @@ class EventRow(Base):
     kind: Mapped[str] = mapped_column(String)
     subject: Mapped[str] = mapped_column(String, default="")
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ExecutionGrantRow(Base):
+    """SQLite authority for the P1 grant domain (contracts.md C.6)."""
+
+    __tablename__ = "execution_grants"
+    __table_args__ = (Index("ix_execution_grants_run", "run_id"),)
+
+    grant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="active")
+    payload: Mapped[str] = mapped_column(Text)
