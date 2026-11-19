@@ -130,6 +130,12 @@ class IsolationUnavailable(Test3Error):
         self.details = dict(details or {})
 
 
+class EvidenceWriteFailed(Test3Error):
+    """Evidence could not be written safely; callers must not report success."""
+
+    code = "EVIDENCE_WRITE_FAILED"
+
+
 class ImportInProgress(Test3Error):
     code = "IMPORT_IN_PROGRESS"
 

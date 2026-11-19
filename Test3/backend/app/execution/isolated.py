@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.errors import CommandDenied, IsolationUnavailable, WriteDenied
+from app.errors import CommandDenied, EvidenceWriteFailed, IsolationUnavailable, WriteDenied
+from app.execution import evidence as evidence_store
 from app.execution.isolation import preflight_isolation, run_isolated
 from app.schemas.execution_grant import ExecutionGrant
 from app.tools.sandbox import command_allowed, in_write_set, normalize_under
@@ -104,10 +105,6 @@ def build_evidence(
     return _redact_obj(evidence, secret_refs)
 
 
-def _evidence_dir(isolation_root: Path) -> Path:
-    return isolation_root.parent / f"{isolation_root.name}-evidence"
-
-
 def validate_writes(
     root: Path,
     writes: list[WriteSpec] | None,
@@ -190,38 +187,43 @@ async def execute_task_granted(
         env_allow=list(env_allow or ["PATH"]),
     )
     output = redact_secrets(str(result.get("output") or ""), secret_refs)
-    evidence_dir = _evidence_dir(root)
-    evidence_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
-    log_path = evidence_dir / f"{task_code}-{stamp}.log"
-    log_path.write_text(output, encoding="utf-8")
-    command = CommandResult(
-        argv=argv,
-        cwd="/work",
-        exit_code=1 if result.get("exit_code") is None else int(result["exit_code"]),
-        log_path=str(log_path),
-        output=output,
-    )
-    evidence = build_evidence(
-        task_code,
-        [command],
-        isolation_root=root,
-        written=written,
-        secret_refs=secret_refs,
-    )
-    evidence["grant_id"] = grant.grant_id
-    evidence["run_id"] = run_id
-    evidence["feature_branch"] = grant.feature_branch
-    evidence["isolation"] = {
-        "backend": result.get("backend", ""),
-        "image": result.get("image", ""),
-        "network": "none",
-        "host_home": "not mounted",
-        "timeout": bool(result.get("timeout")),
-        "truncated": bool(result.get("truncated")),
-    }
-    evidence_path = evidence_dir / f"{task_code}-{stamp}.json"
-    evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+    evidence_dir = evidence_store.create_evidence_dir()
+    try:
+        log_path = evidence_store.write_evidence_file(evidence_dir, f"{task_code}-{stamp}.log", output)
+        command = CommandResult(
+            argv=argv,
+            cwd="/work",
+            exit_code=1 if result.get("exit_code") is None else int(result["exit_code"]),
+            log_path=str(log_path),
+            output=output,
+        )
+        evidence = build_evidence(
+            task_code,
+            [command],
+            isolation_root=root,
+            written=written,
+            secret_refs=secret_refs,
+        )
+        evidence["grant_id"] = grant.grant_id
+        evidence["run_id"] = run_id
+        evidence["feature_branch"] = grant.feature_branch
+        evidence["isolation"] = {
+            "backend": result.get("backend", ""),
+            "image": result.get("image", ""),
+            "network": "none",
+            "host_home": "not mounted",
+            "timeout": bool(result.get("timeout")),
+            "truncated": bool(result.get("truncated")),
+        }
+        evidence_path = evidence_store.write_evidence_file(
+            evidence_dir,
+            f"{task_code}-{stamp}.json",
+            json.dumps(evidence, ensure_ascii=False, indent=2),
+        )
+    except EvidenceWriteFailed:
+        evidence_store.cleanup_evidence_dir(evidence_dir)
+        raise
     command.evidence = evidence
     command.evidence_path = str(evidence_path)
     return command
