@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 from app.errors import (
     AgentOutputError,
     DeepSeekRetired,
+    GrantRejected,
     IllegalTransition,
     ImportInProgress,
     RevisionConflict,
@@ -53,6 +54,10 @@ class ControlBody(BaseModel):
 
 class ConfirmBody(BaseModel):
     confirm: bool = False
+
+
+class ScheduleRequest(BaseModel):
+    task_codes: list[str] | None = None
 
 
 def wb(request: Request) -> Workbench:
@@ -438,11 +443,15 @@ async def list_execution_grants(run_id: str, request: Request) -> dict[str, Any]
 
 
 @router.post("/runs/{run_id}/schedule")
-async def schedule(run_id: str, request: Request) -> dict[str, Any]:
+async def schedule(run_id: str, request: Request, body: ScheduleRequest | None = None) -> Any:
+    run = _run(request, run_id)
+    requested = None if body is None or body.task_codes is None else set(body.task_codes)
     try:
-        started = await wb(request).schedule_once(_run(request, run_id))
+        started = await wb(request).schedule_once(run, task_codes=requested)
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
     return {"started": started}
 
 

@@ -415,6 +415,12 @@
       },
       "required": []
     },
+    "ScheduleRequest": {
+      "properties": {
+        "task_codes": "anyOf"
+      },
+      "required": []
+    },
     "ValidationError": {
       "properties": {
         "ctx": "object",

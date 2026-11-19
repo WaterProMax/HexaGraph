@@ -103,3 +103,47 @@ curl -sS -D - -X POST http://127.0.0.1:<port>/api/runs/<granted-run>/execution-g
   -d '{"execution_profile":"granted_v1","task_codes":["T-01"],"approved_baseline_hashes":{"PLAN":"aaa"},"repo_remote":"origin","repo_owner":"WaterProMax","repo_name":"HexaGraph","base_branch":"teamwork-001","feature_branch":"feat-p1-demo","allowed_tool_refs":[]}'
 # 期望 201 + "status":"active"
 ```
+
+## P1-T04 · schedule 守卫：子集连续执行与 legacy 零回归
+
+修改/新增：
+
+- `[MODIFY] Test3/backend/app/services/runtime.py`：`schedule_once(run, *, task_codes=None)` 在进入既有调度锁前调用 `_granted_scope`；`_schedule_once_locked(..., allowed=...)` 只派发授权集合内任务；新增常量 `_GRANT_COMPLETED_STATES`。未改退休守卫与 legacy 调度算法。
+- `[MODIFY] Test3/backend/app/api/routes.py`：schedule 接受可选 `{task_codes}`；`GrantRejected` 映射为顶层 ErrorBody；无 body / 无 `task_codes` 表示“grant 范围内尚未完成的任务”。
+- `[MODIFY] Test3/backend/tests/integration/snapshots/openapi_structure.json`：schedule 请求体后按既有测试重生成。
+- `[NEW] Test3/backend/tests/unit/test_schedule_grant_guard.py`
+- `[NEW] Test3/backend/tests/integration/test_schedule_grant_http.py`
+
+行为：
+
+- `legacy`：`_granted_scope` 立即返回 `None`，不查 grant、不新增 403/409；既有 legacy 调度测试保持通过。
+- `granted_v1` 无 grant → 403 `grant_required`；超集 → 409 `scope_mismatch`；空请求 → 409 `empty_request`；`status=stale` → 409 `baseline_stale`；`revoked/consumed` → 409 `grant_revoked` / `grant_consumed`。
+- 子集可连续执行；`run.revision` 变化不影响（守卫只读 hashes 与 scope）。
+- 同一 run 的并发 schedule 由既有 `_schedule_lock_for` 串行化；本卡测试断言同一时刻只有一个 in-flight。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/unit/test_schedule_grant_guard.py tests/integration/test_schedule_grant_http.py -v
+collected 13 items
+tests/unit/test_schedule_grant_guard.py .......  [53%]
+tests/integration/test_schedule_grant_http.py ......  [100%]
+13 passed in 0.93s
+
+$ cd Test3/backend && uv run pytest tests/e2e/test_m1_study_room.py tests/e2e/test_schedule_dependencies.py tests/e2e/test_must_fixes.py tests/integration/test_api_contract.py -q
+44 passed
+
+$ cd Test3/backend && uv run pytest <T01–T04 测试 + api_contract> -q
+67 passed
+```
+
+人工验收 curl（未起 uvicorn，以 pytest 断言为准）：
+
+```bash
+# 期望 403 grant_required
+curl -sS -D - -X POST http://127.0.0.1:<port>/api/runs/<granted-without-grant>/schedule -H 'Content-Type: application/json' -d '{"task_codes":["T-01"]}'
+# 已有 grant 且范围含 T-01 时期望 200
+curl -sS -D - -X POST http://127.0.0.1:<port>/api/runs/<granted-ok>/schedule -H 'Content-Type: application/json' -d '{"task_codes":["T-01"]}'
+```
+
+legacy 回归文件：P0 指定的 `tests/e2e/test_m1_study_room.py` 实际存在并已运行；另跑 `tests/e2e/test_schedule_dependencies.py`、`tests/e2e/test_must_fixes.py`。无 deepseek 守卫 diff，无 live 模型调用。

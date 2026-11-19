@@ -32,6 +32,7 @@ from app.errors import (
     AgentOutputError,
     CommandDenied,
     DeepSeekRetired,
+    GrantRejected,
     IllegalTransition,
     ImportInProgress,
     RevisionConflict,
@@ -41,8 +42,11 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
+from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_repo import GrantRepo
 from app.execution.run_profile import (
+    run_approved_baseline_hashes,
+    run_execution_profile,
     set_approved_baseline_hashes,
 )
 from app.execution.run_profile import (
@@ -145,6 +149,7 @@ _SNAPSHOT_KINDS = {
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
+_GRANT_COMPLETED_STATES = {"done", "skipped", "cancelled"}
 UNEXPECTED_IMPORT_FAILURE = "设计规格整理失败（本地异常，详见运行目录 import-error.txt）"
 
 
@@ -1610,14 +1615,50 @@ class Workbench:
         limit = tokens_budget(int(card.points), int((run.limits.get("orchestrator") or {}).get("tokens_per_point") or 1_500_000))
         return int(task.get("tokens_used") or 0) >= limit
 
-    async def schedule_once(self, run: RunState) -> list[str]:
+    async def _granted_scope(self, run: RunState, task_codes: set[str] | None) -> set[str] | None:
+        """Validate the active grant before a granted_v1 run may execute.
+
+        ``legacy`` returns ``None`` immediately: legacy schedule behavior must
+        stay byte-for-byte compatible and must never ask for a grant.
+        """
+        if run_execution_profile(run) != "granted_v1":
+            return None
+        grants = await self.grants_for_run(run.id)
+        if not grants:
+            raise GrantRejected("grant_required", "granted_v1 run has no execution grant", status_code=403)
+        active = [grant for grant in grants if grant.status == "active"]
+        grant = active[-1] if active else grants[-1]
+        if grant.status == "stale":
+            raise GrantRejected("baseline_stale", "execution grant is stale", status_code=409)
+        if task_codes is None:
+            requested = {
+                code
+                for code in grant.task_codes
+                if (run.tasks.get(code) or {}).get("state") not in _GRANT_COMPLETED_STATES
+            }
+        else:
+            requested = set(task_codes)
+        reason = grant_stale_reason(
+            grant,
+            approved_baseline_hashes=run_approved_baseline_hashes(run),
+            requested_task_codes=requested,
+        )
+        if reason is None:
+            return requested
+        if reason.startswith("baseline_changed:"):
+            raise GrantRejected("baseline_stale", reason, status_code=409)
+        status_code = 403 if reason == "grant_required" else 409
+        raise GrantRejected(reason, reason, status_code=status_code)
+
+    async def schedule_once(self, run: RunState, *, task_codes: set[str] | None = None) -> list[str]:
         # Direct API callers get the same controlled rejection as the auto loop.
         self._reject_retired(run)
+        allowed = await self._granted_scope(run, task_codes)
         # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
         async with self._schedule_lock_for(run):
-            return await self._schedule_once_locked(run)
+            return await self._schedule_once_locked(run, allowed=allowed)
 
-    async def _schedule_once_locked(self, run: RunState) -> list[str]:
+    async def _schedule_once_locked(self, run: RunState, *, allowed: set[str] | None = None) -> list[str]:
         if run.paused:
             return []
         if run.status in {"done", "terminated"}:
@@ -1635,6 +1676,7 @@ class Workbench:
                 and not t["paused"]
                 and not t["locked_by"]
                 and t["code"] not in started
+                and (allowed is None or t["code"] in allowed)
             ]
             if conflict_ready:
                 await asyncio.gather(*(self.execute_task(run, card.code) for card in conflict_ready))
@@ -1657,7 +1699,7 @@ class Workbench:
                     budget_exhausted={c for c, t in run.tasks.items() if self._task_over_budget(run, t)},
                     skip_continue=run.skip_continue,
                 )
-                if card.code not in started
+                if card.code not in started and (allowed is None or card.code in allowed)
             ]
             if not picked:
                 break
