@@ -92,6 +92,12 @@ describe("retired entries", () => {
     expect(page.textContent).toContain("未发起任何请求");
   });
 
+  it("does not auto-open a retired run on the main workbench", async () => {
+    renderAt("/workstation");
+    expect(await screen.findByLabelText("产品想法")).toBeTruthy();
+    expect(screen.queryByTestId("retired-run-notice")).toBeNull();
+  });
+
   it("links a historical deepseek run to the read-only workstation, not /deepseek", async () => {
     renderAt("/projects");
     const link = await screen.findByRole("link", { name: /历史 DeepSeek 运行/ });

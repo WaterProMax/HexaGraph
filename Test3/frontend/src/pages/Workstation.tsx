@@ -169,10 +169,13 @@ export default function Workstation() {
 
   const activeRunId = useMemo(() => {
     if (routeRunId) return routeRunId;
-    if (Array.isArray(availableRuns) && availableRuns.length > 0) {
-      return availableRuns[availableRuns.length - 1].id;
-    }
-    return undefined;
+    if (!Array.isArray(availableRuns)) return undefined;
+    // Default to a run this build can still operate. Retired DeepSeek snapshots stay
+    // reachable from the sidebar/selector but must not take over the main workbench.
+    const operable = availableRuns.filter(
+      (item: any) => !(item.read_only || item.provenance?.mode === "deepseek"),
+    );
+    return operable.length > 0 ? operable[operable.length - 1].id : undefined;
   }, [routeRunId, availableRuns]);
 
   const {
@@ -570,7 +573,7 @@ export default function Workstation() {
               onChange={(val) => nav(`${routeBase}/${val}`)}
               options={[...availableRuns].reverse().map((r: any) => ({
                 value: r.id,
-                label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${r.read_only ? "已下线（只读）" : RUN_STATUS[r.status] || r.status}`,
+                label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${r.read_only || r.provenance?.mode === "deepseek" ? "已下线（只读）" : RUN_STATUS[r.status] || r.status}`,
               }))}
             />
           )}
