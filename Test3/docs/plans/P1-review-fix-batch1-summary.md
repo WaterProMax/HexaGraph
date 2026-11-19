@@ -58,7 +58,7 @@
 ```text
 tests/unit/test_p1_rev01_execution_boundary.py            2 passed
 tests/unit/test_p1_rev04_profile_recovery.py               8 passed
-tests/integration/test_p1_rev08_production_enable_path.py  5 passed
+tests/integration/test_p1_rev08_production_enable_path.py  6 passed
 tests/integration/test_execution_grant_api.py              7 passed
 tests/e2e/test_granted_v1_sandbox_write.py                 2 passed
 tests/integration/test_p1_rev05_alembic_handoff.py         3 passed
@@ -69,7 +69,7 @@ tests/unit/test_grant_repo.py                              4 passed
 全量非 live（`-o addopts='' -m 'not live'`）：
 
 ```text
-9 failed, 272 passed, 2 deselected in 22.95s
+9 failed, 273 passed, 2 deselected in 21.97s
 ```
 
 剩余 9 条是**故意保留给后续批次**的 F-01 红灯：
@@ -90,6 +90,7 @@ REV-01、REV-04、REV-05、REV-08 已在本批转绿。全量套件当前为红�
 - 未对 `Test3/data/` 或任何用户实际业务库执行迁移/写入；迁移演练只在 `tmp_path`。
 - 未读写密钥；Git 只用 argv/假 runner。
 - 新 granted 执行入口在第一批保持拒绝，`execution_safety_ready=False`；F-05/F-06 通过前不得置真。
+- HTTP retry / accept 对 granted 未就绪返回受控 409，而不是 500；retry 在改状态前就被拒绝。
 - 真实 PR 记录仍为 `BLOCKED`（`docs/plans/p1-pr-record.json`，`github_pr_url=null`）。
 - 无 P2 改动，未改前端退休页面/下线守卫。
 

@@ -2497,6 +2497,10 @@ class Workbench:
         if action in {"retry", "resume", "skip", "force-pass", "takeover", "submit-takeover"}:
             self._reject_retired(run)
         task = run.tasks[code]
+        if action in {"retry", "submit-takeover", "force-pass"}:
+            # Reject before changing state/revisions: a granted run must not be
+            # half-way through a control action while the safety gate is closed.
+            self._require_execution_safety(run, code)
         if task["revision"] != expected_revision:
             raise RevisionConflict("revision mismatch")
         require_control(action, task["state"], reason=reason)
@@ -2606,6 +2610,7 @@ class Workbench:
 
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
+        self._require_execution_safety(run)
         self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"

@@ -89,7 +89,7 @@ cd Test3/backend && .venv/bin/python -m pytest \
   tests/integration/test_p1_rev08_production_enable_path.py \
   tests/integration/test_execution_grant_api.py \
   tests/e2e/test_granted_v1_sandbox_write.py -v
-# 14 passed
+# 15 passed
 ```
 
 覆盖：
@@ -100,14 +100,15 @@ cd Test3/backend && .venv/bin/python -m pytest \
 - 客户端提交 legacy 仍 4xx；
 - legacy run POST Grant 仍 403；
 - 普通 run 物化不带假 `granted_execution`；
-- granted 执行/retry 在安全门未就绪时被拒绝。
+- granted 执行/retry 在安全门未就绪时被拒绝；
+- HTTP retry / accept 返回受控 409 `execution_safety_not_ready`（不是 500），且 retry 不改变任务状态。
 
 OpenAPI 结构快照已用 `UPDATE_OPENAPI_SNAPSHOT=1` 重生成（新增两条路由）。
 
 全量非 live：
 
 ```text
-9 failed, 272 passed, 2 deselected
+9 failed, 273 passed, 2 deselected
 ```
 
 剩余 9 条均为后续批次尚未修复的 F-01 红灯：REV-02（2）、REV-03（2）、REV-06（2）、

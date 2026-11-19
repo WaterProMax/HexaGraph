@@ -213,6 +213,8 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
                     raise _retired(exc) from exc
                 except RevisionConflict as exc:
                     raise HTTPException(409, str(exc)) from exc
+                except GrantRejected as exc:
+                    return _json_error(exc.status_code, exc.category, exc.message)
                 except (IllegalTransition, ValidationFailed) as exc:
                     raise HTTPException(400, str(exc)) from exc
     raise HTTPException(404, "task not found")
@@ -517,6 +519,8 @@ async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
         return await wb(request).accept(run)
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
     except (IllegalTransition, ValidationFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
 

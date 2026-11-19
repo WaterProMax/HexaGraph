@@ -138,3 +138,26 @@ async def test_enable_survives_restart_via_sqlite(app) -> None:
         assert run_approved_baseline_hashes(recovered) == {"PLAN": "aaa"}
     finally:
         await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_granted_retry_and_accept_are_controlled_409(app) -> None:
+    bench = app.state.workbench
+    run = _run_with_plan(app, "T-01")
+    async with _client(app) as client:
+        assert (await client.post(f"/api/runs/{run.id}/execution-profile", json=ENABLE_BODY)).status_code == 200
+        bench._materialize_tasks(run)
+        run.tasks["T-01"]["state"] = "failed"
+        run.tasks["T-01"]["revision"] = 1
+        retry = await client.post(
+            f"/api/tasks/T-01/retry",
+            json={"expected_revision": 1, "reason": "safety gate"},
+        )
+        assert retry.status_code == 409, retry.text
+        assert retry.json()["error_category"] == "execution_safety_not_ready"
+        assert run.tasks["T-01"]["state"] == "failed"
+
+        run.artifacts["spec"] = {}
+        accepted = await client.post(f"/api/runs/{run.id}/accept")
+        assert accepted.status_code == 409, accepted.text
+        assert accepted.json()["error_category"] == "execution_safety_not_ready"
