@@ -1,0 +1,17 @@
+{
+  "status": "BLOCKED",
+  "reason": "missing_github_write",
+  "mv_04": "not_completed",
+  "authorization_present": false,
+  "push_attempted": false,
+  "pr_attempted": false,
+  "github_pr_url": null,
+  "recorded_at": "2026-11-19T07:02:08.489036+00:00",
+  "detail": "No C.7 github_write authorization sentence was supplied in this session; local adapters and unit tests are complete, but no real push or PR was attempted.",
+  "local_evidence": [
+    "Test3/backend/tests/unit/test_live_git_idempotent.py",
+    "Test3/backend/app/execution/github_auth.py",
+    "Test3/backend/app/tools/live_git.py",
+    "Test3/docs/plans/P1-report.md"
+  ]
+}

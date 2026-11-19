@@ -222,3 +222,83 @@ $ cd Test3/backend && uv run pytest <P1-T01…T06 全部测试> -q
 ```
 
 evidence 样例：`Test3/docs/plans/p1-evidence-sample.json`（示例命令 `python -c "print('ok')"`，exit_code 0，log 在临时目录，不提交日志正文）。测试运行时真实 evidence 位于 pytest `tmp_path/runs/<run>/wt/granted-<code>-evidence/`，随临时目录清理。
+
+## P1-T07 · 幂等 git 提交、push、真实 PR（阶段出口）
+
+新增：
+
+- `Test3/backend/app/execution/github_auth.py`：`GitHubWriteAuth` 与 `parse_github_write_auth`；无授权句返回 `None`，字段不全抛 `GitHubWriteDenied`。
+- `Test3/backend/app/tools/live_git.py`：`commit_all`、`push_once`、`create_pr_idempotent`。
+- `Test3/backend/tests/unit/test_live_git_idempotent.py`
+- `Test3/backend/tests/e2e/test_live_pr_optional.py`（`@pytest.mark.live`，默认不运行）
+- `Test3/docs/plans/p1-pr-record.json`
+
+行为与边界：
+
+- `push_once` 对同一 marker + 同一 HEAD sha + 同一 feature_branch + 同一 grant_id 的第二次调用不再执行 `git push`；测试假 shell 的 push 次数为 1。
+- `create_pr_idempotent` 先 `gh pr list --head <feature> --base <base>` 复用已有 URL；list+create 由进程内锁串行化，并发两次只创建 1 个 PR。返回 URL 必须以 `https://` 开头。
+- 拒绝推送 base：refspec 精确比较 `HEAD:refs/heads/<feature_branch>`，任何 argv 等于 `base_branch` 或 refspec 等于 base 均抛 `GitHubWriteDenied`；测试断言 push argv 不含 `teamwork-001` / `refs/heads/teamwork-001`。
+- 未授权：`parse_github_write_auth(None) is None`；`push_once(None, ...)` 抛 `GitHubWriteDenied` 且假 shell 调用次数为 0。
+- 模块中不存在 `merge_pr` / `gh pr merge` / `deploy` 函数或命令；防护测试扫描 `live_git.py` 源码，禁止子串 `pr merge`、`gh merge`、`git merge --no-ff origin`、`deploy`。
+- 未自动把“全部 granted task 成功”接到真实发布：没有授权时绝不自动出网；本阶段不新增任何隐式 push/PR 触发器。
+- `model_live` 与 `github_write` 分离：本轮两者都没有，因此不调用真实/付费模型。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/unit/test_live_git_idempotent.py -v
+collected 7 items
+7 passed in 0.04s
+
+$ cd Test3/backend && uv run pytest -m live tests/e2e/test_live_pr_optional.py -q
+s  (1 skipped: missing github_write authorization)
+```
+
+`p1-pr-record.json`（实际内容）：
+
+```json
+{
+  "status": "BLOCKED",
+  "reason": "missing_github_write",
+  "mv_04": "not_completed",
+  "authorization_present": false,
+  "push_attempted": false,
+  "pr_attempted": false,
+  "github_pr_url": null
+}
+```
+
+**MV-04 本阶段未完成**：没有真实 `github_pr_url`。BLOCKED 不当作首版验收通过。
+
+## P1 阶段汇总
+
+| 卡 | 本地状态 | 证据 |
+|---|---|---|
+| P1-T01 | 完成 | `tests/unit/test_grant_policy.py` 10 passed；commit `05d226b` |
+| P1-T02 | 完成 | schema/repo/alembic 9 passed；commit `187fcf1` |
+| P1-T03 | 完成 | API 7 passed；OpenAPI 快照已更新；commit `728852c` |
+| P1-T04 | 完成 | guard 13 passed；legacy e2e 44 passed；commit `47bc415` |
+| P1-T05 | 完成 | refresh/gate 7 passed；gate 相关 e2e 27 passed；commit `7d3e44f` |
+| P1-T06 | 完成 | isolated/evidence 6 passed；commit `ad7c90e` |
+| P1-T07 | **BLOCKED（缺 github_write）** | 假适配器 7 passed；真实 PR 未尝试 |
+
+全量后端回归（非 live）：
+
+```text
+$ cd Test3/backend && uv run pytest -m "not live" -q
+250 passed
+```
+
+下线边界回归：
+
+- 未修改 `Test3/frontend/src/App.tsx`；静态课堂与 `/deepseek` 退休路由无 diff。
+- `runtime.py` 的 DeepSeek 退休只读判断、`_reject_retired`、`_is_retired_run`、恢复只读分支、legacy schedule/execute 路径均保留；新增代码仅限 grant 分支与批准的 hash 写入。
+- `routes.py` 的 `_retired` / 410 映射、schedule/gates 既有行为保留；新增 grant 路由与可选 schedule body 不改变 legacy 成功形。
+- `tests/e2e/test_deepseek_retired.py` 在 T05 回归中通过；全量 250 passed 包含该文件。
+- 未触碰 `Test3/data/`、密钥、现有服务或运行数据；未 push、未创建 PR、未调用真实模型。
+
+剩余阻塞：
+
+1. **BLOCKED**：缺 C.7 `github_write` 授权句，无法执行真实 push / `gh pr create`；`MV-04` 未完成。
+2. P1-T06 的 granted 执行目前只在任务携带 `granted_execution`（writes + command）计划时启用；完整 DAG 连续执行与缺陷回流在 P5 实现，本阶段未越界。
+3. 若后续授权真实 PR，必须使用 C.7 原句与独立 feature 分支，仍禁止 merge / deploy / push base。
