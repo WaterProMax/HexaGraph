@@ -98,7 +98,8 @@ from app.schemas.execution_grant import ExecutionGrant, ExecutionProfile
 from app.services import design_input as design_input_service
 from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
-from app.storage.db import create_all, make_engine, session_factory, sqlite_url
+from app.storage.db import make_engine, session_factory, sqlite_url
+from app.storage.migrate import upgrade_database
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
@@ -662,8 +663,11 @@ class Workbench:
         async with self._db_lock:
             if self._db_ready:
                 return
-            engine = make_engine(sqlite_url(self.db_path))
-            await create_all(engine)
+            # Alembic is the single schema authority.  ``create_all`` is no longer
+            # allowed on the production path: it desynchronises alembic_version.
+            url = sqlite_url(self.db_path)
+            await asyncio.to_thread(upgrade_database, self.db_path)
+            engine = make_engine(url)
             self._db_engine = engine
             self._db_factory = session_factory(engine)
             self._db_ready = True

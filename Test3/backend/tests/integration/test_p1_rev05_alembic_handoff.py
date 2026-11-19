@@ -114,3 +114,7 @@ def test_runtime_boot_then_alembic_upgrade_does_not_double_create(tmp_path: Path
     finally:
         con.close()
     assert version == expected_head
+
+def test_runtime_has_no_create_all_schema_path() -> None:
+    source = (Path(__file__).resolve().parents[2] / "app" / "services" / "runtime.py").read_text(encoding="utf-8")
+    assert "create_all(" not in source

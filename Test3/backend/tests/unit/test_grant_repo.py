@@ -7,7 +7,8 @@ from sqlalchemy.exc import IntegrityError
 
 from app.execution.grant_repo import GrantRepo
 from app.schemas.execution_grant import ExecutionGrant
-from app.storage.db import create_all, make_engine, session_factory, sqlite_url
+from app.storage.db import make_engine, session_factory, sqlite_url
+from app.storage.migrate import upgrade_database
 
 
 def _grant(grant_id: str = "G-1", run_id: str = "run-A", created_at: str = "2026-11-19T00:00:00+00:00") -> ExecutionGrant:
@@ -30,8 +31,11 @@ def _grant(grant_id: str = "G-1", run_id: str = "run-A", created_at: str = "2026
 
 @pytest.fixture
 async def factory(tmp_path: Path):
-    engine = make_engine(sqlite_url(tmp_path / "grants.db"))
-    await create_all(engine)
+    db = tmp_path / "grants.db"
+    # Production uses Alembic only; this unit fixture does the same so the repo
+    # tests cannot keep a second create_all schema path alive.
+    upgrade_database(db)
+    engine = make_engine(sqlite_url(db))
     yield session_factory(engine)
     await engine.dispose()
 
