@@ -111,6 +111,25 @@ class GitHubWriteDenied(Test3Error):
     code = "GITHUB_WRITE_DENIED"
 
 
+class IsolationUnavailable(Test3Error):
+    """No preflighted isolation backend: granted execution must block."""
+
+    code = "ISOLATION_UNAVAILABLE"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        backend: str = "",
+        reason: str = "",
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.backend = backend
+        self.reason = reason or message
+        self.details = dict(details or {})
+
+
 class ImportInProgress(Test3Error):
     code = "IMPORT_IN_PROGRESS"
 

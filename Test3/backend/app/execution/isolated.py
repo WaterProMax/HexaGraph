@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.errors import WriteDenied
+from app.errors import CommandDenied, IsolationUnavailable, WriteDenied
+from app.execution.isolation import preflight_isolation, run_isolated
 from app.schemas.execution_grant import ExecutionGrant
-from app.tools.sandbox import in_write_set, normalize_under, run_command
+from app.tools.sandbox import command_allowed, in_write_set, normalize_under
 
 _SENSITIVE_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _MIN_SECRET_LENGTH = 8
@@ -107,6 +108,42 @@ def _evidence_dir(isolation_root: Path) -> Path:
     return isolation_root.parent / f"{isolation_root.name}-evidence"
 
 
+def validate_writes(
+    root: Path,
+    writes: list[WriteSpec] | None,
+    write_set: list[str] | None,
+) -> list[tuple[WriteSpec, Path]]:
+    """Resolve every WriteSpec without touching the filesystem.
+
+    Absolute paths, ``..`` escapes and symlinks are refused here, before any
+    isolation probe or file creation, so a rejected plan leaves no trace.
+    """
+    root = root.resolve()
+    if not root.exists():
+        raise WriteDenied(f"isolation root missing: {root}")
+    planned: list[tuple[WriteSpec, Path]] = []
+    for spec in writes or []:
+        target = normalize_under(root, spec.path)
+        if write_set is not None and not in_write_set(target, root, write_set):
+            raise WriteDenied(f"写集外: {spec.path}")
+        planned.append((spec, target))
+    return planned
+
+
+def stage_writes(
+    root: Path,
+    writes: list[WriteSpec] | None,
+    write_set: list[str] | None,
+) -> list[str]:
+    """Validate and then write inside the isolation root only."""
+    written: list[str] = []
+    for spec, target in validate_writes(root, writes, write_set):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(spec.content, encoding="utf-8")
+        written.append(spec.path)
+    return written
+
+
 async def execute_task_granted(
     run_id: str,
     task_code: str,
@@ -121,31 +158,36 @@ async def execute_task_granted(
     timeout: int = 600,
     secret_refs: list[str] | None = None,
 ) -> CommandResult:
-    """Write files and run one offline command under ``isolation_root``.
+    """Write files and run one offline command inside a preflighted container.
 
     ``grant`` is used for traceability only (run/task pairing and feature
-    branch); this function does not push, commit or call GitHub.
+    branch); this function does not push, commit or call GitHub.  When no
+    isolation backend passes preflight the call raises ``IsolationUnavailable``
+    before writing files or starting any process.
     """
     root = isolation_root.resolve()
     if not root.exists():
         raise WriteDenied(f"isolation root missing: {root}")
-    written: list[str] = []
-    for spec in writes or []:
-        target = normalize_under(root, spec.path)
-        if write_set is not None and not in_write_set(target, root, write_set):
-            raise WriteDenied(f"写集外: {spec.path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(spec.content, encoding="utf-8")
-        written.append(spec.path)
     argv = list(test_command or ["python", "-m", "pytest", "-q", "-m", "not live"])
     allowed = list(whitelist or ["python", "python3", "uv", "python -m pytest"])
-    result = await run_command(
+    if not command_allowed(argv, allowed, []):
+        raise CommandDenied(f"命令不在白名单: {argv}")
+    # Pure validation first: a bad path never reaches the isolation probe.
+    validate_writes(root, writes, write_set)
+    preflight = preflight_isolation()
+    if not preflight.available:
+        raise IsolationUnavailable(
+            f"isolation backend unavailable: {preflight.reason}",
+            backend=preflight.backend,
+            reason=preflight.reason,
+            details=preflight.details,
+        )
+    written = stage_writes(root, writes, write_set)
+    result = await run_isolated(
         argv,
         cwd=root,
-        whitelist=allowed,
         timeout=timeout,
         env_allow=list(env_allow or ["PATH"]),
-        forbidden=[],
     )
     output = redact_secrets(str(result.get("output") or ""), secret_refs)
     evidence_dir = _evidence_dir(root)
@@ -155,7 +197,7 @@ async def execute_task_granted(
     log_path.write_text(output, encoding="utf-8")
     command = CommandResult(
         argv=argv,
-        cwd=str(root),
+        cwd="/work",
         exit_code=1 if result.get("exit_code") is None else int(result["exit_code"]),
         log_path=str(log_path),
         output=output,
@@ -170,6 +212,14 @@ async def execute_task_granted(
     evidence["grant_id"] = grant.grant_id
     evidence["run_id"] = run_id
     evidence["feature_branch"] = grant.feature_branch
+    evidence["isolation"] = {
+        "backend": result.get("backend", ""),
+        "image": result.get("image", ""),
+        "network": "none",
+        "host_home": "not mounted",
+        "timeout": bool(result.get("timeout")),
+        "truncated": bool(result.get("truncated")),
+    }
     evidence_path = evidence_dir / f"{task_code}-{stamp}.json"
     evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
     command.evidence = evidence
@@ -184,4 +234,6 @@ __all__ = [
     "execute_task_granted",
     "redact_secrets",
     "secret_values",
+    "stage_writes",
+    "validate_writes",
 ]

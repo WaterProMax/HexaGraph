@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from app.execution.isolated import WriteSpec, execute_task_granted
+from app.execution.isolated import (
+    WriteSpec,
+    build_evidence,
+    execute_task_granted,
+    redact_secrets,
+    stage_writes,
+)
+from app.execution.isolation import preflight_isolation
 from app.schemas.execution_grant import ExecutionGrant
 
 
@@ -34,28 +41,20 @@ async def iso(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.mark.asyncio
-async def test_writes_stay_inside_isolation_root(iso: Path, tmp_path: Path) -> None:
+def test_writes_stay_inside_isolation_root(iso: Path, tmp_path: Path) -> None:
     another_root = tmp_path / "user-project"
     another_root.mkdir()
-    result = await execute_task_granted(
-        "run-1",
-        "T-01",
-        _grant(),
-        isolation_root=iso,
-        writes=[WriteSpec("foo.txt", "bar")],
-        test_command=["python", "-c", "print('ok')"],
-    )
+    written = stage_writes(iso, [WriteSpec("foo.txt", "bar")], ["foo.txt"])
+    assert written == ["foo.txt"]
     assert (iso / "foo.txt").read_text(encoding="utf-8") == "bar"
     assert not (another_root / "foo.txt").exists()
-    assert result.exit_code == 0
-    assert result.evidence["commands"][0]["exit_code"] == 0
-    assert Path(result.log_path).is_file()
-    assert "ok" in Path(result.log_path).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
 async def test_failing_offline_test_is_not_success(iso: Path) -> None:
+    preflight = preflight_isolation()
+    if not preflight.available:
+        pytest.skip(f"no isolation backend on this host: {preflight.reason}")
     result = await execute_task_granted(
         "run-1",
         "T-02",
@@ -67,26 +66,29 @@ async def test_failing_offline_test_is_not_success(iso: Path) -> None:
     assert result.exit_code != 0
     assert result.evidence["ok"] is False
     assert result.evidence["commands"][0]["exit_code"] != 0
+    assert result.evidence["isolation"]["backend"] == preflight.backend
 
 
-@pytest.mark.asyncio
-async def test_evidence_and_log_redact_secret_env(iso: Path, monkeypatch) -> None:
+def test_evidence_and_log_redact_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
-    result = await execute_task_granted(
-        "run-1",
-        "T-03",
-        _grant(),
-        isolation_root=iso,
-        writes=[],
-        test_command=["python", "-c", "import os\nprint(os.environ.get('OPENAI_API_KEY',''))"],
-        env_allow=["PATH", "OPENAI_API_KEY"],
+    output = redact_secrets("value=sk-test-secret rest", ["OPENAI_API_KEY"])
+    assert "sk-test-secret" not in output
+    assert "***REDACTED***" in output
+
+    from app.execution.isolated import CommandResult
+
+    command = CommandResult(
+        argv=["python", "-c", "print('ok')"],
+        cwd="/work",
+        exit_code=0,
+        log_path="/tmp/probe.log",
+        output=output,
     )
-    evidence_text = Path(result.evidence_path).read_text(encoding="utf-8")
-    log_text = Path(result.log_path).read_text(encoding="utf-8")
-    assert "sk-test-secret" not in evidence_text
-    assert "sk-test-secret" not in log_text
-    assert "***REDACTED***" in log_text
-    json.loads(evidence_text)
+    evidence = build_evidence("T-03", [command], isolation_root="/tmp/iso", written=[], secret_refs=["OPENAI_API_KEY"])
+    text = json.dumps(evidence, ensure_ascii=False)
+    assert "sk-test-secret" not in text
+    assert "***REDACTED***" in text
+    assert evidence["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -96,14 +98,8 @@ async def test_parallel_tasks_do_not_cross_write(tmp_path: Path) -> None:
     first.mkdir()
     second.mkdir()
     await asyncio.gather(
-        execute_task_granted(
-            "run-1", "A", _grant(), isolation_root=first, writes=[WriteSpec("a.txt", "A")],
-            test_command=["python", "-c", "print('a')"],
-        ),
-        execute_task_granted(
-            "run-1", "B", _grant(), isolation_root=second, writes=[WriteSpec("b.txt", "B")],
-            test_command=["python", "-c", "print('b')"],
-        ),
+        asyncio.to_thread(stage_writes, first, [WriteSpec("a.txt", "A")], ["a.txt"]),
+        asyncio.to_thread(stage_writes, second, [WriteSpec("b.txt", "B")], ["b.txt"]),
     )
     assert (first / "a.txt").read_text(encoding="utf-8") == "A"
     assert not (first / "b.txt").exists()

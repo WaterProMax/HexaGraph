@@ -34,6 +34,7 @@ from app.errors import (
     GrantRejected,
     IllegalTransition,
     ImportInProgress,
+    IsolationUnavailable,
     RevisionConflict,
     ValidationFailed,
     classify_llm_error,
@@ -46,6 +47,7 @@ from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
 from app.execution.isolated import WriteSpec, execute_task_granted
+from app.execution.isolation import preflight_isolation
 from app.execution.run_profile import (
     PROFILE_CONFLICT,
     PROFILE_GRANTED,
@@ -871,6 +873,30 @@ class Workbench:
                 "persisted PLAN baseline does not match the current PLAN",
                 status_code=409,
             )
+
+    def _block_unless_isolated(self, run: RunState, task: dict[str, Any], code: str) -> dict[str, Any] | None:
+        """F-06: granted execution needs a preflighted isolation backend.
+
+        Returns a BLOCKED result (no state change, no worktree, no process) when
+        the probe failed.  Production never reaches this while the safety flag
+        is false; tests flip the flag in-process only.
+        """
+        preflight = preflight_isolation()
+        if preflight.available:
+            return None
+        task["last_error"] = "isolation_preflight_failed"
+        self.emit(
+            run,
+            "task.isolation_blocked",
+            code,
+            {"reason": preflight.reason, "backend": preflight.backend, "details": preflight.details},
+        )
+        return {
+            "state": task["state"],
+            "kind": "BLOCKED",
+            "isolation_backend": preflight.backend,
+            "reason": preflight.reason,
+        }
 
     async def _authorize_granted_execution(
         self, run: RunState, code: str
@@ -2287,6 +2313,10 @@ class Workbench:
         granted_spec: dict[str, Any] | None = None
         if run_execution_profile(run) == PROFILE_GRANTED:
             grant, granted_spec = await self._authorize_granted_execution(run, code)
+            # F-06: no isolation backend means no execution side effects at all.
+            blocked = self._block_unless_isolated(run, task, code)
+            if blocked is not None:
+                return blocked
         task["revision"] = int(task.get("revision") or 1) + 1
         if task["state"] == "ready":
             self._set_state(run, task, "scheduled")
@@ -2365,6 +2395,9 @@ class Workbench:
         grant: ExecutionGrant,
     ) -> dict[str, Any]:
         """granted_v1 branch: write only inside an isolated per-task worktree."""
+        blocked = self._block_unless_isolated(run, task, code)
+        if blocked is not None:
+            return blocked
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
@@ -2397,6 +2430,10 @@ class Workbench:
             )
         except CommandDenied as exc:
             return await self._finish_failure(run, task, card, "任务描述问题", str(exc), {"exit_code": 1})
+        except IsolationUnavailable as exc:
+            task["last_error"] = "isolation_preflight_failed"
+            self.emit(run, "task.isolation_blocked", code, {"reason": exc.reason, "backend": exc.backend})
+            return {"state": task["state"], "kind": "BLOCKED", "isolation_backend": exc.backend, "reason": exc.reason}
         task.setdefault("evidence", []).append(result.evidence)
         self.emit(run, "task.evidence", code, {"path": result.evidence_path, "ok": result.ok})
         if result.ok:
@@ -2668,6 +2705,12 @@ class Workbench:
 
     async def _run_regression(self, run: RunState, repo: Path, code: str = "") -> dict[str, Any]:
         self._require_execution_safety(run, code)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_force_pass_disabled",
+                "granted_v1 runs never use the legacy regression/force-pass path",
+                status_code=409,
+            )
         _ = code
         patterns = self._judge_patterns()
         timeout = int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600)
@@ -2739,19 +2782,26 @@ class Workbench:
         if action in {"retry", "resume", "skip", "force-pass", "takeover", "submit-takeover"}:
             self._reject_retired(run)
         task = run.tasks[code]
-        if action in {"retry", "submit-takeover", "force-pass"}:
-            # Reject before changing state/revisions: a granted run must not be
-            # half-way through a control action while the safety gate is closed.
+        if action in {"retry", "submit-takeover", "force-pass", "takeover"}:
+            # Reject before changing state/revisions or creating a worktree: a
+            # granted run must not be half-way through a control action while
+            # the safety gate is closed.
             self._require_execution_safety(run, code)
         if run_execution_profile(run) == PROFILE_GRANTED:
             # Same boundary as execute_task: retry is authorized before state
-            # changes, and the legacy takeover merge path stays unreachable.
+            # changes, and the legacy takeover/force-pass paths stay unreachable.
             if action == "retry":
                 await self._authorize_granted_execution(run, code)
-            elif action == "submit-takeover":
+            elif action in {"submit-takeover", "takeover"}:
                 raise GrantRejected(
                     "granted_manual_merge_disabled",
-                    "granted_v1 runs cannot submit a legacy takeover merge",
+                    "granted_v1 runs cannot use the legacy takeover workspace or merge",
+                    status_code=409,
+                )
+            elif action == "force-pass":
+                raise GrantRejected(
+                    "granted_force_pass_disabled",
+                    "granted_v1 runs cannot bypass verification with a legacy force-pass",
                     status_code=409,
                 )
         if task["revision"] != expected_revision:
@@ -2870,6 +2920,12 @@ class Workbench:
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
         self._require_execution_safety(run)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_acceptance_disabled",
+                "granted_v1 runs cannot use the legacy acceptance path",
+                status_code=409,
+            )
         self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"

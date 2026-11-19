@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.errors import GrantRejected
+from app.execution.isolation import IsolationPreflight
 from app.execution.run_state_store import RunExecutionStateRepo
 from app.schemas.docs import TaskCard
 from tests.p1_support import install_plan, make_bench, make_grant, persist_granted_profile
@@ -253,6 +254,12 @@ async def test_authorized_subset_runs_continuously_across_revisions(
         return SimpleNamespace(ok=True, evidence={"ok": True}, evidence_path="")
 
     monkeypatch.setattr("app.services.runtime.execute_task_granted", fake_worker)
+    # F-06 isolation is stubbed here: this test is about grant continuity, not
+    # the container backend (which has its own tests and fail-closed coverage).
+    monkeypatch.setattr(
+        "app.services.runtime.preflight_isolation",
+        lambda: IsolationPreflight(available=True, backend="test-double", reason="", details={}),
+    )
     try:
         run.revision += 7
         run.tasks["T-01"]["revision"] += 3
@@ -310,5 +317,121 @@ async def test_takeover_submit_never_enters_legacy_merge(
         assert task["state"] == "running"
         assert task["revision"] == 1
         assert not task.get("takeover_submit")
+    finally:
+        await bench.close()
+
+
+@pytest.mark.asyncio
+async def test_granted_takeover_creates_no_legacy_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-05 residual entry: ``takeover`` must not build a workspace or lock."""
+    bench, run, plan_hash = await _prepared(tmp_path, ["T-01"])
+    await _add_grant(bench, run, ["T-01"], plan_hash)
+    task = run.tasks["T-01"]
+    task["state"] = "running"
+    task["revision"] = 1
+    create_calls: list[str] = []
+
+    def fake_worktree(*_args, **_kwargs):
+        create_calls.append("worktree")
+        raise AssertionError("granted takeover must not create a worktree")
+
+    monkeypatch.setattr("app.services.runtime.create_worktree", fake_worktree)
+    try:
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench.control_task(run, "T-01", "takeover", 1, "manual takeover")
+        assert excinfo.value.category == "granted_manual_merge_disabled"
+        assert excinfo.value.status_code == 409
+        assert create_calls == []
+        assert task["state"] == "running"
+        assert task["revision"] == 1
+        assert not task.get("locked_by")
+        assert not (tmp_path / "runs" / run.id / "wt" / "T-01").exists()
+    finally:
+        await bench.close()
+
+
+@pytest.mark.asyncio
+async def test_granted_force_pass_never_runs_legacy_regression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-05 residual entry: ``force-pass`` must reject before regression/state."""
+    bench, run, plan_hash = await _prepared(tmp_path, ["T-01"])
+    await _add_grant(bench, run, ["T-01"], plan_hash)
+    task = run.tasks["T-01"]
+    task["state"] = "failed"
+    task["revision"] = 1
+    evidence_before = list(task["evidence"])
+    command_calls: list[list[str]] = []
+
+    async def fake_command(cmd, **_kwargs):
+        command_calls.append(list(cmd))
+        raise AssertionError("granted force-pass must not run a legacy command")
+
+    monkeypatch.setattr("app.services.runtime.run_command", fake_command)
+    try:
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench.control_task(run, "T-01", "force-pass", 1, "bypass")
+        assert excinfo.value.category == "granted_force_pass_disabled"
+        assert excinfo.value.status_code == 409
+        assert command_calls == []
+        assert task["state"] == "failed"
+        assert task["revision"] == 1
+        assert task["evidence"] == evidence_before
+    finally:
+        await bench.close()
+
+
+@pytest.mark.asyncio
+async def test_granted_run_regression_helper_rejects_direct_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bench, run, plan_hash = await _prepared(tmp_path, ["T-01"])
+    await _add_grant(bench, run, ["T-01"], plan_hash)
+    command_calls: list[list[str]] = []
+
+    async def fake_command(cmd, **_kwargs):
+        command_calls.append(list(cmd))
+        raise AssertionError("granted regression must not run a legacy command")
+
+    monkeypatch.setattr("app.services.runtime.run_command", fake_command)
+    try:
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench._run_regression(run, tmp_path / "repo", "T-01")
+        assert excinfo.value.category == "granted_force_pass_disabled"
+        assert command_calls == []
+    finally:
+        await bench.close()
+
+
+@pytest.mark.asyncio
+async def test_granted_accept_is_rejected_before_acceptance_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-05 residual entry: run-level ``accept`` must not enter the legacy flow."""
+    bench, run, plan_hash = await _prepared(tmp_path, ["T-01"])
+    await _add_grant(bench, run, ["T-01"], plan_hash)
+    task = run.tasks["T-01"]
+    task["state"] = "verifying"
+    task["revision"] = 1
+    gates_before = list(run.gates)
+    command_calls: list[list[str]] = []
+
+    async def fake_command(cmd, **_kwargs):
+        command_calls.append(list(cmd))
+        raise AssertionError("granted accept must not run legacy acceptance commands")
+
+    monkeypatch.setattr("app.services.runtime.run_command", fake_command)
+    try:
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench.accept(run)
+        assert excinfo.value.category == "granted_acceptance_disabled"
+        assert excinfo.value.status_code == 409
+        assert command_calls == []
+        assert task["state"] == "verifying"
+        assert task["revision"] == 1
+        assert run.gates == gates_before
+        assert "acceptance" not in run.artifacts
     finally:
         await bench.close()
