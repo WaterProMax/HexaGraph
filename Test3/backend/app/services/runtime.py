@@ -443,7 +443,7 @@ class Workbench:
         if db_state is not None:
             profile = db_state.execution_profile
             hashes = dict(db_state.approved_baseline_hashes)
-            if profile == PROFILE_CONFLICT:
+            if profile == PROFILE_CONFLICT or snapshot_profile == PROFILE_CONFLICT:
                 resolved = PROFILE_CONFLICT
             elif snapshot_profile in (PROFILE_LEGACY, PROFILE_GRANTED) and snapshot_profile != profile:
                 resolved = PROFILE_CONFLICT
@@ -913,6 +913,21 @@ class Workbench:
                     if updated.status != grant.status:
                         await repo.update_status(grant.grant_id, updated.status)
                         changed = True
+                # Keep SQLite hashes current: a later restart must not see a false
+                # SQLite/snapshot conflict after a human-approved baseline update.
+                state_repo = RunExecutionStateRepo(session)
+                state = await state_repo.get(run.id)
+                if state is not None and state.execution_profile == PROFILE_GRANTED and state.approved_baseline_hashes != hashes:
+                    await state_repo.upsert(
+                        RunExecutionState(
+                            run_id=run.id,
+                            execution_profile=PROFILE_GRANTED,
+                            approved_baseline_hashes=hashes,
+                            approved_plan_hash=state.approved_plan_hash,
+                            allowed_tool_refs=state.allowed_tool_refs,
+                        )
+                    )
+                    changed = True
                 if changed:
                     await session.commit()
 
@@ -2410,6 +2425,7 @@ class Workbench:
         return outs
 
     async def _run_regression(self, run: RunState, repo: Path, code: str = "") -> dict[str, Any]:
+        self._require_execution_safety(run, code)
         _ = code
         patterns = self._judge_patterns()
         timeout = int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600)

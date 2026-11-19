@@ -72,6 +72,9 @@
 - SQLite 与残余 JSON 冲突 → `conflict`，调度抛 `profile_conflict`；
 - 既有 legacy run 恢复后仍 legacy，`events.jsonl` 字节不变。
 
+补充：F-04 收尾时让 `_refresh_grant_statuses()` 在人批更新 baseline hashes 后同步 SQLite；
+`conflict` 标记会跨重启保留，不会被本进程写回的 snapshot 自动“愈合”。
+
 命令：
 
 ```text

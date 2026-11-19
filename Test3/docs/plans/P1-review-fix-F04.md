@@ -107,11 +107,15 @@ OpenAPI 结构快照已用 `UPDATE_OPENAPI_SNAPSHOT=1` 重生成（新增两条�
 全量非 live：
 
 ```text
-9 failed, 270 passed, 2 deselected
+9 failed, 272 passed, 2 deselected
 ```
 
 剩余 9 条均为后续批次尚未修复的 F-01 红灯：REV-02（2）、REV-03（2）、REV-06（2）、
 REV-07（2）、REV-09（1）。REV-01/04/05/08 已在本批转绿。
+
+收尾加固：`_restore_execution_profile()` 会把 `conflict` 标记保留到下一次恢复（不会第二次启动自动
+“愈合”）；`_refresh_grant_statuses()` 在人批更新 baseline hashes 后同步写 SQLite，避免制造
+SQLite/快照假冲突；`_run_regression()` 也经过同一个安全门。
 
 ## 5. 边界
 

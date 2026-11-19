@@ -139,3 +139,48 @@ async def test_sqlite_and_snapshot_conflict_fails_closed(tmp_path: Path) -> None
         assert excinfo.value.category == "profile_conflict"
     finally:
         await restored_bench.close()
+
+
+@pytest.mark.asyncio
+async def test_conflict_survives_a_second_restart(tmp_path: Path) -> None:
+    import json
+
+    bench, run = await _prepared(tmp_path)
+    run_id = run.id
+    await bench.close()
+    snapshot = tmp_path / "runs" / run_id / "snapshot.json"
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    data["execution_profile"] = "legacy"
+    data.setdefault("artifacts", {})["execution_profile"] = "legacy"
+    snapshot.write_text(json.dumps(data), encoding="utf-8")
+
+    first = make_bench(tmp_path)
+    try:
+        assert run_execution_profile(first.runs[run_id]) == "conflict"
+    finally:
+        await first.close()
+    second = make_bench(tmp_path)
+    try:
+        assert run_execution_profile(second.runs[run_id]) == "conflict"
+    finally:
+        await second.close()
+
+
+@pytest.mark.asyncio
+async def test_approved_hash_update_is_persisted_without_false_conflict(tmp_path: Path) -> None:
+    from app.execution.run_profile import run_approved_baseline_hashes
+
+    bench, run = await _prepared(tmp_path)
+    run_id = run.id
+    bench._record_approved_baseline(run, "PLAN", {"plan": "v2"})
+    await bench._refresh_grant_statuses(run)
+    expected = run_approved_baseline_hashes(run)
+    await bench.close()
+
+    restored = make_bench(tmp_path)
+    try:
+        recovered = restored.runs[run_id]
+        assert run_execution_profile(recovered) == "granted_v1"
+        assert run_approved_baseline_hashes(recovered) == expected
+    finally:
+        await restored.close()
