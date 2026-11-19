@@ -21,6 +21,7 @@ import re
 import subprocess
 import threading
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Sequence
 from urllib.parse import urlparse
@@ -47,6 +48,19 @@ class PushResult:
     sha: str
     pushed: bool
     feature_branch: str
+
+
+class PrLookupStatus(str, Enum):
+    ABSENT = "absent"
+    EXISTS = "exists"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PrLookup:
+    status: PrLookupStatus
+    url: str = ""
+    error: str = ""
 
 
 def _require_auth(auth: GitHubWriteAuth | None) -> GitHubWriteAuth:
@@ -259,37 +273,49 @@ def push_once(
     return PushResult(sha=sha, pushed=True, feature_branch=auth.feature_branch)
 
 
-def _existing_pr_url(auth: GitHubWriteAuth, cwd: Path, run: Runner, repo: str) -> str | None:
-    code, out = run(
-        [
-            "gh",
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--head",
-            auth.feature_branch,
-            "--base",
-            auth.base_branch,
-            "--state",
-            "open",
-            "--json",
-            "url",
-            "--limit",
-            "1",
-        ],
-        cwd,
-    )
+def _existing_pr_url(auth: GitHubWriteAuth, cwd: Path, run: Runner, repo: str) -> PrLookup:
+    """Distinguish absent / exists / unknown; unknown must never create."""
+    argv = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--head",
+        auth.feature_branch,
+        "--base",
+        auth.base_branch,
+        "--state",
+        "open",
+        "--json",
+        "url",
+        "--limit",
+        "1",
+    ]
+    try:
+        code, out = run(argv, cwd)
+    except Exception as exc:  # noqa: BLE001 - any runner failure is "unknown"
+        return PrLookup(PrLookupStatus.UNKNOWN, error=f"gh pr list raised: {exc}")
     if code != 0:
-        return None
+        return PrLookup(
+            PrLookupStatus.UNKNOWN,
+            error=f"gh pr list exited {code}: {out.strip()[:200]}",
+        )
     try:
         rows = json.loads(out or "[]")
-    except json.JSONDecodeError:
-        return None
-    if isinstance(rows, list) and rows:
-        url = str((rows[0] or {}).get("url") or "")
-        return url or None
-    return None
+    except json.JSONDecodeError as exc:
+        return PrLookup(PrLookupStatus.UNKNOWN, error=f"gh pr list returned invalid JSON: {exc}")
+    if not isinstance(rows, list):
+        return PrLookup(PrLookupStatus.UNKNOWN, error="gh pr list did not return a JSON array")
+    if not rows:
+        return PrLookup(PrLookupStatus.ABSENT)
+    first = rows[0]
+    if not isinstance(first, dict):
+        return PrLookup(PrLookupStatus.UNKNOWN, error="gh pr list entry is not an object")
+    url = first.get("url")
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return PrLookup(PrLookupStatus.UNKNOWN, error="gh pr list entry has no usable url")
+    return PrLookup(PrLookupStatus.EXISTS, url=url)
 
 
 def create_pr_idempotent(
@@ -306,9 +332,11 @@ def create_pr_idempotent(
     repo = f"{auth.owner}/{auth.repo}"
     # Serialize list+create so two workers cannot open duplicate PRs.
     with _PR_LOCK:
-        existing = _existing_pr_url(auth, cwd, run, repo)
-        if existing:
-            return existing
+        lookup = _existing_pr_url(auth, cwd, run, repo)
+        if lookup.status is PrLookupStatus.EXISTS:
+            return lookup.url
+        if lookup.status is PrLookupStatus.UNKNOWN:
+            raise GitHubWriteDenied(f"cannot determine open pull requests: {lookup.error}")
         code, out = run(
             [
                 "gh",
