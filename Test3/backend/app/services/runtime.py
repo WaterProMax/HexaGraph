@@ -47,13 +47,13 @@ from app.listening.known import match_known
 from app.listening.mask import hash_author, mask_text
 from app.listening.route import route as route_feedback
 from app.llm.gateway import USAGE_ACCUMULATOR, Gateway
-from app.llm.providers import DeepSeekProvider
+from app.llm.providers import DeepSeekProvider, ScriptedProvider
 from app.orchestrator.budget import check_budget, tokens_budget
 from app.orchestrator.classify import classify, failure_signature
 from app.orchestrator.control import require_control
 from app.orchestrator.recovery import recover_tasks
 from app.orchestrator.replan import propose_replan
-from app.orchestrator.scheduler import select_tasks
+from app.orchestrator.scheduler import preview_schedule, select_tasks
 from app.orchestrator.states import can_transition
 from app.orchestrator.transition import apply_transition, restore_task_state
 from app.orchestrator.validator import judge_output
@@ -71,6 +71,7 @@ from app.schemas.docs import (
     TaskCard,
     TaskGraph,
 )
+from app.schemas.steward import PlanEdit
 from app.services import design_input as design_input_service
 from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
@@ -130,6 +131,9 @@ _SNAPSHOT_KINDS = {
     "design_input.accepted",
     "model.stage_started",
     "model.stage_failed",
+    "plan.edited",
+    "steward.proposals_ready",
+    "steward.experience_saved",
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
@@ -506,12 +510,18 @@ class Workbench:
         self.projects[pid] = {"id": pid, "name": name, "profile": profile}
         return self.projects[pid]
 
-    def create_run(self, project_id: str, idea: str) -> RunState:
-        self._prepare_scripted()
+    def create_run(self, project_id: str, idea: str, *, steward: bool = False, provider: str = "existing") -> RunState:
+        if not steward:
+            self._prepare_scripted()
         rid = str(uuid.uuid4())
         run = RunState(id=rid, project_id=project_id, idea=idea, limits=copy.deepcopy(self.limits))
         self.runs[rid] = run
         run.artifacts["idea_raw"] = idea
+        if steward:
+            run.artifacts["steward"] = True
+            run.artifacts["provenance"] = self._provenance(provider)
+            if provider == "existing" and isinstance(self.gateway.provider, ScriptedProvider) and get_settings().test3_scripted_fixture == "study-room":
+                run.artifacts["steward_fixture"] = "study-room"
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
 
@@ -558,13 +568,21 @@ class Workbench:
         }
 
     def _gateway_for(self, run: RunState) -> Gateway:
-        if (run.artifacts.get("provenance") or {}).get("mode") != "deepseek":
-            return self.gateway
         cached = self._run_gateways.get(run.id)
         if cached is not None:
             return cached
         settings = get_settings()
         source = run.artifacts.get("provenance") or {}
+        if source.get("mode") != "deepseek":
+            if run.artifacts.get("steward_fixture") == "study-room":
+                from app.fixtures.study_room import scripted_full_queue
+
+                cursor = run.artifacts.get("steward_scripted_calls", 0)
+                gateway = Gateway(self.models, ScriptedProvider(scripted_full_queue()[cursor:]))
+                gateway.stats["calls"] = cursor
+                self._run_gateways[run.id] = gateway
+                return gateway
+            return self.gateway
         model = str(source.get("model") or settings.deepseek_model)
         base_url = str(source.get("base_url") or settings.deepseek_base_url)
         models = copy.deepcopy(self.models)
@@ -930,6 +948,67 @@ class Workbench:
         self.emit(run, "system.limit_changed", "", {"before": before, "after": copy.deepcopy(run.limits)}, actor)
         return run.limits
 
+    def stop_steward_start(self, run: RunState, exc: Exception) -> None:
+        run.status = "stopped"
+        run.artifacts["steward_error"] = user_message_for_error(exc) or "无法开始需求分析，请检查模型配置后创建新运行"
+        self.emit(run, "steward.start_failed", "0", {"message": run.artifacts["steward_error"]})
+        self._persist_snapshot(run)
+
+    def _plan_checks(self, run: RunState, graph: TaskGraph) -> list[str]:
+        return check_task_graph(
+            graph, SpecDoc.model_validate(run.artifacts["spec"]), DesignDoc.model_validate(run.artifacts["design"]),
+            int(run.limits["plan"]["capacity_points"]),
+        )
+
+    def preview_plan(self, run: RunState) -> dict[str, Any] | None:
+        if not all(run.artifacts.get(key) for key in ("plan", "spec", "design")):
+            return None
+        graph = TaskGraph.model_validate(run.artifacts["plan"])
+        if self._plan_checks(run, graph):
+            return None
+        concurrency = max(1, min(6, int(run.limits["orchestrator"]["concurrency"])))
+        return preview_schedule(graph, concurrency)
+
+    async def edit_plan(self, run: RunState, edit: PlanEdit) -> dict[str, Any]:
+        async with self._gate_lock_for(run):
+            if edit.expected_revision != run.revision:
+                raise RevisionConflict("计划已更新，请刷新后再编辑")
+            gate = next((g for g in run.gates if g["status"] == "pending" and g["kind"] == "PLAN基线确认"), None)
+            if not gate or run.engine.current != "6" or run.tasks or run.artifacts.get("baseline_PLAN"):
+                raise ValidationFailed("仅可编辑待确认且未启动的计划")
+            graph = TaskGraph.model_validate(run.artifacts["plan"])
+            task = next((task for task in graph.tasks if task.code == edit.code), None)
+            if not task or not edit.title.strip():
+                raise ValidationFailed("任务不存在或名称为空")
+            task.title = edit.title.strip()
+            task.points = edit.points
+            task.depends_on = list(dict.fromkeys(edit.depends_on))
+            errors = self._plan_checks(run, graph)
+            if errors:
+                raise ValidationFailed("；".join(errors))
+            run.artifacts["plan"] = graph.model_dump()
+            gate["payload"]["plan"] = graph.model_dump()
+            run.revision += 1
+            self.emit(run, "plan.edited", task.code, {"revision": run.revision})
+            return {"revision": run.revision, "plan": run.artifacts["plan"]}
+
+    def save_experience(self, run: RunState, title: str, lesson: str) -> dict[str, Any]:
+        title, lesson = title.strip(), lesson.strip()
+        if not title or not lesson:
+            raise ValidationFailed("请填写经验标题和内容")
+        item = {"id": str(uuid.uuid4()), "run_id": run.id, "title": title, "lesson": lesson, "status": "candidate"}
+        run.artifacts.setdefault("steward_experiences", []).append(item)
+        self.emit(run, "steward.experience_saved", item["id"], {"status": item["status"]})
+        return item
+
+    def review_experience(self, run: RunState, experience_id: str, decision: str) -> dict[str, Any]:
+        item = next((x for x in run.artifacts.get("steward_experiences", []) if x["id"] == experience_id), None)
+        if not item or item["status"] != "candidate":
+            raise ValidationFailed("经验不存在或已审核")
+        item["status"] = "published" if decision == "publish" else "rejected"
+        self.emit(run, "steward.experience_saved", item["id"], {"status": item["status"]})
+        return item
+
     def _prepare_scripted(self) -> None:
         from app.llm.providers import ScriptedProvider
         from app.settings import get_settings
@@ -947,6 +1026,8 @@ class Workbench:
 
     def _drain_gateway(self, run: RunState) -> None:
         gateway = self._gateway_for(run)
+        if run.artifacts.get("steward") and gateway is not self.gateway and isinstance(gateway.provider, ScriptedProvider):
+            run.artifacts["steward_scripted_calls"] = gateway.stats["calls"]
         while gateway.events:
             ev = gateway.events.pop(0)
             self.emit(run, ev.get("kind") or "llm.fallback", str(ev.get("slot") or ""), ev)
@@ -1061,12 +1142,36 @@ class Workbench:
             raise ValidationFailed("关卡已裁决，不能重复推进")
         if expected_revision is not None and expected_revision != run.revision:
             raise RevisionConflict("revision mismatch")
+        kind = gate["kind"]
+        if kind == "方案比选" and decision == "approve":
+            candidates = {item["id"]: item["proposal"] for item in gate["payload"]["candidates"]}
+            selected = payload.get("candidate")
+            if selected == "fusion" and len(candidates) > 1:
+                if run.artifacts.get("steward_fixture"):
+                    run.artifacts["proposal"] = {
+                        **candidates["A"],
+                        "implementation": "先用示例数据验证查询页面；接入同一栋楼的真实上报与限频，再交付收藏和完整验收。",
+                    }
+                else:
+                    with self._usage_scope(run):
+                        proposal, errors = await self._write_proposal(run, candidates=candidates)
+                    if errors:
+                        raise ValidationFailed("融合方案未通过检查：" + "；".join(errors))
+                    run.artifacts["proposal"] = proposal.model_dump()
+            elif isinstance(selected, str) and selected in candidates:
+                run.artifacts["proposal"] = candidates[selected]
+            else:
+                raise ValidationFailed("请选择一份通过校验的方案")
         gate["status"] = "approved" if decision == "approve" else "rejected"
         gate["decision"] = payload
         run.pending_human = False
         run.revision += 1
         self.emit(run, "gate.resolved", gate_id, {"decision": decision, **payload}, actor)
-        kind = gate["kind"]
+        if kind == "方案比选":
+            if decision != "approve":
+                return await self.run_proposal(run)
+            run.engine.apply("proposal_checked")
+            return await self.run_review(run)
         if kind == "想法补充":
             run.engine.supplements += 1
             extra = payload.get("text") or ""
@@ -1241,22 +1346,57 @@ class Workbench:
             self.emit(run, "discussion.status_overridden", "", {"items": result["status_overrides"]})
         return self._gate(run, "争议清单查看与裁决", {"issues": run.artifacts["issues"], "reopen": reopen})
 
+    async def _write_proposal(self, run: RunState, focus: str = "", *, candidates: dict | None = None) -> tuple[ProposalDoc, list[str]]:
+        issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
+        capacity = int(run.limits["plan"]["capacity_points"])
+        inputs = {"idea_card": run.artifacts["idea_card"], "issue_list": [i.model_dump() for i in issues]}
+        if focus:
+            inputs["proposal_focus"] = focus
+        if candidates:
+            inputs["proposal_candidates"] = candidates
+        return await self._write_checked(
+            run, "proposal_writer", inputs, lambda item: check_proposal(item, issues, capacity=capacity),
+            ProposalDoc, max_rewrites=self._max_rewrites(run, "spec"),
+        )
+
     async def run_proposal(self, run: RunState) -> dict[str, Any]:
         with self._usage_scope(run):
-            issues = [Issue.model_validate(i) for i in run.artifacts["issues"]]
-            idea = run.artifacts["idea_card"]
-            doc, errors = await self._write_checked(
-                run,
-                "proposal_writer",
-                {"idea_card": idea, "issue_list": [i.model_dump() for i in issues]},
-                lambda item: check_proposal(item, issues, capacity=int((run.limits.get("plan") or {})["capacity_points"])),
-                ProposalDoc,
-                max_rewrites=self._max_rewrites(run, "spec"),
-            )
+            if run.artifacts.get("steward_fixture") and (previous := run.artifacts.get("steward_comparison")):
+                return self._gate(run, "方案比选", previous)
+            if run.artifacts.get("steward") and run.artifacts["provenance"]["generation"] == "model":
+                perspectives = [("A", "优先验证用户价值"), ("B", "优先降低实现与集成风险")]
+                results = await asyncio.gather(*(self._write_proposal(run, focus) for _, focus in perspectives), return_exceptions=True)
+                candidates, failures = [], []
+                for (code, focus), result in zip(perspectives, results):
+                    if isinstance(result, BaseException):
+                        failures.append(f"方案 {code}：{user_message_for_error(result) or '生成失败'}")
+                        continue
+                    proposal, errors = result
+                    if errors:
+                        failures.extend(f"方案 {code}：{error}" for error in errors)
+                        continue
+                    candidates.append({"id": code, "focus": focus, "proposal": proposal.model_dump()})
+                run.artifacts["steward_comparison"] = {"candidates": candidates, "errors": failures}
+                self.emit(run, "steward.proposals_ready", "", {"count": len(candidates)})
+                if candidates:
+                    return self._gate(run, "方案比选", run.artifacts["steward_comparison"])
+                return self._doc_check_failed(run, retry="proposal", errors=failures)
+
+            doc, errors = await self._write_proposal(run)
             run.artifacts["proposal"] = doc.model_dump()
             run.artifacts["proposal_errors"] = errors
             if errors:
                 return self._doc_check_failed(run, retry="proposal", errors=errors)
+            if run.artifacts.get("steward_fixture"):
+                comparison = {"candidates": [
+                    {"id": "A", "focus": "先验证一栋楼的上报闭环", "proposal": doc.model_dump()},
+                    {"id": "B", "focus": "先用示例数据验证查询体验", "proposal": {
+                        **doc.model_dump(),
+                        "implementation": "先用示例数据验证查询和收藏界面，再接入小程序上报与限频，最后按同一范围完成验收。",
+                    }},
+                ], "errors": []}
+                run.artifacts["steward_comparison"] = comparison
+                return self._gate(run, "方案比选", comparison)
             run.engine.apply("proposal_checked")
             return await self.run_review(run)
 

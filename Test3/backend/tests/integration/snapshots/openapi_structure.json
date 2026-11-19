@@ -21,6 +21,16 @@
         "200"
       ]
     },
+    "GET /api/projects/{project_id}/experiences": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs": {
       "body": null,
       "params": [],
@@ -110,6 +120,16 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/plan/preview": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/stages": {
       "body": null,
       "params": [
@@ -173,6 +193,16 @@
     },
     "PATCH /api/runs/{run_id}/limits": {
       "body": "object",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PATCH /api/runs/{run_id}/plan": {
+      "body": "PlanEdit",
       "params": [
         "path:run_id*"
       ],
@@ -249,6 +279,27 @@
     "POST /api/runs/{run_id}/crs": {
       "body": "object",
       "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/experiences": {
+      "body": "ExperienceCreate",
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/experiences/{experience_id}": {
+      "body": "ExperienceDecision",
+      "params": [
+        "path:experience_id*",
         "path:run_id*"
       ],
       "responses": [
@@ -354,7 +405,9 @@
     },
     "CreateRun": {
       "properties": {
-        "idea": "string"
+        "idea": "string",
+        "provider": "string",
+        "steward": "boolean"
       },
       "required": [
         "idea"
@@ -379,6 +432,24 @@
       },
       "required": []
     },
+    "ExperienceCreate": {
+      "properties": {
+        "lesson": "string",
+        "title": "string"
+      },
+      "required": [
+        "lesson",
+        "title"
+      ]
+    },
+    "ExperienceDecision": {
+      "properties": {
+        "decision": "string"
+      },
+      "required": [
+        "decision"
+      ]
+    },
     "GateResolve": {
       "properties": {
         "decision": "string",
@@ -394,6 +465,22 @@
         "detail": "array"
       },
       "required": []
+    },
+    "PlanEdit": {
+      "properties": {
+        "code": "string",
+        "depends_on": "array",
+        "expected_revision": "integer",
+        "points": "integer",
+        "title": "string"
+      },
+      "required": [
+        "code",
+        "depends_on",
+        "expected_revision",
+        "points",
+        "title"
+      ]
     },
     "ValidationError": {
       "properties": {

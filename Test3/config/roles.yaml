@@ -7,6 +7,8 @@ visible_types:
   - transcript
   - review_opinions
   - proposal
+  - proposal_focus
+  - proposal_candidates
   - spec
   - design
   - task_graph
@@ -102,7 +104,7 @@ roles:
     temperature: 0.2
     prompt: prompts/docs/proposal_writer.md
     output_schema: ProposalDoc
-    visible: [idea_card, issue_list, rewrite]
+    visible: [idea_card, issue_list, rewrite, proposal_focus, proposal_candidates]
     tools: []
   review_user:
     slot: flagship_alt

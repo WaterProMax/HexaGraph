@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from app.errors import AgentOutputError, IllegalTransition, ImportInProgress, RevisionConflict, ValidationFailed
 from app.events.bus import BUS
 from app.schemas.design_input import DesignRunCreate
+from app.schemas.steward import ExperienceCreate, ExperienceDecision, PlanEdit
 from app.services.runtime import Workbench
 
 router = APIRouter()
@@ -26,6 +27,8 @@ class CreateProject(BaseModel):
 
 class CreateRun(BaseModel):
     idea: str
+    steward: bool = False
+    provider: Literal["existing", "deepseek"] = "existing"
 
 
 class GateResolve(BaseModel):
@@ -70,10 +73,15 @@ async def create_run(project_id: str, body: CreateRun, request: Request) -> dict
     bench = wb(request)
     if project_id not in bench.projects:
         raise HTTPException(404, "project not found")
-    run = bench.create_run(project_id, body.idea)
+    if body.steward and (not body.idea.strip() or len(body.idea.encode("utf-8")) > 24_000):
+        raise HTTPException(400, "请输入需求，最多 24,000 字节")
+    run = bench.create_run(project_id, body.idea, steward=body.steward, provider=body.provider)
     try:
         started = await bench.start_idea(run)
     except (AgentOutputError, RuntimeError) as exc:
+        if body.steward:
+            bench.stop_steward_start(run, exc)
+            return {"run": _run_view(run), "result": {"status": "stopped"}}
         raise HTTPException(400, str(exc)) from exc
     return {"run": _run_view(run), "result": started}
 
@@ -149,6 +157,46 @@ async def resolve_gate(gate_id: str, body: GateResolve, request: Request) -> dic
 @router.get("/runs/{run_id}/tasks")
 async def tasks(run_id: str, request: Request) -> list[dict[str, Any]]:
     return list(_run(request, run_id).tasks.values())
+
+
+@router.get("/runs/{run_id}/plan/preview")
+async def plan_preview(run_id: str, request: Request) -> dict[str, Any] | None:
+    return wb(request).preview_plan(_run(request, run_id))
+
+
+@router.patch("/runs/{run_id}/plan")
+async def edit_plan(run_id: str, body: PlanEdit, request: Request) -> dict[str, Any]:
+    try:
+        return await wb(request).edit_plan(_run(request, run_id), body)
+    except RevisionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/experiences")
+async def experiences(project_id: str, request: Request) -> list[dict[str, Any]]:
+    bench = wb(request)
+    if project_id not in bench.projects:
+        raise HTTPException(404, "project not found")
+    return [item for run in bench.runs.values() if run.project_id == project_id
+            for item in run.artifacts.get("steward_experiences", [])]
+
+
+@router.post("/runs/{run_id}/experiences")
+async def save_experience(run_id: str, body: ExperienceCreate, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).save_experience(_run(request, run_id), body.title, body.lesson)
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/experiences/{experience_id}")
+async def review_experience(run_id: str, experience_id: str, body: ExperienceDecision, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).review_experience(_run(request, run_id), experience_id, body.decision)
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}")

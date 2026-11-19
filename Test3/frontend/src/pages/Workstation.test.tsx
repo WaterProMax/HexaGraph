@@ -271,6 +271,17 @@ describe("Workstation buttons follow backend status", () => {
     expect(api.resolveGate).not.toHaveBeenCalled();
   });
 
+  it("keeps proposal comparison in the steward even with automatic approval enabled", async () => {
+    api.run.mockResolvedValue(designRun({ stage: "2", origin: "idea", gates: [{ id: "choice", kind: "方案比选", status: "pending" }] }));
+    api.artifacts.mockResolvedValue({});
+    renderWorkstation();
+    await screen.findByRole("button", { name: "在项目主理人比选方案" });
+    fireEvent.click(screen.getByRole("switch", { name: "自动过关" }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 800)); });
+    expect(api.resolveGate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "批准并推进" })).toBeNull();
+  });
+
   it("does not allow approve or schedule while importing", async () => {
     api.run.mockResolvedValue(designRun({ stage: "7" }));
     api.artifacts.mockResolvedValue(designArtifacts({ design_input_status: "importing" }));

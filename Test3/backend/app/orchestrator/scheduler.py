@@ -104,3 +104,32 @@ def _overlap(left: list[str], right: list[str]) -> bool:
 
 def path_highlight(graph: TaskGraph) -> list[str]:
     return critical_path(graph)
+
+
+def preview_schedule(graph: TaskGraph, concurrency: int) -> dict:
+    """Estimate a schedule in effort points using the same selection order as the runner."""
+    states = {task.code: "pending" for task in graph.tasks}
+    active: list[tuple[int, TaskCard]] = []
+    rows: list[dict] = []
+    now = 0
+    while len(rows) < len(graph.tasks) or active:
+        for task in graph.tasks:
+            if states[task.code] == "pending" and _deps_done(task, states, set()):
+                states[task.code] = "ready"
+        running = [task for _, task in active]
+        for task in select_tasks(graph, states, concurrency=concurrency, running=running):
+            if conflicts_with_running(task, running):
+                continue
+            end = now + task.points
+            states[task.code] = "running"
+            active.append((end, task))
+            running.append(task)
+            rows.append({"code": task.code, "start": now, "end": end})
+        if not active:
+            break
+        now = min(end for end, _ in active)
+        for end, task in active:
+            if end == now:
+                states[task.code] = "done"
+        active = [(end, task) for end, task in active if end > now]
+    return {"rows": rows, "span": now, "concurrency": concurrency, "critical": critical_path(graph)}

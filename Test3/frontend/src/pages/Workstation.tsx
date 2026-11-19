@@ -324,6 +324,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
       if (pendingGate.kind === "想法补充" && supplementText.trim()) {
         payload.text = supplementText.trim();
       }
+      if (pendingGate.kind === "PLAN基线确认") return api.resolveGate(pendingGate.id, decision, payload, run?.revision);
       return api.resolveGate(pendingGate.id, decision, payload);
     },
     onSuccess: (_data, vars) => {
@@ -395,9 +396,10 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     importing: importingDesign,
     statusQueryFailed: runQueryFailed,
   });
+  const requiresProposalChoice = pendingGate?.kind === "方案比选";
 
   useEffect(() => {
-    if (!activeRunId || !run) return;
+    if (!activeRunId || !run || requiresProposalChoice) return;
     if (
       !autoAdvanceAllowed({
         autoAdvance,
@@ -411,7 +413,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
       resolveGateMut.mutate({ decision: "approve" });
     }, 600);
     return () => clearTimeout(timer);
-  }, [autoAdvance, activeRunId, run, pendingGate, gatesLocked]);
+  }, [autoAdvance, activeRunId, run, pendingGate, gatesLocked, requiresProposalChoice]);
 
   const { phases, allItems } = useMemo(
     () => buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDesignRun }),
@@ -814,6 +816,9 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                   {pendingGate.kind}
                 </h2>
               </div>
+              {requiresProposalChoice ? (
+                <Button type="primary" onClick={() => nav(`/steward/${activeRunId}`)}>在项目主理人比选方案</Button>
+              ) : <>
               {pendingGate.kind === "想法补充" && (
                 <Input.TextArea
                   rows={2}
@@ -860,6 +865,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                   {pendingGate.kind === "DESIGN基线确认" && isDesignRun ? "驳回（需改原文重提）" : "驳回重写"}
                 </Button>
               </div>
+              </>}
             </section>
           )}
 
