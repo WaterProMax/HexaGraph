@@ -46,6 +46,7 @@ from app.execution.baseline import write_approved_baseline_hash
 from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
+from app.execution.isolated import WriteSpec, execute_task_granted
 from app.execution.run_profile import (
     run_approved_baseline_hashes,
     run_execution_profile,
@@ -1766,6 +1767,9 @@ class Workbench:
                 self._set_state(run, task, "budget_or_stuck")
             self.emit(run, "budget.exceeded", code, {"used": task.get("tokens_used")})
             return {"state": task["state"], "kind": "预算耗尽"}
+        granted_spec = task.get("granted_execution")
+        if run_execution_profile(run) == "granted_v1" and isinstance(granted_spec, dict):
+            return await self._execute_granted_task(run, code, task, card, granted_spec)
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
@@ -1822,6 +1826,65 @@ class Workbench:
                 self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
                 return {"state": task["state"], "kind": "已终止"}
             return await self._accept_review_merge(run, code, wt, list(tools.written))
+
+    async def _execute_granted_task(
+        self,
+        run: RunState,
+        code: str,
+        task: dict[str, Any],
+        card: TaskCard,
+        spec: dict[str, Any],
+    ) -> dict[str, Any]:
+        """granted_v1 branch: write only inside an isolated per-task worktree."""
+        grants = await self.grants_for_run(run.id)
+        grant = next((item for item in reversed(grants) if item.status == "active"), grants[-1] if grants else None)
+        if grant is None:
+            raise GrantRejected("grant_required", "granted_v1 run has no execution grant", status_code=403)
+        repo = self.data_dir / "runs" / run.id / "repo"
+        if not (repo / ".git").exists():
+            init_repo_sync(repo, self.profile.get("initial_files"))
+        wt = self.data_dir / "runs" / run.id / "wt" / f"granted-{code}"
+        branch = f"{grant.feature_branch}/{code}"
+        try:
+            create_worktree(repo, wt, branch)
+        except Exception as exc:  # noqa: BLE001
+            return await self._finish_failure(run, task, card, "环境故障", str(exc), _exc_fields(exc))
+        writes = [
+            WriteSpec(path=str(item.get("path") or ""), content=str(item.get("content") or ""))
+            for item in (spec.get("writes") or [])
+            if isinstance(item, dict)
+        ]
+        command = [str(part) for part in (spec.get("command") or [])]
+        if not command:
+            command = ["python", "-m", "pytest", "-q", "-m", "not live"]
+        try:
+            result = await execute_task_granted(
+                run.id,
+                code,
+                grant,
+                isolation_root=wt,
+                writes=writes,
+                test_command=command,
+                write_set=list(card.write_set),
+                whitelist=self._whitelist(),
+                env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
+                timeout=int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600),
+            )
+        except CommandDenied as exc:
+            return await self._finish_failure(run, task, card, "任务描述问题", str(exc), {"exit_code": 1})
+        task.setdefault("evidence", []).append(result.evidence)
+        self.emit(run, "task.evidence", code, {"path": result.evidence_path, "ok": result.ok})
+        if result.ok:
+            if can_transition(task["state"], "code_finished"):
+                self._set_state(run, task, "code_finished")
+            if can_transition(task["state"], "accepted"):
+                self._set_state(run, task, "accepted")
+            self._refresh_ready(run)
+            self._maybe_tasks_complete(run)
+            return {"state": task["state"], "kind": "done", "evidence": result.evidence}
+        if can_transition(task["state"], "env_fail"):
+            self._set_state(run, task, "env_fail", reason="offline test failed")
+        return {"state": task["state"], "kind": "代码缺陷", "evidence": result.evidence}
 
     async def _accept_review_merge(
         self,

@@ -189,3 +189,36 @@ $ cd Test3/backend && uv run pytest tests/e2e/test_m1_study_room.py tests/e2e/te
 ```
 
 `hash_artifact(b"plan-v1") == sha256(b"plan-v1")` 已由单测固定；gate 集成测试用实际 PLAN artifact 对比 `hash_artifact(plan)`。
+
+## P1-T06 · 隔离 worker：改代码、跑离线测试、收集证据
+
+修改/新增：
+
+- `[NEW] Test3/backend/app/execution/isolated.py`：`WriteSpec`、`CommandResult`、`build_evidence`、`execute_task_granted`、`redact_secrets`。
+- `[MODIFY] Test3/backend/app/services/runtime.py`：`execute_task` 在 `execution_profile=granted_v1` 且任务带 `granted_execution` 计划时进入 `_execute_granted_task`；使用 per-task 隔离 worktree（`data_dir/runs/<run>/wt/granted-<code>`，分支 `grant.feature_branch/<code>`），只在该目录写入与跑命令；未改动既有 model/tool 执行路径与 legacy 行为。
+- `[NEW] Test3/backend/tests/unit/test_isolated_execute_task.py`
+- `[NEW] Test3/backend/tests/e2e/test_granted_v1_sandbox_write.py`
+- `[NEW] Test3/docs/plans/p1-evidence-sample.json`（无密钥的 evidence 结构样例）
+
+行为：
+
+- 写入经 `normalize_under` + `in_write_set` 限定在隔离目录；用户项目根不产生 fixture 文件。
+- 测试命令来自任务卡 `granted_execution.command`（缺省 `python -m pytest -q -m "not live"`），经既有 `run_command` 白名单执行；环境仅传 `PATH`（可显式追加），不发起 HTTP/模型调用。
+- 退出码非 0：证据仍落盘、`ok=false`，任务状态不为 `done`（授予路径用 `env_fail` 标记，不递归重试）。
+- evidence JSON 含 `task_code`、`isolation_root`、`written`、`commands[{argv,cwd,exit_code,log_path,output}]`、`ok`、`grant_id`、`run_id`、`feature_branch`；日志与 evidence 均经 `***REDACTED***` 处理 `*_KEY/*_TOKEN/*_SECRET/*_PASSWORD` 环境值。
+- 并行两个任务使用各自隔离目录，不交叉写入。未调用网络；pytest 默认 `-m 'not live'`。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/unit/test_isolated_execute_task.py tests/e2e/test_granted_v1_sandbox_write.py -v
+collected 6 items
+tests/unit/test_isolated_execute_task.py ....  [66%]
+tests/e2e/test_granted_v1_sandbox_write.py ..  [100%]
+6 passed in 0.97s
+
+$ cd Test3/backend && uv run pytest <P1-T01…T06 全部测试> -q
+52 passed
+```
+
+evidence 样例：`Test3/docs/plans/p1-evidence-sample.json`（示例命令 `python -c "print('ok')"`，exit_code 0，log 在临时目录，不提交日志正文）。测试运行时真实 evidence 位于 pytest `tmp_path/runs/<run>/wt/granted-<code>-evidence/`，随临时目录清理。

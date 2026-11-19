@@ -1,0 +1,24 @@
+{
+  "task_code": "T-01",
+  "isolation_root": "/private/var/folders/fg/psc92xjs28j29prpgc0zz2cr0000gn/T/tmpm88fclnn/iso",
+  "written": [
+    "foo.txt"
+  ],
+  "commands": [
+    {
+      "argv": [
+        "python",
+        "-c",
+        "print('ok')"
+      ],
+      "cwd": "/private/var/folders/fg/psc92xjs28j29prpgc0zz2cr0000gn/T/tmpm88fclnn/iso",
+      "exit_code": 0,
+      "log_path": "/private/var/folders/fg/psc92xjs28j29prpgc0zz2cr0000gn/T/tmpm88fclnn/iso-evidence/T-01-1795071669799-7d929a67.log",
+      "output": "ok\n"
+    }
+  ],
+  "ok": true,
+  "grant_id": "G-SAMPLE",
+  "run_id": "run-sample",
+  "feature_branch": "feat/p1-demo"
+}
