@@ -14,6 +14,7 @@
 | 400 | 非法转换、缺控制理由、终止未带 `confirm:true`、`ValidationFailed`（含变更单决策）、非法 limits 键、缺 `FEEDBACK_HASH_KEY` |
 | 404 | 项目 / 运行 / 关卡 / 任务 / 变更单（`/crs/{code}/decision`）不存在 |
 | 409 | `expected_revision` 不一致；`POST /runs/{id}/accept` 时运行尚无 SPEC |
+| 410 | 已下线的 DeepSeek 专用入口：`provider=deepseek` 新建，或对历史 `provenance.mode=deepseek` 运行执行重试 / 恢复 / 调度 / 继续 PLAN。未发起模型请求 |
 | 422 | 请求体/查询参数结构不合法（FastAPI 校验，含 `PATCH /limits` 非对象体、终止无 body） |
 | 500 | 仅用于未预期错误；已知输入问题不应再出现。已知例外：`PUT /config/models` 结构非法仍为 500（模型配置路由，不在本契约范围） |
 
@@ -60,7 +61,7 @@
   "text": "设计规格原文（必填）",
   "source": {"kind": "text|file", "name": "可选文件名", "note": "可选备注"},
   "title": "可选标题",
-  "provider": "existing|deepseek（可选，默认 existing；deepseek 仅本次运行使用 DeepSeek）"
+  "provider": "existing（默认）。deepseek 字面量仍被接收，但仅用于返回 410「已下线」，不会创建运行或调用模型"
 }
 ```
 
