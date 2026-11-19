@@ -212,12 +212,16 @@ class Workbench:
                 if run.artifacts.get("plan") and run.tasks:
                     try:
                         await self.schedule_once(run)
-                    except Exception:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
+                        self._record_recovery_failure(run.id, f"schedule_loop_error:{type(exc).__name__}")
                         continue
+
+    def _next_seq(self, run: RunState) -> int:
+        return max((int(item.get("seq") or 0) for item in run.events), default=0) + 1
 
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
         event = {
-            "seq": len(run.events) + 1,
+            "seq": self._next_seq(run),
             "kind": kind,
             "subject": subject,
             "payload": payload or {},
@@ -235,13 +239,16 @@ class Workbench:
         if event["kind"] in _SNAPSHOT_KINDS or int(event["seq"]) % 20 == 0:
             self._persist_snapshot(run)
 
+    def _persist_projects(self) -> None:
+        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
+
     def _persist_snapshot(self, run: RunState) -> None:
         folder = self.data_dir / "runs" / run.id
         payload = self._serialize_run(run)
         payload["events"] = []
         payload["event_seq"] = len(run.events)
         _atomic_write(folder / "snapshot.json", json.dumps(payload, ensure_ascii=False))
-        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
+        self._persist_projects()
 
     def _serialize_run(self, run: RunState) -> dict[str, Any]:
         payload = {
@@ -347,14 +354,18 @@ class Workbench:
                 if not events and not snap.exists():
                     continue
                 data = self._run_skeleton_from_events(run_dir.name, events)
+            expected = data.get("event_seq")
+            if isinstance(expected, int) and len(events) < expected:
+                self._record_recovery_failure(run_dir.name, f"events_missing:{expected - len(events)}")
             run = self._deserialize_run(data)
             if events:
                 run.events = events
             self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
             repo = run_dir / "repo"
+            recovered: list[dict[str, Any]] = []
             if (repo / ".git").exists() and run.tasks:
-                recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
+                recovered = recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
             self._interrupt_stale_import(run)
             if (run.artifacts.get("model_stage") or {}).get("status") == "running":
@@ -365,6 +376,14 @@ class Workbench:
                 run.artifacts["model_stage"]["error"] = message
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
+            for action in recovered:
+                self.emit(
+                    run,
+                    "task.state_changed",
+                    action["code"],
+                    {key: action[key] for key in ("code", "from", "to", "event", "reason")},
+                    "system",
+                )
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -379,12 +398,13 @@ class Workbench:
         if not path.exists():
             return []
         rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for index, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
+                self._record_recovery_failure(path.parent.name, f"events_corrupt_line:{index}")
                 continue
             if isinstance(item, dict):
                 rows.append(item)
@@ -394,17 +414,6 @@ class Workbench:
         event = {"kind": "runtime.recovery_failed", "run_id": run_id, "reason": reason, "actor": "system"}
         with (self.data_dir / "recovery.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
-        if run_id:
-            folder = self.data_dir / "runs" / run_id
-            folder.mkdir(parents=True, exist_ok=True)
-            with (folder / "events.jsonl").open("a", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {"seq": 0, "kind": "runtime.recovery_failed", "subject": run_id, "payload": {"reason": reason}, "actor": "system"},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
 
     def _run_skeleton_from_events(self, run_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
         idea = ""
@@ -534,6 +543,7 @@ class Workbench:
     def create_project(self, name: str, profile: str = "python-pytest") -> dict[str, Any]:
         pid = str(uuid.uuid4())
         self.projects[pid] = {"id": pid, "name": name, "profile": profile}
+        self._persist_projects()
         return self.projects[pid]
 
     def create_run(self, project_id: str, idea: str) -> RunState:
