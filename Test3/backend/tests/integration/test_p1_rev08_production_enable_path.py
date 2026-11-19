@@ -88,7 +88,6 @@ async def test_production_enable_then_materialize_has_real_spec(app) -> None:
 
 @pytest.mark.asyncio
 async def test_client_cannot_downgrade_or_enable_legacy(app) -> None:
-    bench = app.state.workbench
     run = _run_with_plan(app, "T-01")
     async with _client(app) as client:
         res = await client.post(
@@ -118,3 +117,24 @@ async def test_legacy_run_cannot_create_grant(app) -> None:
         res = await client.post(f"/api/runs/{run.id}/execution-grants", json=GRANT_BODY)
     assert res.status_code == 403
     assert res.json()["error_category"] == "profile_not_granted_v1"
+
+@pytest.mark.asyncio
+async def test_enable_survives_restart_via_sqlite(app) -> None:
+    from app.execution.run_profile import run_approved_baseline_hashes
+    from tests.p1_support import make_bench
+
+    bench = app.state.workbench
+    run = _run_with_plan(app, "T-01")
+    async with _client(app) as client:
+        enabled = await client.post(f"/api/runs/{run.id}/execution-profile", json=ENABLE_BODY)
+        assert enabled.status_code == 200, enabled.text
+    data_dir = bench.data_dir
+    await bench.close()
+
+    restored = make_bench(data_dir)
+    try:
+        recovered = restored.runs[run.id]
+        assert run_execution_profile(recovered) == "granted_v1"
+        assert run_approved_baseline_hashes(recovered) == {"PLAN": "aaa"}
+    finally:
+        await restored.close()

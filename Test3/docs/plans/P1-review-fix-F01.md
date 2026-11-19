@@ -79,7 +79,7 @@ legacy 恢复不动 JSONL、PR “远端已创建但响应丢失”场景、空/
 
 ### P1-REV-08 · granted 无生产启用/物化来源
 
-- 测试：`tests/unit/test_p1_rev08_production_enable_path.py`
+- 测试：`tests/integration/test_p1_rev08_production_enable_path.py`
 - 用例：只走生产创建/启用/物化服务与 HTTP；不使用 internal setter，不手工注入 `granted_execution`。
 - 结果：`POST /api/runs/{run_id}/execution-profile` 为 404；无生产启用路径。物化任务没有 `granted_execution`。
 - 对照：普通 `create_run()` 物化不带假 granted spec；legacy run POST Grant 仍 403；客户端降级 body 在修复前因路由不存在也是 4xx，但“路由存在且明确拒绝 legacy”留待 F-04 断言。
@@ -103,7 +103,7 @@ cd Test3/backend && .venv/bin/python -m pytest \
   tests/integration/test_p1_rev05_alembic_handoff.py \
   tests/unit/test_p1_rev06_pr_list_unknown.py \
   tests/unit/test_p1_rev07_github_auth_negation.py \
-  tests/unit/test_p1_rev08_production_enable_path.py \
+  tests/integration/test_p1_rev08_production_enable_path.py \
   tests/unit/test_p1_rev09_revision_assertion.py \
   -v
 # exit 1：18 failed, 7 passed

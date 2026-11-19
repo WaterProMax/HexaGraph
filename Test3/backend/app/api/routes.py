@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -58,6 +58,13 @@ class ConfirmBody(BaseModel):
 
 class ScheduleRequest(BaseModel):
     task_codes: list[str] | None = None
+
+
+class EnableExecutionProfileBody(BaseModel):
+    execution_profile: Literal["granted_v1"]
+    approved_baseline_hashes: dict[str, str]
+    approved_plan_hash: str = ""
+    allowed_tool_refs: list[str] = []
 
 
 def wb(request: Request) -> Workbench:
@@ -440,6 +447,52 @@ async def list_execution_grants(run_id: str, request: Request) -> Any:
         return _json_error(404, "run_not_found", f"run not found: {run_id}")
     grants = await bench.grants_for_run(run_id)
     return {"items": [grant.model_dump() for grant in grants]}
+
+
+@router.post("/runs/{run_id}/execution-profile")
+async def enable_execution_profile(run_id: str, request: Request) -> JSONResponse:
+    """Server-owned enable path: granted_v1 only, never a legacy downgrade."""
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    if not isinstance(payload, dict):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = EnableExecutionProfileBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    try:
+        result = await bench.enable_granted_execution(
+            run_id,
+            body.approved_baseline_hashes,
+            approved_plan_hash=body.approved_plan_hash,
+            allowed_tool_refs=body.allowed_tool_refs,
+        )
+    except ValidationFailed as exc:
+        message = str(exc)
+        if "baseline" in message:
+            return _json_error(409, "baseline_stale", message)
+        return _json_error(400, "validation_error", message)
+    return JSONResponse(status_code=200, content=result)
+
+
+@router.get("/runs/{run_id}/execution-profile")
+async def get_execution_profile(run_id: str, request: Request) -> Any:
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    return {
+        "run_id": run_id,
+        "execution_profile": run_execution_profile(run),
+        "approved_baseline_hashes": run_approved_baseline_hashes(run),
+        "execution_safety_ready": bool(getattr(bench, "execution_safety_ready", False)),
+    }
 
 
 @router.post("/runs/{run_id}/schedule")

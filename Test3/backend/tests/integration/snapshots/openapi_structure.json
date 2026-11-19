@@ -110,6 +110,16 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/execution-profile": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/feedback": {
       "body": null,
       "params": [
@@ -273,6 +283,16 @@
       ],
       "responses": [
         "201",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/execution-profile": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
         "422"
       ]
     },

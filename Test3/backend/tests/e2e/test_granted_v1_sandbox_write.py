@@ -1,18 +1,23 @@
+"""F-04: the production granted entry is enabled and materialized, but closed.
+
+Until F-05/F-06 finish the unified grant boundary and the real isolation backend,
+``execute_task`` must reject granted runs with ``execution_safety_not_ready`` and
+must never fall back to the legacy model/auto-merge chain.  This file uses the
+production enable/materialize service path; it does not inject
+``granted_execution`` by hand and does not start an isolated worker.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from app.agents.runtime import RoleRegistry
-from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
-from app.llm.gateway import Gateway
-from app.llm.providers import ScriptedProvider
+from app.errors import GrantRejected
+from app.execution.run_profile import run_execution_profile
 from app.schemas.common import AcceptanceCheck, Budget
 from app.schemas.docs import TaskCard, TaskGraph
-from app.schemas.execution_grant import ExecutionGrant
-from app.services.runtime import Workbench
-from app.settings import load_models, load_roles
+from tests.p1_support import make_bench, make_grant
 
 
 def _card(code: str, write_set: list[str]) -> TaskCard:
@@ -27,9 +32,7 @@ def _card(code: str, write_set: list[str]) -> TaskCard:
             "write_set": write_set,
             "outputs": write_set,
             "acceptance": [
-                AcceptanceCheck(
-                    cmd=["python", "-c", "print('ok')"], pass_criteria="ok", from_criterion="F1"
-                )
+                AcceptanceCheck(cmd=["python", "-m", "pytest", "-q"], pass_criteria="ok", from_criterion="F1")
             ],
             "depends_on": [],
             "points": 2,
@@ -40,76 +43,48 @@ def _card(code: str, write_set: list[str]) -> TaskCard:
     )
 
 
-async def _bench_with_task(tmp_path: Path, card: TaskCard) -> tuple[Workbench, object]:
-    bench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path)
+async def _prepared(tmp_path: Path, card: TaskCard):
+    bench = make_bench(tmp_path)
     project = bench.create_project("granted")
     run = bench.create_run(project["id"], "idea")
     run.engine.current = "7"
     run.artifacts["plan"] = TaskGraph(tasks=[card]).model_dump()
     bench._materialize_tasks(run)
-    set_run_execution_profile(run, "granted_v1")
-    set_approved_baseline_hashes(run, {"PLAN": "aaa"})
-    grant = ExecutionGrant(
-        grant_id=f"G-{card.code}",
-        run_id=run.id,
-        execution_profile="granted_v1",
-        task_codes=[card.code],
-        approved_baseline_hashes={"PLAN": "aaa"},
-        repo_remote="origin",
-        repo_owner="WaterProMax",
-        repo_name="HexaGraph",
-        base_branch="teamwork-001",
-        feature_branch="feat/p1-demo",
-        allowed_tool_refs=[],
-        created_at="2026-11-19T00:00:00+00:00",
-    )
-    await bench.add_grant(grant)
+    await bench.enable_granted_execution(run.id, {"PLAN": "aaa"})
+    await bench.add_grant(make_grant(run.id, [card.code]))
     return bench, run
 
 
-@pytest.fixture
-async def bench(tmp_path):
-    created: list[Workbench] = []
-    yield created
-    for item in created:
-        await item.close()
-
-
 @pytest.mark.asyncio
-async def test_granted_task_writes_only_in_isolated_worktree(tmp_path: Path, bench) -> None:
+async def test_granted_execution_is_refused_until_safety_is_ready(tmp_path: Path) -> None:
     card = _card("T-01", ["foo.txt", "tests/test_ok.py"])
-    workbench, run = await _bench_with_task(tmp_path, card)
-    bench.append(workbench)
-    run.tasks["T-01"]["granted_execution"] = {
-        "writes": [
-            {"path": "foo.txt", "content": "bar"},
-            {"path": "tests/test_ok.py", "content": "def test_ok():\n    assert True\n"},
-        ],
-        "command": ["python", "-m", "pytest", "tests/test_ok.py", "-q"],
-    }
-    result = await workbench.execute_task(run, "T-01")
-    isolated = tmp_path / "runs" / run.id / "wt" / "granted-T-01" / "foo.txt"
-    assert isolated.read_text(encoding="utf-8") == "bar"
-    assert not (tmp_path / "foo.txt").exists()
-    assert result["state"] == "done"
-    assert run.tasks["T-01"]["evidence"]
-    evidence = run.tasks["T-01"]["evidence"][-1]
-    assert evidence["ok"] is True
-    assert Path(evidence["commands"][0]["log_path"]).is_file()
+    bench, run = await _prepared(tmp_path, card)
+    try:
+        assert run_execution_profile(run) == "granted_v1"
+        spec = run.tasks["T-01"]["granted_execution"]
+        assert spec["approved_plan_hash"]
+        assert spec["task_codes"] == ["T-01"]
+        assert spec["command"]
+
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench.execute_task(run, "T-01")
+        assert excinfo.value.category == "execution_safety_not_ready"
+        assert not (tmp_path / "runs" / run.id / "wt" / "granted-T-01").exists()
+        assert not (tmp_path / "foo.txt").exists()
+    finally:
+        await bench.close()
 
 
 @pytest.mark.asyncio
-async def test_granted_task_failure_keeps_evidence_and_fails_state(tmp_path: Path, bench) -> None:
+async def test_retry_on_granted_run_is_refused(tmp_path: Path) -> None:
     card = _card("T-02", ["tests/test_fail.py"])
-    workbench, run = await _bench_with_task(tmp_path, card)
-    bench.append(workbench)
-    run.tasks["T-02"]["granted_execution"] = {
-        "writes": [{"path": "tests/test_fail.py", "content": "def test_fail():\n    assert False\n"}],
-        "command": ["python", "-m", "pytest", "tests/test_fail.py", "-q"],
-    }
-    result = await workbench.execute_task(run, "T-02")
-    assert result["state"] != "done"
-    evidence = run.tasks["T-02"]["evidence"][-1]
-    assert evidence["ok"] is False
-    assert evidence["commands"][0]["exit_code"] != 0
-    assert Path(evidence["commands"][0]["log_path"]).is_file()
+    bench, run = await _prepared(tmp_path, card)
+    run.tasks["T-02"]["state"] = "failed"
+    run.tasks["T-02"]["revision"] = 1
+    try:
+        with pytest.raises(GrantRejected) as excinfo:
+            await bench.control_task(run, "T-02", "retry", 1, "review repro")
+        assert excinfo.value.category == "execution_safety_not_ready"
+        assert run.tasks["T-02"]["state"] != "done"
+    finally:
+        await bench.close()

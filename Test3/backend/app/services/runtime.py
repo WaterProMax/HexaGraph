@@ -210,6 +210,10 @@ class Workbench:
         self._db_lock: asyncio.Lock | None = None
         self._grant_write_lock: asyncio.Lock | None = None
         self._grant_cache: dict[str, list[ExecutionGrant]] = {}
+        # Server-owned readiness flag.  It stays false until the isolation
+        # backend (F-06) and the unified grant boundary (F-05) are in place; no
+        # client input may set it.
+        self.execution_safety_ready = False
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -735,6 +739,143 @@ class Workbench:
             run_id,
             {"profile": profile, "hashes": state.approved_baseline_hashes, "plan_hash": state.approved_plan_hash},
         )
+        self._attach_granted_specs(run)
+
+    @staticmethod
+    def _plan_fingerprint(run: RunState) -> str:
+        plan = run.artifacts.get("plan")
+        if not isinstance(plan, dict):
+            return ""
+        return hashlib.sha256(
+            json.dumps(plan, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+    def _active_grant_for(self, run: RunState, code: str) -> ExecutionGrant | None:
+        for grant in reversed(self._grant_cache.get(run.id, [])):
+            if grant.status == "active" and code in grant.task_codes:
+                return grant
+        return None
+
+    def _granted_spec_for(self, run: RunState, task: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+        card = TaskCard.model_validate(task["card"])
+        grant = self._active_grant_for(run, str(task["code"]))
+        command: list[str] = []
+        for check in card.acceptance:
+            command = [str(part) for part in check.cmd]
+            break
+        if not command:
+            command = [str(part) for part in (self.profile.get("test_command") or ["python", "-m", "pytest", "-q"])]
+        existing = task.get("granted_execution")
+        spec: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        spec.update(
+            {
+                "execution_profile": PROFILE_GRANTED,
+                "approved_plan_hash": fingerprint,
+                "approved_baseline_hashes": run_approved_baseline_hashes(run),
+                "grant_id": grant.grant_id if grant is not None else "",
+                "task_codes": list(grant.task_codes) if grant is not None else [str(task["code"])],
+                "task_code": str(task["code"]),
+                "write_set": list(card.write_set),
+                "command": command,
+                "tool_refs": list(grant.allowed_tool_refs) if grant is not None else [],
+                "feature_branch": grant.feature_branch if grant is not None else "",
+                "source": "server_materialize_tasks",
+            }
+        )
+        spec.setdefault("writes", [])
+        return spec
+
+    def _attach_granted_specs(self, run: RunState) -> None:
+        """Give every materialized task a server-produced execution spec.
+
+        Legacy / unspecified runs never get one.  Existing writes/commands are
+        preserved only as a compatibility detail; hash, scope and tool refs are
+        always rebound from the current authoritative state.
+        """
+        if run_execution_profile(run) != PROFILE_GRANTED:
+            for task in run.tasks.values():
+                task.pop("granted_execution", None)
+            return
+        fingerprint = self._plan_fingerprint(run)
+        for task in run.tasks.values():
+            task["granted_execution"] = self._granted_spec_for(run, task, fingerprint)
+
+    def _bind_grant_to_tasks(self, run: RunState, grant: ExecutionGrant) -> None:
+        if run_execution_profile(run) != PROFILE_GRANTED:
+            return
+        fingerprint = self._plan_fingerprint(run)
+        for code in grant.task_codes:
+            task = run.tasks.get(code)
+            if task is None:
+                continue
+            spec = self._granted_spec_for(run, task, fingerprint)
+            spec.update(
+                {
+                    "grant_id": grant.grant_id,
+                    "task_codes": list(grant.task_codes),
+                    "tool_refs": list(grant.allowed_tool_refs),
+                    "feature_branch": grant.feature_branch,
+                    "approved_baseline_hashes": dict(grant.approved_baseline_hashes),
+                }
+            )
+            task["granted_execution"] = spec
+
+    async def enable_granted_execution(
+        self,
+        run_id: str,
+        approved_baseline_hashes: dict[str, str],
+        *,
+        approved_plan_hash: str = "",
+        allowed_tool_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Server-side enable path used by the HTTP endpoint only.
+
+        A client cannot set ``legacy`` here; the route schema is
+        ``Literal["granted_v1"]``.  Enabling does not make execution ready: the
+        safety flag remains server-owned and false until F-05/F-06 land.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        hashes = {str(key): str(value) for key, value in (approved_baseline_hashes or {}).items()}
+        if not hashes:
+            raise ValidationFailed("approved_baseline_hashes is required")
+        current = run_approved_baseline_hashes(run)
+        if current and current != hashes:
+            raise ValidationFailed("approved_baseline_hashes do not match the run baseline")
+        fingerprint = self._plan_fingerprint(run)
+        if approved_plan_hash and fingerprint and approved_plan_hash != fingerprint:
+            raise ValidationFailed("approved_plan_hash does not match the approved plan")
+        resolved_plan_hash = str(approved_plan_hash or fingerprint)
+        await self.persist_run_execution_state(
+            run_id,
+            PROFILE_GRANTED,
+            hashes,
+            approved_plan_hash=resolved_plan_hash,
+            allowed_tool_refs=allowed_tool_refs,
+        )
+        self._attach_granted_specs(run)
+        return {
+            "run_id": run_id,
+            "execution_profile": PROFILE_GRANTED,
+            "approved_baseline_hashes": hashes,
+            "approved_plan_hash": resolved_plan_hash,
+            "execution_safety_ready": self.execution_safety_ready,
+        }
+
+    def _require_execution_safety(self, run: RunState, code: str = "") -> None:
+        profile = run_execution_profile(run)
+        if profile in (PROFILE_UNSPECIFIED, PROFILE_CONFLICT):
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
+        if profile == PROFILE_GRANTED and not self.execution_safety_ready:
+            # F-04 stops here on purpose: the legacy worker/auto-merge chain is
+            # never reachable until F-05/F-06 install the real boundary.
+            raise GrantRejected(
+                "execution_safety_not_ready",
+                "granted execution isolation and authorization are not ready",
+                status_code=409,
+            )
 
     def _grant_lock(self) -> asyncio.Lock:
         if self._grant_write_lock is None:
@@ -747,6 +888,9 @@ class Workbench:
                 await GrantRepo(session).add(grant)
                 await session.commit()
         self._grant_cache.setdefault(grant.run_id, []).append(grant)
+        run = self.runs.get(grant.run_id)
+        if run is not None:
+            self._bind_grant_to_tasks(run, grant)
 
     def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
         digest = write_approved_baseline_hash(run, key, value)
@@ -1725,6 +1869,7 @@ class Workbench:
         ).hexdigest()
         if run.artifacts.get("plan_materialized") == fingerprint and run.tasks:
             # 同一版本计划重复确认时只刷新就绪状态，不重建任务、不重置进度。
+            self._attach_granted_specs(run)
             self._refresh_ready(run)
             return
         run.artifacts["plan_materialized"] = fingerprint
@@ -1750,6 +1895,7 @@ class Workbench:
             for src in task.sources:
                 run.trace.link(src, task.code, "spec_item → task")
         self._sync_task_ids(run)
+        self._attach_granted_specs(run)
         self._refresh_ready(run)
 
     def _refresh_ready(self, run: RunState) -> None:
@@ -1882,10 +2028,7 @@ class Workbench:
         return started
 
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
-        profile = run_execution_profile(run)
-        if profile in (PROFILE_UNSPECIFIED, PROFILE_CONFLICT):
-            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
-            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
+        self._require_execution_safety(run, code)
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
         if run.status == "terminated":
@@ -2030,6 +2173,7 @@ class Workbench:
     ) -> dict[str, Any]:
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
+        self._require_execution_safety(run, code)
         if run.status == "terminated":
             self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
             return {"state": task["state"], "kind": "已终止"}
@@ -2412,6 +2556,7 @@ class Workbench:
         return run
 
     async def _submit_takeover(self, run: RunState, code: str) -> dict[str, Any]:
+        self._require_execution_safety(run, code)
         task = run.tasks[code]
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
