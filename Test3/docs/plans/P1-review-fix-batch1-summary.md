@@ -15,6 +15,8 @@
 | `9d1aa4d` | F-03 Alembic 单一 schema 权威 |
 | `652379e` | F-04 服务端启用端点 + 生产 granted 物化 |
 | `3b3d9f6` | F-04 收尾：conflict 持久、hashes 同步、regression 安全门 |
+| `ab742ba` | 第一批小结与停止点 |
+| `077e671` | F-04 收尾：granted retry/accept 受控 409 |
 
 ## 2. 各任务结果
 
