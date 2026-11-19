@@ -50,7 +50,8 @@ async def _prepared(tmp_path: Path, card: TaskCard):
     run.engine.current = "7"
     run.artifacts["plan"] = TaskGraph(tasks=[card]).model_dump()
     bench._materialize_tasks(run)
-    await bench.enable_granted_execution(run.id, {"PLAN": "aaa"})
+    plan_hash = bench._record_approved_baseline(run, "PLAN", run.artifacts["plan"])
+    await bench.enable_granted_execution(run.id, {"PLAN": plan_hash})
     await bench.add_grant(make_grant(run.id, [card.code]))
     return bench, run
 

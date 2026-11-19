@@ -71,8 +71,9 @@ tests/unit/test_grant_repo.py                              4 passed
 全量非 live（`-o addopts='' -m 'not live'`）：
 
 ```text
-9 failed, 273 passed, 2 deselected in 21.97s
+9 failed, 278 passed, 2 deselected in 21.78s
 ```
+（收尾 enable 收紧后复跑；新增 5 条 enable 反例/幂等测试。）
 
 剩余 9 条是**故意保留给后续批次**的 F-01 红灯：
 
@@ -84,7 +85,9 @@ tests/unit/test_grant_repo.py                              4 passed
 | REV-07 否定授权 / 结构化记录（2） | F-09 |
 | REV-09 revision 恒真断言（1） | F-12 |
 
-REV-01、REV-04、REV-05、REV-08 已在本批转绿。全量套件当前为红是预期状态，不是本批遗漏。
+REV-04、REV-05、REV-08 已在本批转绿。REV-01 的测试在临时 `execution_safety_ready=False` 总闸下转绿，
+不等于真实 Grant 边界已修复：无 Grant 降 legacy、retry 越权等原问题仍留在总闸之后，由 F-05 关闭。
+全量套件当前为红是预期状态，不是本批遗漏。
 
 ## 4. 安全与边界
 

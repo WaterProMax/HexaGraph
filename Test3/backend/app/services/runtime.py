@@ -42,7 +42,7 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
-from app.execution.baseline import write_approved_baseline_hash
+from app.execution.baseline import hash_artifact, write_approved_baseline_hash
 from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
@@ -743,12 +743,16 @@ class Workbench:
 
     @staticmethod
     def _plan_fingerprint(run: RunState) -> str:
+        """Same digest the PLAN gate records as the human-approved baseline.
+
+        Reusing ``hash_artifact`` keeps ``approved_plan_hash`` comparable with
+        ``approved_baseline_hashes["PLAN"]``; a separately formatted digest
+        would never match.
+        """
         plan = run.artifacts.get("plan")
         if not isinstance(plan, dict):
             return ""
-        return hashlib.sha256(
-            json.dumps(plan, sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
+        return hash_artifact(plan)
 
     def _active_grant_for(self, run: RunState, code: str) -> ExecutionGrant | None:
         for grant in reversed(self._grant_cache.get(run.id, [])):
@@ -833,6 +837,10 @@ class Workbench:
         A client cannot set ``legacy`` here; the route schema is
         ``Literal["granted_v1"]``.  Enabling does not make execution ready: the
         safety flag remains server-owned and false until F-05/F-06 land.
+
+        The baseline must already exist as a human-approved record: this path
+        never lets a caller invent hashes for a run that has none, and the plan
+        hash always resolves to the recorded PLAN digest.
         """
         run = self.runs.get(run_id)
         if run is None:
@@ -841,12 +849,28 @@ class Workbench:
         if not hashes:
             raise ValidationFailed("approved_baseline_hashes is required")
         current = run_approved_baseline_hashes(run)
-        if current and current != hashes:
-            raise ValidationFailed("approved_baseline_hashes do not match the run baseline")
-        fingerprint = self._plan_fingerprint(run)
-        if approved_plan_hash and fingerprint and approved_plan_hash != fingerprint:
+        if not current:
+            raise GrantRejected(
+                "baseline_stale",
+                "run has no human-approved baseline hashes yet",
+                status_code=409,
+            )
+        if hashes != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "approved_baseline_hashes do not match the run baseline",
+                status_code=409,
+            )
+        approved_plan = str(current.get("PLAN") or "")
+        if not approved_plan:
+            raise GrantRejected(
+                "baseline_stale",
+                "run has no human-approved PLAN baseline",
+                status_code=409,
+            )
+        if approved_plan_hash and approved_plan_hash != approved_plan:
             raise ValidationFailed("approved_plan_hash does not match the approved plan")
-        resolved_plan_hash = str(approved_plan_hash or fingerprint)
+        resolved_plan_hash = approved_plan
         await self.persist_run_execution_state(
             run_id,
             PROFILE_GRANTED,

@@ -28,8 +28,13 @@ GET  /api/runs/{run_id}/execution-profile
 - legacy run 仍不能通过 `POST /execution-grants` 自升级（403 `profile_not_granted_v1`）。
 - 路由调用 `Workbench.enable_granted_execution()`；该函数校验：
   - run 存在；
-  - hashes 非空，且与 run 当前 approved baseline 一致（否则 409 `baseline_stale`）；
-  - `approved_plan_hash`（若提供）必须等于当前 PLAN 的 sha256；
+  - hashes 非空；
+  - run 已有服务端记录的人批基线（PLAN 门批准时写入）；`current` 为空直接 409 `baseline_stale`，
+    客户端不能替一个尚无人批 hashes 的 run 自选基线；
+  - hashes 必须与 run 当前 approved baseline **完全一致**（包括全部键），否则 409 `baseline_stale`；
+  - 基线必须含 `PLAN`；`approved_plan_hash`（若提供）必须等于该已批准 PLAN 的 sha256，
+    否则 400 `validation_error`；
+  - 解析后的 `approved_plan_hash` 恒取已批准 PLAN 的摘要，不再回落到客户端值；
   - 通过 `persist_run_execution_state()` 写入 SQLite `run_execution_state`，再更新内存并落快照。
 - 该端点只负责“启用 + 持久化”，不设置任何执行安全标志。
 - P1 应用目前没有独立的管理员认证层；此端点是服务端唯一启用入口，客户端只能提交 `granted_v1`
@@ -43,7 +48,7 @@ GET  /api/runs/{run_id}/execution-profile
 | 字段 | 来源 |
 |---|---|
 | `execution_profile` | 固定 `granted_v1` |
-| `approved_plan_hash` | 当前 PLAN artifact 的 sha256 |
+| `approved_plan_hash` | 已批准 PLAN artifact 的 sha256（`hash_artifact`，与 baseline `PLAN` 同值） |
 | `approved_baseline_hashes` | SQLite / run 当前批准基线 |
 | `task_codes` | 匹配的 active Grant scope；尚无 Grant 时为当前 task code |
 | `grant_id` / `feature_branch` | 匹配的 active Grant；无 Grant 时为空 |
@@ -89,12 +94,15 @@ cd Test3/backend && .venv/bin/python -m pytest \
   tests/integration/test_p1_rev08_production_enable_path.py \
   tests/integration/test_execution_grant_api.py \
   tests/e2e/test_granted_v1_sandbox_write.py -v
-# 15 passed
+# 20 passed
 ```
 
 覆盖：
 
 - 只走生产 enable + materialize，得到非空 spec（plan hash / scope / command / tool refs）；
+- 无任何人批基线的 run，enable 返回 409 `baseline_stale`，profile 保持 `legacy`；
+- 客户端自选 hashes、缺少 `PLAN` 键、`approved_plan_hash` 不符，分别被 409 / 400 拒绝；
+- 重复提交同一 enable 幂等（两次 200，基线不变）；
 - 建 Grant 后 spec 绑定 `grant_id`；
 - 端点启用后进程重启仍为 `granted_v1`（依赖 F-02 SQLite）；
 - 客户端提交 legacy 仍 4xx；
@@ -108,11 +116,12 @@ OpenAPI 结构快照已用 `UPDATE_OPENAPI_SNAPSHOT=1` 重生成（新增两条�
 全量非 live：
 
 ```text
-9 failed, 273 passed, 2 deselected
+9 failed, 278 passed, 2 deselected
 ```
 
 剩余 9 条均为后续批次尚未修复的 F-01 红灯：REV-02（2）、REV-03（2）、REV-06（2）、
-REV-07（2）、REV-09（1）。REV-01/04/05/08 已在本批转绿。
+REV-07（2）、REV-09（1）。REV-04/05/08 已在本批转绿；REV-01 的测试在临时总闸下转绿，
+但真实 Grant 边界仍由 F-05 关闭，不能据此认为 REV-01 已修复。
 
 收尾加固：`_restore_execution_profile()` 会把 `conflict` 标记保留到下一次恢复（不会第二次启动自动
 “愈合”）；`_refresh_grant_statuses()` 在人批更新 baseline hashes 后同步写 SQLite，避免制造

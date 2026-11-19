@@ -475,11 +475,10 @@ async def enable_execution_profile(run_id: str, request: Request) -> JSONRespons
             approved_plan_hash=body.approved_plan_hash,
             allowed_tool_refs=body.allowed_tool_refs,
         )
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
     except ValidationFailed as exc:
-        message = str(exc)
-        if "baseline" in message:
-            return _json_error(409, "baseline_stale", message)
-        return _json_error(400, "validation_error", message)
+        return _json_error(400, "validation_error", str(exc))
     return JSONResponse(status_code=200, content=result)
 
 
