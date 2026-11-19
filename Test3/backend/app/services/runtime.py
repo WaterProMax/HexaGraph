@@ -42,7 +42,9 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
+from app.execution.baseline import write_approved_baseline_hash
 from app.execution.grant_policy import grant_stale_reason
+from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
 from app.execution.run_profile import (
     run_approved_baseline_hashes,
@@ -136,6 +138,7 @@ _SNAPSHOT_KINDS = {
     "gate.created",
     "gate.resolved",
     "baseline.frozen",
+    "baseline.hash",
     "stage.started",
     "stage.changed",
     "budget.exceeded",
@@ -608,13 +611,40 @@ class Workbench:
             raise ValidationFailed("run not found")
         set_approved_baseline_hashes(run, hashes)
 
-    async def add_grant(self, grant: ExecutionGrant) -> None:
+    def _grant_lock(self) -> asyncio.Lock:
         if self._grant_write_lock is None:
             self._grant_write_lock = asyncio.Lock()
-        async with self._grant_write_lock:
+        return self._grant_write_lock
+
+    async def add_grant(self, grant: ExecutionGrant) -> None:
+        async with self._grant_lock():
             async with self.db_session() as session:
                 await GrantRepo(session).add(grant)
                 await session.commit()
+
+    def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
+        digest = write_approved_baseline_hash(run, key, value)
+        self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
+        return digest
+
+    async def _refresh_grant_statuses(self, run: RunState) -> None:
+        """Mark only active grants whose baseline hashes actually changed."""
+        if run_execution_profile(run) != "granted_v1":
+            return
+        hashes = run_approved_baseline_hashes(run)
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                repo = GrantRepo(session)
+                changed = False
+                for grant in await repo.list_for_run(run.id):
+                    if grant.status != "active":
+                        continue
+                    updated = refresh_grant_status(grant, approved_baseline_hashes=hashes)
+                    if updated.status != grant.status:
+                        await repo.update_status(grant.grant_id, updated.status)
+                        changed = True
+                if changed:
+                    await session.commit()
 
     async def grants_for_run(self, run_id: str) -> list[ExecutionGrant]:
         async with self.db_session() as session:
@@ -1169,6 +1199,10 @@ class Workbench:
         if kind == "初步做法确认":
             if decision != "approve":
                 return await self.start_idea(run)
+            self._record_approved_baseline(
+                run, "REQUIREMENT", {"idea": run.idea, "idea_card": run.artifacts.get("idea_card") or {}}
+            )
+            await self._refresh_grant_statuses(run)
             run.engine.apply("idea_confirmed")
             return await self.run_discussion_step(run)
         if kind == "争议清单查看与裁决":
@@ -1191,6 +1225,8 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["spec_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_spec(run)
+            self._record_approved_baseline(run, "SPEC", run.artifacts.get("spec") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "SPEC")
             run.engine.apply("spec_confirmed")
             return await self.run_design(run)
@@ -1207,6 +1243,8 @@ class Workbench:
                     }
                 run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_design(run)
+            self._record_approved_baseline(run, "DESIGN", run.artifacts.get("design") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "DESIGN")
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "design_confirmed"
@@ -1216,6 +1254,8 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
+            self._record_approved_baseline(run, "PLAN", run.artifacts.get("plan") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "PLAN")
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "plan_confirmed"

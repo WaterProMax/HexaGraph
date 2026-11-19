@@ -147,3 +147,45 @@ curl -sS -D - -X POST http://127.0.0.1:<port>/api/runs/<granted-ok>/schedule -H 
 ```
 
 legacy 回归文件：P0 指定的 `tests/e2e/test_m1_study_room.py` 实际存在并已运行；另跑 `tests/e2e/test_schedule_dependencies.py`、`tests/e2e/test_must_fixes.py`。无 deepseek 守卫 diff，无 live 模型调用。
+
+## P1-T05 · 批准写入 approved_baseline_hashes 与 grant 刷新
+
+修改/新增：
+
+- `[NEW] Test3/backend/app/execution/baseline.py`：`canonical_artifact_bytes` / `hash_artifact` / `write_approved_baseline_hash`（sha256，bytes 原样、dict 用排序紧凑 JSON）。
+- `[NEW] Test3/backend/app/execution/grant_refresh.py`：`refresh_grant_status` 只在 `grant_stale_reason` 返回 `baseline_changed:*` 时标 `stale`。
+- `[MODIFY] Test3/backend/app/services/runtime.py`：`resolve_gate` 人批成功时先写 hash、刷新 active grant，再 `_freeze`；新增 `baseline.hash` 事件并纳入快照持久化；`_refresh_grant_statuses` 与 `add_grant` 共用 `_grant_write_lock`。未改退休拒绝、legacy 调度与任务状态迁移入口。
+- `[NEW] Test3/backend/tests/unit/test_grant_refresh.py`
+- `[NEW] Test3/backend/tests/integration/test_resolve_gate_baseline_hashes.py`
+
+Hash key 登记表（P4/P5 必须复用同一字符串）：
+
+| key | 写入时机 | 哈希内容 |
+|---|---|---|
+| `REQUIREMENT` | “初步做法确认” approve | `{"idea": run.idea, "idea_card": ...}` 的 canonical JSON |
+| `SPEC` | “SPEC基线确认” approve | `run.artifacts["spec"]` canonical JSON |
+| `DESIGN` | “DESIGN基线确认” approve | `run.artifacts["design"]` canonical JSON |
+| `PLAN` | “PLAN基线确认” approve | `run.artifacts["plan"]` canonical JSON |
+| `DecisionPackage` | P4 人工规格门 approve | 由 P4 按同一 helper 写入（P1 不实现） |
+
+行为：
+
+- 批准后 `approved_baseline_hashes[key] == hash_artifact(产物)`；`run.revision` 仍按既有逻辑递增。
+- 仅 `run.revision` 变化不会使 grant stale；产物 hash 变化 → `refresh_grant_status` 返回 `stale`，DB 状态更新，再 schedule 子集得 409 `baseline_stale`。
+- 并发 resolve 由既有 `_gate_lock_for` 串行化：一次 200、一次 400，`run.revision` 只 +1，hash 为完整单次写入值。
+- 无权限 resolve：仓库当前无调用者身份/鉴权层，沿用既有门禁与 gate lock；本卡不新增或削弱鉴权，报告声明未新增权限测试。
+
+实际命令与结果：
+
+```text
+$ cd Test3/backend && uv run pytest tests/unit/test_grant_refresh.py tests/integration/test_resolve_gate_baseline_hashes.py -v
+collected 7 items
+tests/unit/test_grant_refresh.py .....  [71%]
+tests/integration/test_resolve_gate_baseline_hashes.py ..  [100%]
+7 passed in 0.47s
+
+$ cd Test3/backend && uv run pytest tests/e2e/test_m1_study_room.py tests/e2e/test_design_input.py tests/e2e/test_design_input_lifecycle.py tests/e2e/test_later_phases.py tests/e2e/test_deepseek_retired.py -q
+27 passed
+```
+
+`hash_artifact(b"plan-v1") == sha256(b"plan-v1")` 已由单测固定；gate 集成测试用实际 PLAN artifact 对比 `hash_artifact(plan)`。
