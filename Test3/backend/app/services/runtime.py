@@ -31,6 +31,7 @@ from app.docs.checks import (
 from app.errors import (
     AgentOutputError,
     CommandDenied,
+    DeepSeekRetired,
     IllegalTransition,
     ImportInProgress,
     RevisionConflict,
@@ -47,7 +48,6 @@ from app.listening.known import match_known
 from app.listening.mask import hash_author, mask_text
 from app.listening.route import route as route_feedback
 from app.llm.gateway import USAGE_ACCUMULATOR, Gateway
-from app.llm.providers import DeepSeekProvider
 from app.orchestrator.budget import check_budget, tokens_budget
 from app.orchestrator.classify import classify, failure_signature
 from app.orchestrator.control import require_control
@@ -113,6 +113,9 @@ class RunState:
     trace: TraceGraph = field(default_factory=TraceGraph)
     limits: dict[str, Any] = field(default_factory=dict)
     skip_continue: set[str] = field(default_factory=set)
+    # Unknown top-level snapshot keys are kept verbatim so a read-only restore does
+    # not silently drop fields written by an older build.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 _SNAPSHOT_KINDS = {
@@ -165,8 +168,6 @@ class Workbench:
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._schedule_locks: dict[str, asyncio.Lock] = {}
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
-        self._model_stage_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._run_gateways: dict[str, Gateway] = {}
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
         self.schedule_mode = "manual"
@@ -185,8 +186,6 @@ class Workbench:
             self._loop_stop.set()
         for import_task in list(self._import_tasks.values()):
             import_task.cancel()
-        for stage_task in list(self._model_stage_tasks.values()):
-            stage_task.cancel()
         if self._loop_task:
             self._loop_task.cancel()
             try:
@@ -205,6 +204,10 @@ class Workbench:
                 pass
             for run in list(self.runs.values()):
                 if run.paused or run.status in {"done", "terminated"}:
+                    continue
+                # Retired DeepSeek-only runs stay readable but must never re-enter a model call
+                # after a restart, including the first tick after start_loop().
+                if self._is_retired_run(run):
                     continue
                 if run.artifacts.get("plan") and run.tasks:
                     try:
@@ -241,7 +244,7 @@ class Workbench:
         _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
 
     def _serialize_run(self, run: RunState) -> dict[str, Any]:
-        return {
+        payload = {
             "id": run.id,
             "project_id": run.project_id,
             "idea": run.idea,
@@ -269,8 +272,32 @@ class Workbench:
             "limits": run.limits,
             "skip_continue": sorted(run.skip_continue),
         }
+        payload.update(run.extra)
+        return payload
 
     def _deserialize_run(self, data: dict[str, Any]) -> RunState:
+        known = {
+            "id",
+            "project_id",
+            "idea",
+            "status",
+            "revision",
+            "paused",
+            "pending_human",
+            "tokens_used",
+            "engine",
+            "ids",
+            "artifacts",
+            "gates",
+            "events",
+            "tasks",
+            "crs",
+            "feedback",
+            "raw_feedback",
+            "trace",
+            "limits",
+            "skip_continue",
+        }
         run = RunState(
             id=data["id"],
             project_id=data["project_id"],
@@ -289,6 +316,7 @@ class Workbench:
             raw_feedback=data.get("raw_feedback") or [],
             limits=data.get("limits") or copy.deepcopy(self.limits),
             skip_continue=set(data.get("skip_continue") or []),
+            extra={key: value for key, value in data.items() if key not in known},
         )
         engine = data.get("engine") or {}
         run.engine.current = engine.get("current") or "0"
@@ -330,7 +358,9 @@ class Workbench:
             self.runs[run.id] = run
             self._interrupt_stale_import(run)
             if (run.artifacts.get("model_stage") or {}).get("status") == "running":
-                message = "服务重启中断了 DeepSeek 任务分解，未自动生成或执行计划；请人工重试"
+                message = "服务重启中断了模型任务分解，未自动生成或执行计划；请人工重试"
+                if self._is_retired_run(run):
+                    message = "服务重启中断了模型任务分解；该运行使用已下线的 DeepSeek 专用模式，仅支持只读查看，不支持继续调用。"
                 run.artifacts["model_stage"]["status"] = "interrupted"
                 run.artifacts["model_stage"]["error"] = message
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
@@ -515,21 +545,20 @@ class Workbench:
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
 
-    def _provenance(self, mode: str = "existing") -> dict[str, Any]:
+    @staticmethod
+    def _is_retired_run(run: RunState) -> bool:
+        """Historical DeepSeek-only runs remain readable but must not call a model again.
+
+        The snapshot mode is left untouched; nothing is rewritten into DashScope/scripted.
+        """
+        return (run.artifacts.get("provenance") or {}).get("mode") == "deepseek"
+
+    def _reject_retired(self, run: RunState) -> None:
+        if self._is_retired_run(run):
+            raise DeepSeekRetired()
+
+    def _provenance(self) -> dict[str, Any]:
         """区分“计划/文档由谁生成”和“任务如何执行”，供页面与验收记录使用。"""
-        if mode == "deepseek":
-            settings = get_settings()
-            model = settings.deepseek_model
-            return {
-                "generation": "model",
-                "generation_label": f"DeepSeek 真实模型生成（{model}）",
-                "execution": "real_tool",
-                "execution_label": "真实工具执行（受限写集与命令白名单）",
-                "provider": "DeepSeekProvider",
-                "mode": "deepseek",
-                "model": model,
-                "base_url": settings.deepseek_base_url,
-            }
         provider = type(self.gateway.provider).__name__
         model = str(self.models.slots["flagship"].model)
         if provider == "ScriptedProvider":
@@ -558,27 +587,11 @@ class Workbench:
         }
 
     def _gateway_for(self, run: RunState) -> Gateway:
-        if (run.artifacts.get("provenance") or {}).get("mode") != "deepseek":
-            return self.gateway
-        cached = self._run_gateways.get(run.id)
-        if cached is not None:
-            return cached
-        settings = get_settings()
-        source = run.artifacts.get("provenance") or {}
-        model = str(source.get("model") or settings.deepseek_model)
-        base_url = str(source.get("base_url") or settings.deepseek_base_url)
-        models = copy.deepcopy(self.models)
-        models.provider = "deepseek"
-        models.base_url = base_url
-        models.api_key_env = "DEEPSEEK_API_KEY"
-        for slot in models.slots.values():
-            slot.model = model
-            slot.fallback = ""
-            slot.json_mode = True
-            slot.extra_body = {}
-        gateway = Gateway(models, DeepSeekProvider(base_url=base_url), data_dir=self.data_dir / "runs" / run.id)
-        self._run_gateways[run.id] = gateway
-        return gateway
+        # Historical ``mode=deepseek`` snapshots are read-only. Never fall back to
+        # DashScope or scripted here: the caller asked for a model this build no
+        # longer ships, so reject before constructing any client or reading keys.
+        self._reject_retired(run)
+        return self.gateway
 
     def _active_import_run(self, project_id: str) -> RunState | None:
         for run in self.runs.values():
@@ -648,7 +661,7 @@ class Workbench:
         try:
             text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             settings = get_settings()
-            for key in (settings.dashscope_api_key, settings.deepseek_api_key, settings.feedback_hash_key):
+            for key in (settings.dashscope_api_key, settings.feedback_hash_key):
                 if key:
                     text = text.replace(key, "[REDACTED]")
             folder = self.data_dir / "runs" / run.id
@@ -692,6 +705,9 @@ class Workbench:
 
         不生成任务、不调度。校验失败时不写“已确认”的 SPEC/DESIGN，也不建关卡。
         """
+        # Retired dedicated entry: reject before touching settings, disk, or network.
+        if provider == "deepseek":
+            raise DeepSeekRetired()
         errors = design_input_service.validate_input(text)
         if errors:
             raise ValidationFailed("；".join(errors))
@@ -720,7 +736,7 @@ class Workbench:
             "sha256": meta.sha256,
             "text": text,
         }
-        run.artifacts["provenance"] = self._provenance(provider)
+        run.artifacts["provenance"] = self._provenance()
         run.artifacts["design_input_status"] = "importing"
         run.artifacts["design_input_step"] = ""
         run.artifacts["design_input_started_at"] = _iso_utc(started)
@@ -1042,6 +1058,9 @@ class Workbench:
         actor: str = "owner",
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
+        # A human decision can advance into PLAN / rewrite docs / spawn defects.
+        # Reject retired DeepSeek-only runs before mutating any gate state.
+        self._reject_retired(run)
         # 同一运行的关卡裁决串行化：并发重复点击只会有一条进入分支，
         # 后到者看到 gate 已裁决而返回 400，不会重复生成计划/任务。
         async with self._gate_lock_for(run):
@@ -1430,47 +1449,10 @@ class Workbench:
         return sheets
 
     async def run_plan(self, run: RunState) -> dict[str, Any]:
-        if (run.artifacts.get("provenance") or {}).get("mode") != "deepseek":
-            return await self._generate_plan(run)
-        timeout_s = max(1.0, float(get_settings().deepseek_stage_timeout_s))
-        started = float(self.clock())
-        run.artifacts["model_stage"] = {
-            "stage": "PLAN",
-            "status": "running",
-            "started_at": _iso_utc(started),
-            "deadline_at": _iso_utc(started + timeout_s),
-        }
-        current = asyncio.current_task()
-        if current is not None:
-            self._model_stage_tasks[run.id] = current
-        self.emit(run, "model.stage_started", "PLAN", {"timeout_s": timeout_s})
-        try:
-            result = await asyncio.wait_for(self._generate_plan(run), timeout=timeout_s)
-            run.artifacts["model_stage"]["status"] = "completed"
-            return result
-        except TimeoutError:
-            message = "DeepSeek 任务分解超时，未生成可执行计划；可重试或终止运行"
-            run.artifacts["model_stage"]["status"] = "timeout"
-            run.artifacts["model_stage"]["error"] = message
-            self.emit(run, "model.stage_failed", "PLAN", {"category": "timeout", "message": message})
-            return self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "timeout"})
-        except asyncio.CancelledError:
-            run.artifacts["model_stage"]["status"] = "cancelled"
-            if run.status == "terminated":
-                self._persist_snapshot(run)
-                return {"status": "terminated", "stage": run.engine.current}
-            raise
-        except Exception as exc:  # noqa: BLE001
-            category = classify_llm_error(exc) or "invalid_structure"
-            message = user_message_for_error(exc) or user_message_for_category(category) or "DeepSeek 任务分解失败，请检查模型响应"
-            run.artifacts["model_stage"]["status"] = "failed"
-            run.artifacts["model_stage"]["error"] = message
-            run.artifacts["model_stage"]["error_category"] = category
-            self.emit(run, "model.stage_failed", "PLAN", {"category": category, "message": message})
-            return self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": category})
-        finally:
-            if current is not None and self._model_stage_tasks.get(run.id) is current:
-                self._model_stage_tasks.pop(run.id, None)
+        # Retired DeepSeek-only runs must not regenerate PLAN (the former model_stage
+        # path). Reject before any gateway, timeout task, or event is created.
+        self._reject_retired(run)
+        return await self._generate_plan(run)
 
     async def _generate_plan(self, run: RunState) -> dict[str, Any]:
         with self._usage_scope(run):
@@ -1559,6 +1541,8 @@ class Workbench:
         return int(task.get("tokens_used") or 0) >= limit
 
     async def schedule_once(self, run: RunState) -> list[str]:
+        # Direct API callers get the same controlled rejection as the auto loop.
+        self._reject_retired(run)
         # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
         async with self._schedule_lock_for(run):
             return await self._schedule_once_locked(run)
@@ -1998,6 +1982,10 @@ class Workbench:
         actor: str = "owner",
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Retry/resume/takeover can re-enter the model or scheduler. On a retired
+        # DeepSeek-only run they must fail clearly instead of silently using 百炼.
+        if action in {"retry", "resume", "takeover", "submit-takeover"}:
+            self._reject_retired(run)
         task = run.tasks[code]
         if task["revision"] != expected_revision:
             raise RevisionConflict("revision mismatch")
@@ -2055,6 +2043,9 @@ class Workbench:
         if action == "pause":
             run.paused = True
         elif action == "resume":
+            # Resuming a retired DeepSeek-only run would let the loop call the retired
+            # provider; keep it read-only. Pause/terminate stay available.
+            self._reject_retired(run)
             run.paused = False
         elif action == "terminate":
             run.status = "terminated"
@@ -2063,9 +2054,6 @@ class Workbench:
                 generation = int(run.artifacts.get("design_input_generation") or 0)
                 self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
             self._cancel_import_task(run.id)
-            stage_task = self._model_stage_tasks.get(run.id)
-            if stage_task and not stage_task.done():
-                stage_task.cancel()
             for task in run.tasks.values():
                 if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
                     self._set_state(run, task, "cancel", actor=actor)

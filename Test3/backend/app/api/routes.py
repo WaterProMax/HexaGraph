@@ -9,7 +9,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.errors import AgentOutputError, IllegalTransition, ImportInProgress, RevisionConflict, ValidationFailed
+from app.errors import (
+    AgentOutputError,
+    DeepSeekRetired,
+    IllegalTransition,
+    ImportInProgress,
+    RevisionConflict,
+    ValidationFailed,
+)
 from app.events.bus import BUS
 from app.schemas.design_input import DesignRunCreate
 from app.services.runtime import Workbench
@@ -46,6 +53,18 @@ class ConfirmBody(BaseModel):
 
 def wb(request: Request) -> Workbench:
     return request.app.state.workbench
+
+
+def _retired(exc: DeepSeekRetired) -> HTTPException:
+    """Controlled 410: the retired entry never started a request or changed state."""
+    return HTTPException(
+        status_code=410,
+        detail={
+            "category": "deepseek_retired",
+            "summary": exc.message,
+            "message": exc.message,
+        },
+    )
 
 
 @router.get("/health")
@@ -86,6 +105,8 @@ async def create_design_run(project_id: str, body: DesignRunCreate, request: Req
         raise HTTPException(404, "project not found")
     try:
         return await bench.create_design_run(project_id, body.text, body.source, body.title, body.provider)
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
     except ImportInProgress as exc:
         raise HTTPException(
             status_code=409,
@@ -140,6 +161,8 @@ async def resolve_gate(gate_id: str, body: GateResolve, request: Request) -> dic
         raise HTTPException(404, "gate not found")
     try:
         return await bench.resolve_gate(run, gate_id, body.decision, body.payload, expected_revision=body.expected_revision)
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
     except RevisionConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except (AgentOutputError, RuntimeError, ValidationFailed) as exc:
@@ -170,6 +193,8 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
                     return await bench.control_task(
                         run, code, action, body.expected_revision, body.reason, payload=body.payload
                     )
+                except DeepSeekRetired as exc:
+                    raise _retired(exc) from exc
                 except RevisionConflict as exc:
                     raise HTTPException(409, str(exc)) from exc
                 except (IllegalTransition, ValidationFailed) as exc:
@@ -184,7 +209,10 @@ async def pause_run(run_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/runs/{run_id}/resume")
 async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
-    return _run_view(wb(request).set_run_control(_run(request, run_id), "resume"))
+    try:
+        return _run_view(wb(request).set_run_control(_run(request, run_id), "resume"))
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
 
 
 @router.post("/runs/{run_id}/terminate")
@@ -223,12 +251,15 @@ async def trace_impact(run_id: str, codes: str, request: Request) -> dict[str, A
 @router.post("/runs/{run_id}/crs")
 async def submit_cr(run_id: str, body: dict[str, Any], request: Request) -> dict[str, Any]:
     flags = {k: v for k, v in body.items() if k not in {"description", "codes"}}
-    return await wb(request).submit_cr(
-        _run(request, run_id),
-        body.get("description", ""),
-        body.get("codes") or [],
-        **flags,
-    )
+    try:
+        return await wb(request).submit_cr(
+            _run(request, run_id),
+            body.get("description", ""),
+            body.get("codes") or [],
+            **flags,
+        )
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
 
 
 @router.get("/runs/{run_id}/crs")
@@ -245,6 +276,8 @@ async def cr_decision(code: str, body: dict[str, Any], request: Request) -> dict
     body["code"] = code
     try:
         return await bench.decide_cr(run, body)
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
     except RevisionConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except (IllegalTransition, ValidationFailed) as exc:
@@ -258,7 +291,10 @@ async def import_feedback(run_id: str, body: dict[str, Any], request: Request) -
     key = get_settings().feedback_hash_key
     if not key:
         raise HTTPException(400, "FEEDBACK_HASH_KEY required")
-    return await wb(request).import_feedback(_run(request, run_id), body.get("rows") or [], key)
+    try:
+        return await wb(request).import_feedback(_run(request, run_id), body.get("rows") or [], key)
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
 
 
 @router.get("/runs/{run_id}/feedback")
@@ -351,7 +387,10 @@ async def test_models() -> dict[str, Any]:
 
 @router.post("/runs/{run_id}/schedule")
 async def schedule(run_id: str, request: Request) -> dict[str, Any]:
-    started = await wb(request).schedule_once(_run(request, run_id))
+    try:
+        started = await wb(request).schedule_once(_run(request, run_id))
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
     return {"started": started}
 
 
@@ -362,6 +401,8 @@ async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(409, "SPEC not ready; run has no spec artifact yet")
     try:
         return await wb(request).accept(run)
+    except DeepSeekRetired as exc:
+        raise _retired(exc) from exc
     except (IllegalTransition, ValidationFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -374,6 +415,8 @@ def _run(request: Request, run_id: str):
 
 
 def _run_view(run) -> dict[str, Any]:
+    provenance = run.artifacts.get("provenance") or {}
+    retired = provenance.get("mode") == "deepseek"
     return {
         "id": run.id,
         "project_id": run.project_id,
@@ -385,5 +428,12 @@ def _run_view(run) -> dict[str, Any]:
         "gates": run.gates,
         "event_count": len(run.events),
         "origin": "design_spec" if run.artifacts.get("design_input") else "idea",
-        "provenance": run.artifacts.get("provenance") or {},
+        "provenance": provenance,
+        # Read-only compatibility for snapshots captured by the retired DeepSeek
+        # entry. ``provenance.mode`` is returned unchanged; this flag only marks it.
+        "read_only": retired,
+        "retired_mode": "deepseek" if retired else "",
+        "retired_message": (
+            "DeepSeek 专用入口已下线，该历史运行仅支持只读查看，不支持继续调用。" if retired else ""
+        ),
     }

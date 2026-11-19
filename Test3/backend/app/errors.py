@@ -52,6 +52,26 @@ class ConfigError(Test3Error):
     code = "CONFIG_ERROR"
 
 
+DEEPSEEK_RETIRED_MESSAGE = (
+    "DeepSeek 专用入口已下线，未发起请求；该历史运行仅支持只读查看，不支持继续调用。"
+)
+
+
+class DeepSeekRetired(Test3Error):
+    """Raised when a retired DeepSeek-only path would otherwise call a model.
+
+    The message is user-facing and deliberately mentions that no request was sent.
+    Historical snapshots keep ``provenance.mode == "deepseek"``; callers must not
+    rewrite them into another provider/mode.
+    """
+
+    code = "DEEPSEEK_RETIRED"
+
+    def __init__(self, message: str = DEEPSEEK_RETIRED_MESSAGE) -> None:
+        super().__init__(message)
+        self.category = "deepseek_retired"
+
+
 class RevisionConflict(Test3Error):
     code = "REVISION_CONFLICT"
 

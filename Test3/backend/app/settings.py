@@ -54,13 +54,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(ROOT / ".env"), extra="ignore")
 
     dashscope_api_key: str = ""
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-flash"
-    deepseek_timeout_s: float = 120.0
-    deepseek_stage_timeout_s: float = 600.0
-    # 任务图 JSON 常超过 8192 token；DeepSeek 接口接受更大上限，默认放到 16384。
-    deepseek_max_tokens: int = 16384
     # 本机 shell 常导出 all_proxy=http(s):// 或 socks5h://；httpx 默认读取这些变量，
     # 未安装 socksio 时会在建连接前直接报 ImportError。本地工作台默认直连，
     # 确需走代理时在 .env 设 TEST3_HTTP_TRUST_ENV=1。

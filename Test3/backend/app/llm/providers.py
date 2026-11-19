@@ -109,131 +109,6 @@ class ScriptedProvider:
         return [[float((sum(ord(c) for c in t) + i) % 13) for i in range(8)] for t in texts]
 
 
-class DeepSeekProvider:
-    """DeepSeek official OpenAI-compatible API, isolated per real-model run."""
-
-    def __init__(self, *, base_url: str | None = None) -> None:
-        settings = get_settings()
-        self.api_key = settings.deepseek_api_key.strip()
-        self.base_url = (base_url if base_url is not None else settings.deepseek_base_url).strip().rstrip("/")
-        self.timeout_s = max(1.0, float(settings.deepseek_timeout_s))
-        self.max_tokens = max(1024, int(settings.deepseek_max_tokens))
-        self.trust_env = bool(settings.test3_http_trust_env)
-
-    async def complete(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
-        if not self.api_key:
-            raise AgentOutputError(
-                "未配置 DeepSeek API Key，请在 Test3/.env 填写 DEEPSEEK_API_KEY",
-                category="auth",
-            )
-        if not self.base_url:
-            raise AgentOutputError("未配置 DEEPSEEK_BASE_URL", category="connection")
-        model = str(kwargs.get("model") or get_settings().deepseek_model)
-        validate_tool_protocol(messages, kwargs.get("tools"))
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": int(kwargs.get("max_tokens") or self.max_tokens),
-        }
-        for key in ("temperature", "max_tokens", "tools", "tool_choice"):
-            if key in kwargs and kwargs[key] is not None:
-                body[key] = kwargs[key]
-        if not kwargs.get("tools"):
-            body["response_format"] = {"type": "json_object"}
-        if kwargs.get("extra_body"):
-            body.update(kwargs["extra_body"])
-        started = time.perf_counter()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout_s, trust_env=self.trust_env) as client:
-                resp = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                    json=body,
-                )
-                if resp.status_code >= 400:
-                    self._raise_http_error(resp)
-                data = resp.json()
-        except AgentOutputError:
-            raise
-        except httpx.TimeoutException as exc:
-            raise AgentOutputError("DeepSeek 请求超时，请稍后重试", category="timeout") from exc
-        except httpx.HTTPError as exc:
-            raise AgentOutputError("无法连接 DeepSeek，请检查网络与 Base URL", category="connection") from exc
-        except (ValueError, KeyError, TypeError) as exc:
-            raise AgentOutputError("DeepSeek 返回了无法读取的响应", category="invalid_structure") from exc
-
-        try:
-            first = data["choices"][0]
-            choice = first["message"]
-            finish_reason = str(first.get("finish_reason") or "")
-            text = choice.get("content") or ""
-            calls: list[dict[str, Any]] = []
-            for index, item in enumerate(choice.get("tool_calls") or []):
-                raw_args = item["function"].get("arguments") or "{}"
-                try:
-                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-                except json.JSONDecodeError:
-                    arguments = {}
-                calls.append(
-                    {
-                        "id": str(item.get("id") or f"call_{index}"),
-                        "type": item.get("type") or "function",
-                        "name": item["function"]["name"],
-                        "arguments": arguments,
-                    }
-                )
-            try:
-                parsed = json.loads(text) if text else None
-            except json.JSONDecodeError:
-                parsed = None
-            usage = data.get("usage") or {}
-            return LLMResult(
-                text=text,
-                parsed=parsed,
-                tool_calls=calls,
-                tokens_in=int(usage.get("prompt_tokens") or 0),
-                tokens_out=int(usage.get("completion_tokens") or 0),
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                model=str(data.get("model") or model),
-                finish_reason=finish_reason,
-                raw=data,
-            )
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise AgentOutputError("DeepSeek 响应缺少有效的 message 或 usage", category="invalid_structure") from exc
-
-    def _raise_http_error(self, resp: httpx.Response) -> None:
-        category = {
-            400: "invalid_structure",
-            401: "auth",
-            403: "auth",
-            402: "rate_limit",
-            404: "invalid_structure",
-            408: "timeout",
-            429: "rate_limit",
-        }.get(resp.status_code, "connection" if resp.status_code >= 500 else "invalid_structure")
-        try:
-            payload = resp.json()
-            detail = str((payload.get("error") or {}).get("message") or "")
-        except (ValueError, AttributeError):
-            detail = ""
-        if self.api_key:
-            detail = detail.replace(self.api_key, "[REDACTED]")
-        messages = {
-            "auth": "DeepSeek 认证失败，请检查 DEEPSEEK_API_KEY",
-            "rate_limit": "DeepSeek 余额不足或请求受限，请检查账户与限流状态",
-            "timeout": "DeepSeek 请求超时，请稍后重试",
-            "connection": "DeepSeek 服务暂时不可用，请稍后重试",
-            "invalid_structure": "DeepSeek 请求未被接受，请检查模型名、Base URL 与请求参数",
-        }
-        suffix = f"（{detail[:240]}）" if detail else ""
-        error = AgentOutputError(messages[category] + suffix, category=category)
-        setattr(error, "status_code", resp.status_code)
-        raise error
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        raise AgentOutputError("DeepSeek 真实运行未启用 embedding 阶段", category="invalid_structure")
-
-
 class ReplayProvider:
     def __init__(self, folder: Path) -> None:
         self.folder = folder
@@ -285,8 +160,8 @@ class DashScopeProvider:
             # 【修改点】没有密钥时显式报错，不要带 "missing" 去发请求
             if not key:
                 raise AgentOutputError("模型配置或凭据不可用", category="auth")
-            # 与 DeepSeekProvider 一致：默认不继承 shell 里的 http(s)_proxy / all_proxy，
-            # 避免 socks5h:// 未装 socksio 时在建连接前就失败。
+            # Default to a direct connection: do not inherit shell http(s)_proxy / all_proxy,
+            # so a socks5h:// proxy without socksio cannot fail before the request is built.
             self._client = AsyncOpenAI(
                 base_url=self.models.base_url,
                 api_key=key,

@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from app.errors import ReplayMissing, classified_llm_error, classify_llm_error
+from app.errors import ConfigError, ReplayMissing, classified_llm_error, classify_llm_error
 from app.llm.providers import DashScopeProvider, ReplayProvider, ScriptedProvider
 from app.llm.types import LLMResult
 from app.settings import ModelsFile, get_settings
@@ -132,17 +132,24 @@ def _retryable(exc: Exception) -> bool:
 def _redact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     settings = get_settings()
     blob = json.dumps(messages, ensure_ascii=False)
-    for key in (settings.dashscope_api_key, settings.deepseek_api_key):
-        if key:
-            blob = blob.replace(key, "[REDACTED]")
+    if settings.dashscope_api_key:
+        blob = blob.replace(settings.dashscope_api_key, "[REDACTED]")
     return json.loads(blob)
 
 
 def build_provider(kind: str, models: ModelsFile, replay_dir: Path | None = None, queue: list[Any] | None = None) -> Any:
+    """Build one of the supported providers.
+
+    Unknown kinds -- including a persisted/configured ``deepseek`` kind -- must not
+    silently fall back to DashScope or scripted. The retired dedicated provider is
+    rejected explicitly so a stale setting cannot turn into a real model call.
+    """
     if kind == "scripted":
         return ScriptedProvider(queue)
     if kind == "replay":
         if not replay_dir:
             raise ReplayMissing("replay dir required")
         return ReplayProvider(replay_dir)
-    return DashScopeProvider(models)
+    if kind == "dashscope":
+        return DashScopeProvider(models)
+    raise ConfigError(f"unsupported TEST3_LLM_PROVIDER: {kind}")
