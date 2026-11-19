@@ -48,12 +48,21 @@ from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
 from app.execution.isolated import WriteSpec, execute_task_granted
 from app.execution.run_profile import (
+    PROFILE_CONFLICT,
+    PROFILE_GRANTED,
+    PROFILE_LEGACY,
+    PROFILE_UNSPECIFIED,
     run_approved_baseline_hashes,
     run_execution_profile,
     set_approved_baseline_hashes,
 )
 from app.execution.run_profile import (
     set_run_execution_profile as _apply_run_execution_profile,
+)
+from app.execution.run_state_store import (
+    RunExecutionState,
+    RunExecutionStateRepo,
+    read_run_execution_state,
 )
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
@@ -132,6 +141,9 @@ class RunState:
     # Unknown top-level snapshot keys are kept verbatim so a read-only restore does
     # not silently drop fields written by an older build.
     extra: dict[str, Any] = field(default_factory=dict)
+    # SQLite is the authority for these two; artifacts is only a compatibility copy.
+    execution_profile: str = ""
+    approved_baseline_hashes: dict[str, str] = field(default_factory=dict)
 
 
 _SNAPSHOT_KINDS = {
@@ -140,6 +152,7 @@ _SNAPSHOT_KINDS = {
     "gate.resolved",
     "baseline.frozen",
     "baseline.hash",
+    "execution_profile.changed",
     "stage.started",
     "stage.changed",
     "budget.exceeded",
@@ -195,6 +208,7 @@ class Workbench:
         self._db_ready = False
         self._db_lock: asyncio.Lock | None = None
         self._grant_write_lock: asyncio.Lock | None = None
+        self._grant_cache: dict[str, list[ExecutionGrant]] = {}
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -295,6 +309,8 @@ class Workbench:
             "trace": run.trace.links,
             "limits": run.limits,
             "skip_continue": sorted(run.skip_continue),
+            "execution_profile": run.execution_profile,
+            "approved_baseline_hashes": run.approved_baseline_hashes,
         }
         payload.update(run.extra)
         return payload
@@ -321,6 +337,8 @@ class Workbench:
             "trace",
             "limits",
             "skip_continue",
+            "execution_profile",
+            "approved_baseline_hashes",
         }
         run = RunState(
             id=data["id"],
@@ -341,6 +359,13 @@ class Workbench:
             limits=data.get("limits") or copy.deepcopy(self.limits),
             skip_continue=set(data.get("skip_continue") or []),
             extra={key: value for key, value in data.items() if key not in known},
+            execution_profile=str(data.get("execution_profile") or ""),
+            approved_baseline_hashes={
+                str(key): str(value)
+                for key, value in (data.get("approved_baseline_hashes") or {}).items()
+            }
+            if isinstance(data.get("approved_baseline_hashes"), dict)
+            else {},
         )
         engine = data.get("engine") or {}
         run.engine.current = engine.get("current") or "0"
@@ -350,6 +375,14 @@ class Workbench:
         run.engine.history = list(engine.get("history") or [])
         run.ids = IdAllocator(data.get("ids") or {})
         run.trace.links = list(data.get("trace") or [])
+        if not run.execution_profile:
+            raw_profile = run.artifacts.get("execution_profile")
+            if raw_profile in (PROFILE_LEGACY, PROFILE_GRANTED):
+                run.execution_profile = str(raw_profile)
+        if not run.approved_baseline_hashes:
+            raw_hashes = run.artifacts.get("approved_baseline_hashes")
+            if isinstance(raw_hashes, dict):
+                run.approved_baseline_hashes = {str(key): str(value) for key, value in raw_hashes.items()}
         return run
 
     def restore_runs(self) -> None:
@@ -374,6 +407,7 @@ class Workbench:
             run = self._deserialize_run(data)
             if events:
                 run.events = events
+            self._restore_execution_profile(run, data)
             self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
             repo = run_dir / "repo"
@@ -389,6 +423,53 @@ class Workbench:
                 run.artifacts["model_stage"]["error"] = message
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
+
+    def _restore_execution_profile(self, run: RunState, data: dict[str, Any]) -> None:
+        """Apply SQLite authority after a snapshot/events restore.
+
+        A corrupt or missing snapshot must never downgrade a granted run to
+        legacy.  A missing profile is ``unspecified``; contradictory evidence is
+        ``conflict``; both fail closed in scheduling and execution.
+        """
+        db_state = read_run_execution_state(self.db_path, run.id)
+        artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+        snapshot_profile = str(data.get("execution_profile") or artifacts.get("execution_profile") or "")
+        snapshot_hashes = data.get("approved_baseline_hashes") or artifacts.get("approved_baseline_hashes") or {}
+        if db_state is not None:
+            profile = db_state.execution_profile
+            hashes = dict(db_state.approved_baseline_hashes)
+            if profile == PROFILE_CONFLICT:
+                resolved = PROFILE_CONFLICT
+            elif snapshot_profile in (PROFILE_LEGACY, PROFILE_GRANTED) and snapshot_profile != profile:
+                resolved = PROFILE_CONFLICT
+            elif (
+                profile == PROFILE_GRANTED
+                and isinstance(snapshot_hashes, dict)
+                and snapshot_hashes
+                and {str(k): str(v) for k, v in snapshot_hashes.items()} != hashes
+            ):
+                resolved = PROFILE_CONFLICT
+            else:
+                resolved = profile
+        elif snapshot_profile == PROFILE_GRANTED:
+            # Residual JSON cannot make a run granted without the SQLite authority.
+            resolved = PROFILE_CONFLICT
+            hashes = {}
+        elif snapshot_profile == PROFILE_LEGACY:
+            resolved = PROFILE_LEGACY
+            hashes = {}
+        else:
+            resolved = PROFILE_UNSPECIFIED
+            hashes = {}
+        run.execution_profile = resolved
+        run.approved_baseline_hashes = hashes if resolved == PROFILE_GRANTED else {}
+        if resolved in (PROFILE_LEGACY, PROFILE_GRANTED):
+            run.artifacts["execution_profile"] = resolved
+            if resolved == PROFILE_GRANTED:
+                run.artifacts["approved_baseline_hashes"] = dict(hashes)
+        else:
+            run.artifacts.pop("execution_profile", None)
+            run.artifacts.pop("approved_baseline_hashes", None)
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -564,6 +645,9 @@ class Workbench:
         self._prepare_scripted()
         rid = str(uuid.uuid4())
         run = RunState(id=rid, project_id=project_id, idea=idea, limits=copy.deepcopy(self.limits))
+        # New runs are explicitly legacy server-side.  A missing profile is not a
+        # legacy default: restored runs without any evidence resolve unspecified.
+        run.execution_profile = PROFILE_LEGACY
         self.runs[rid] = run
         run.artifacts["idea_raw"] = idea
         self.emit(run, "stage.started", "0", {"idea": idea})
@@ -612,6 +696,42 @@ class Workbench:
             raise ValidationFailed("run not found")
         set_approved_baseline_hashes(run, hashes)
 
+    async def persist_run_execution_state(
+        self,
+        run_id: str,
+        profile: str,
+        approved_baseline_hashes: dict[str, str],
+        *,
+        approved_plan_hash: str = "",
+        allowed_tool_refs: list[str] | None = None,
+    ) -> None:
+        """Persist the authoritative profile/hashes; server-side callers only."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        if profile not in (PROFILE_LEGACY, PROFILE_GRANTED):
+            raise ValidationFailed(f"unknown execution profile: {profile}")
+        state = RunExecutionState(
+            run_id=run_id,
+            execution_profile=profile,
+            approved_baseline_hashes={str(key): str(value) for key, value in approved_baseline_hashes.items()},
+            approved_plan_hash=str(approved_plan_hash or ""),
+            allowed_tool_refs=tuple(str(item) for item in (allowed_tool_refs or [])),
+        )
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                await RunExecutionStateRepo(session).upsert(state)
+                await session.commit()
+        run.execution_profile = profile
+        set_approved_baseline_hashes(run, state.approved_baseline_hashes)
+        run.artifacts["execution_profile"] = profile
+        self.emit(
+            run,
+            "execution_profile.changed",
+            run_id,
+            {"profile": profile, "hashes": state.approved_baseline_hashes, "plan_hash": state.approved_plan_hash},
+        )
+
     def _grant_lock(self) -> asyncio.Lock:
         if self._grant_write_lock is None:
             self._grant_write_lock = asyncio.Lock()
@@ -622,6 +742,7 @@ class Workbench:
             async with self.db_session() as session:
                 await GrantRepo(session).add(grant)
                 await session.commit()
+        self._grant_cache.setdefault(grant.run_id, []).append(grant)
 
     def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
         digest = write_approved_baseline_hash(run, key, value)
@@ -829,6 +950,8 @@ class Workbench:
             idea=title or source.name or "设计规格导入",
             limits=copy.deepcopy(self.limits),
         )
+        # Design-spec runs are ordinary legacy runs until a server-side enable.
+        run.execution_profile = PROFILE_LEGACY
         self.runs[rid] = run
         # 整理期间只标记当前阶段；SPEC 的历史推进必须等导入和检查成功。
         run.engine.current = "5"
@@ -1662,8 +1785,12 @@ class Workbench:
         ``legacy`` returns ``None`` immediately: legacy schedule behavior must
         stay byte-for-byte compatible and must never ask for a grant.
         """
-        if run_execution_profile(run) != "granted_v1":
+        profile = run_execution_profile(run)
+        if profile == PROFILE_LEGACY:
             return None
+        if profile != PROFILE_GRANTED:
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
         grants = await self.grants_for_run(run.id)
         if not grants:
             raise GrantRejected("grant_required", "granted_v1 run has no execution grant", status_code=403)
@@ -1751,6 +1878,10 @@ class Workbench:
         return started
 
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
+        profile = run_execution_profile(run)
+        if profile in (PROFILE_UNSPECIFIED, PROFILE_CONFLICT):
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
         if run.status == "terminated":

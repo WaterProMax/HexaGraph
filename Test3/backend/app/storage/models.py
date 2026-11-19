@@ -237,3 +237,21 @@ class ExecutionGrantRow(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="active")
     payload: Mapped[str] = mapped_column(Text)
+
+
+class RunExecutionStateRow(Base):
+    """SQLite authority for a run's execution profile and approved hashes.
+
+    Runs are still restored from JSON snapshots for legacy compatibility, but the
+    execution profile / baseline hashes for granted runs must come from this
+    table.  A missing row is *unspecified*, never an implicit legacy downgrade.
+    """
+
+    __tablename__ = "run_execution_state"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_profile: Mapped[str] = mapped_column(String, nullable=False)
+    approved_baseline_hashes: Mapped[str] = mapped_column(Text, default="{}")
+    approved_plan_hash: Mapped[str] = mapped_column(String, default="")
+    allowed_tool_refs: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -90,3 +90,52 @@ async def test_legacy_run_stays_legacy_and_events_are_not_rewritten(tmp_path: Pa
         assert events_path.read_text(encoding="utf-8") == before
     finally:
         await restored_bench.close()
+
+@pytest.mark.asyncio
+async def test_unspecified_profile_fails_closed_on_schedule(tmp_path: Path) -> None:
+    from app.errors import GrantRejected
+
+    bench = make_bench(tmp_path)
+    project = bench.create_project("p1-rev04")
+    run = bench.create_run(project["id"], "idea")
+    install_plan(bench, run, ["T-01"])
+    run.artifacts.pop("execution_profile", None)
+    run.execution_profile = ""
+    bench._persist_snapshot(run)
+    await bench.close()
+
+    restored_bench = make_bench(tmp_path)
+    try:
+        restored = restored_bench.runs[run.id]
+        with pytest.raises(GrantRejected) as excinfo:
+            await restored_bench.schedule_once(restored, task_codes={"T-01"})
+        assert excinfo.value.category == "profile_unspecified"
+    finally:
+        await restored_bench.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_and_snapshot_conflict_fails_closed(tmp_path: Path) -> None:
+    import json
+
+    from app.errors import GrantRejected
+
+    bench, run = await _prepared(tmp_path)
+    run_id = run.id
+    await bench.close()
+
+    snapshot = tmp_path / "runs" / run_id / "snapshot.json"
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    data["execution_profile"] = "legacy"
+    data.setdefault("artifacts", {})["execution_profile"] = "legacy"
+    snapshot.write_text(json.dumps(data), encoding="utf-8")
+
+    restored_bench = make_bench(tmp_path)
+    try:
+        restored = restored_bench.runs[run_id]
+        assert run_execution_profile(restored) == "conflict"
+        with pytest.raises(GrantRejected) as excinfo:
+            await restored_bench.schedule_once(restored, task_codes={"T-01"})
+        assert excinfo.value.category == "profile_conflict"
+    finally:
+        await restored_bench.close()
