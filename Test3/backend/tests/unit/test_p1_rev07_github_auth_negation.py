@@ -167,8 +167,21 @@ def test_rejected_records_never_reach_git_or_gh(tmp_path: Path) -> None:
         assert auth is None, text
         runner = _ExplodingRunner()
         with pytest.raises(GitHubWriteDenied):
-            push_once(auth, marker_path=tmp_path / "marker.json", workspace=tmp_path, runner=runner)
+            push_once(
+                auth=auth,
+                grant=None,
+                run_id="run-1",
+                marker_path=tmp_path / "marker.json",
+                workspace=tmp_path,
+                runner=runner,
+            )
         with pytest.raises(GitHubWriteDenied):
-            create_pr_idempotent(auth, workspace=tmp_path, runner=runner)
+            create_pr_idempotent(
+                auth=auth,
+                grant=None,
+                run_id="run-1",
+                workspace=tmp_path,
+                runner=runner,
+            )
         assert runner.calls == []
     assert not (tmp_path / "marker.json").exists()
