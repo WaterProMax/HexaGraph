@@ -59,8 +59,16 @@ def _granted_spec(run, code: str) -> dict:
     return spec
 
 
-async def _add_grant(bench, run, codes: list[str], plan_hash: str, *, status: str = "active"):
-    grant = make_grant(run.id, codes, status=status, hashes={"PLAN": plan_hash})
+async def _add_grant(
+    bench,
+    run,
+    codes: list[str],
+    plan_hash: str,
+    *,
+    status: str = "active",
+    tool_refs: list[str] | None = None,
+):
+    grant = make_grant(run.id, codes, status=status, hashes={"PLAN": plan_hash}, allowed_tool_refs=tool_refs)
     await bench.add_grant(grant)
     return grant
 
@@ -246,7 +254,7 @@ async def test_authorized_subset_runs_continuously_across_revisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bench, run, plan_hash = await _prepared(tmp_path, ["T-01", "T-02"])
-    await _add_grant(bench, run, ["T-01", "T-02"], plan_hash)
+    await _add_grant(bench, run, ["T-01", "T-02"], plan_hash, tool_refs=["python -m pytest"])
     calls: list[str] = []
 
     async def fake_worker(run_id, task_code, grant, **_kwargs):

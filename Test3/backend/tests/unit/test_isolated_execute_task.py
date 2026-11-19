@@ -29,7 +29,7 @@ def _grant(feature_branch: str = "feat/p1-demo") -> ExecutionGrant:
         repo_name="HexaGraph",
         base_branch="teamwork-001",
         feature_branch=feature_branch,
-        allowed_tool_refs=[],
+        allowed_tool_refs=["python -m pytest"],
         created_at="2026-11-19T00:00:00+00:00",
     )
 
@@ -57,11 +57,13 @@ async def test_failing_offline_test_is_not_success(iso: Path) -> None:
         pytest.skip(f"no isolation backend on this host: {preflight.reason}")
     result = await execute_task_granted(
         "run-1",
-        "T-02",
+        "T-01",
         _grant(),
         isolation_root=iso,
         writes=[WriteSpec("tests/test_fail.py", "def test_fail():\n    assert False\n")],
         test_command=["python", "-m", "pytest", "tests/test_fail.py", "-q"],
+        tool_refs=["python -m pytest"],
+        whitelist=["python -m pytest"],
     )
     assert result.exit_code != 0
     assert result.evidence["ok"] is False

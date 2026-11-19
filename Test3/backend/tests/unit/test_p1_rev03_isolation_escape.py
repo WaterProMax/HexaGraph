@@ -21,7 +21,7 @@ from app.execution.isolation import IsolationPreflight
 from app.schemas.execution_grant import ExecutionGrant
 
 
-def _grant() -> ExecutionGrant:
+def _grant(tool_refs: list[str] | None = None) -> ExecutionGrant:
     return ExecutionGrant(
         grant_id="G-1",
         run_id="run-1",
@@ -33,7 +33,7 @@ def _grant() -> ExecutionGrant:
         repo_name="HexaGraph",
         base_branch="teamwork-001",
         feature_branch="feat/p1-demo",
-        allowed_tool_refs=[],
+        allowed_tool_refs=list(tool_refs or ["python -m pytest"]),
         created_at="2026-11-19T00:00:00+00:00",
     )
 
@@ -78,10 +78,12 @@ async def test_evidence_symlink_cannot_redirect_writes(
     result = await execute_task_granted(
         "run-1",
         "T-01",
-        _grant(),
+        _grant(["python -c"]),
         isolation_root=root,
         writes=[],
         test_command=["python", "-c", "print('ok')"],
+        tool_refs=["python -c"],
+        whitelist=["python -c"],
     )
     log_path = Path(result.log_path)
     evidence_path = Path(result.evidence_path)
@@ -113,11 +115,12 @@ async def test_whitelisted_pytest_cannot_write_absolute_outside_path(tmp_path: P
     )
     await execute_task_granted(
         "run-1",
-        "T-02",
-        _grant(),
+        "T-01",
+        _grant(["python -m pytest"]),
         isolation_root=root,
         writes=[],
         test_command=["python", "-m", "pytest", "tests/test_escape.py", "-q"],
         whitelist=["python -m pytest"],
+        tool_refs=["python -m pytest"],
     )
     assert not outside.exists()

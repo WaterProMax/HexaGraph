@@ -15,11 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.errors import CommandDenied, EvidenceWriteFailed, IsolationUnavailable, WriteDenied
+from app.errors import EvidenceWriteFailed, GrantRejected, IsolationUnavailable, WriteDenied
 from app.execution import evidence as evidence_store
 from app.execution.isolation import preflight_isolation, run_isolated
+from app.execution.tool_policy import DEFAULT_PLATFORM_WHITELIST, authorize_granted_command
 from app.schemas.execution_grant import ExecutionGrant
-from app.tools.sandbox import command_allowed, in_write_set, normalize_under
+from app.tools.sandbox import in_write_set, normalize_under
 
 _SENSITIVE_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _MIN_SECRET_LENGTH = 8
@@ -154,6 +155,8 @@ async def execute_task_granted(
     env_allow: list[str] | None = None,
     timeout: int = 600,
     secret_refs: list[str] | None = None,
+    tool_refs: list[str] | None = None,
+    spec_command: list[str] | None = None,
 ) -> CommandResult:
     """Write files and run one offline command inside a preflighted container.
 
@@ -161,14 +164,34 @@ async def execute_task_granted(
     branch); this function does not push, commit or call GitHub.  When no
     isolation backend passes preflight the call raises ``IsolationUnavailable``
     before writing files or starting any process.
+
+    The command must be authorized by the platform policy, the Grant's
+    ``allowed_tool_refs`` and the materialized spec's ``tool_refs`` before any
+    write or process exists (F-08).
     """
+    if grant.run_id != run_id:
+        raise GrantRejected(
+            "grant_binding_mismatch",
+            f"execution grant belongs to run {grant.run_id}, not {run_id}",
+            status_code=409,
+        )
+    if task_code not in grant.task_codes:
+        raise GrantRejected(
+            "scope_mismatch",
+            f"task {task_code} is outside the grant scope",
+            status_code=409,
+        )
+    platform_refs = list(whitelist) if whitelist is not None else list(DEFAULT_PLATFORM_WHITELIST)
+    argv = authorize_granted_command(
+        test_command or [],
+        grant_tool_refs=grant.allowed_tool_refs,
+        spec_tool_refs=tool_refs or [],
+        platform_whitelist=platform_refs,
+        expected_command=spec_command,
+    )
     root = isolation_root.resolve()
     if not root.exists():
         raise WriteDenied(f"isolation root missing: {root}")
-    argv = list(test_command or ["python", "-m", "pytest", "-q", "-m", "not live"])
-    allowed = list(whitelist or ["python", "python3", "uv", "python -m pytest"])
-    if not command_allowed(argv, allowed, []):
-        raise CommandDenied(f"命令不在白名单: {argv}")
     # Pure validation first: a bad path never reaches the isolation probe.
     validate_writes(root, writes, write_set)
     preflight = preflight_isolation()

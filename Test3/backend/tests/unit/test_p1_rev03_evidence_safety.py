@@ -23,7 +23,7 @@ from app.execution.isolation import IsolationPreflight
 from app.schemas.execution_grant import ExecutionGrant
 
 
-def _grant() -> ExecutionGrant:
+def _grant(tool_refs: list[str] | None = None) -> ExecutionGrant:
     return ExecutionGrant(
         grant_id="G-1",
         run_id="run-1",
@@ -35,7 +35,7 @@ def _grant() -> ExecutionGrant:
         repo_name="HexaGraph",
         base_branch="teamwork-001",
         feature_branch="feat/p1-demo",
-        allowed_tool_refs=[],
+        allowed_tool_refs=list(tool_refs or ["python -c"]),
         created_at="2026-11-19T00:00:00+00:00",
     )
 
@@ -204,6 +204,8 @@ async def test_worker_writes_evidence_through_safe_writer(
         isolation_root=root,
         writes=[],
         test_command=["python", "-c", "print('ok')"],
+        tool_refs=["python -c"],
+        whitelist=["python -c"],
     )
     log_path = Path(result.log_path)
     evidence_path = Path(result.evidence_path)
@@ -254,6 +256,8 @@ async def test_worker_raises_instead_of_returning_success_when_evidence_write_fa
             isolation_root=root,
             writes=[],
             test_command=["python", "-c", "print('ok')"],
+            tool_refs=["python -c"],
+            whitelist=["python -c"],
         )
     assert created, "worker never reached the evidence writer"
     assert all(not directory.exists() for directory in created)

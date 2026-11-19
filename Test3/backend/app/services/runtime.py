@@ -65,6 +65,7 @@ from app.execution.run_state_store import (
     RunExecutionStateRepo,
     read_run_execution_state,
 )
+from app.execution.tool_policy import authorize_granted_command
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
 from app.listening.distill import validate_distill
@@ -2313,6 +2314,16 @@ class Workbench:
         granted_spec: dict[str, Any] | None = None
         if run_execution_profile(run) == PROFILE_GRANTED:
             grant, granted_spec = await self._authorize_granted_execution(run, code)
+            # F-08: platform policy ∩ Grant.allowed_tool_refs ∩ materialized
+            # command/tool_refs.  Runs before preflight, worktree, writes and
+            # any process, so a denial has no side effects.
+            authorize_granted_command(
+                granted_spec.get("command") or [],
+                grant_tool_refs=grant.allowed_tool_refs,
+                spec_tool_refs=granted_spec.get("tool_refs") or [],
+                platform_whitelist=self._whitelist(),
+                platform_forbidden=self._forbidden(),
+            )
             # F-06: no isolation backend means no execution side effects at all.
             blocked = self._block_unless_isolated(run, task, code)
             if blocked is not None:
@@ -2395,6 +2406,15 @@ class Workbench:
         grant: ExecutionGrant,
     ) -> dict[str, Any]:
         """granted_v1 branch: write only inside an isolated per-task worktree."""
+        command = [str(part) for part in (spec.get("command") or [])]
+        # F-08 re-check at the wrapper boundary, before any worktree or write.
+        authorize_granted_command(
+            command,
+            grant_tool_refs=grant.allowed_tool_refs,
+            spec_tool_refs=spec.get("tool_refs") or [],
+            platform_whitelist=self._whitelist(),
+            platform_forbidden=self._forbidden(),
+        )
         blocked = self._block_unless_isolated(run, task, code)
         if blocked is not None:
             return blocked
@@ -2413,8 +2433,6 @@ class Workbench:
             if isinstance(item, dict)
         ]
         command = [str(part) for part in (spec.get("command") or [])]
-        if not command:
-            command = ["python", "-m", "pytest", "-q", "-m", "not live"]
         try:
             result = await execute_task_granted(
                 run.id,
@@ -2427,6 +2445,8 @@ class Workbench:
                 whitelist=self._whitelist(),
                 env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
                 timeout=int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600),
+                tool_refs=list(spec.get("tool_refs") or []),
+                spec_command=command,
             )
         except CommandDenied as exc:
             return await self._finish_failure(run, task, card, "任务描述问题", str(exc), {"exit_code": 1})

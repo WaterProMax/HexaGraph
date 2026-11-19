@@ -33,7 +33,7 @@ def _isolation_cache(monkeypatch: pytest.MonkeyPatch):
     reset_preflight_cache()
 
 
-def _grant() -> ExecutionGrant:
+def _grant(tool_refs: list[str] | None = None) -> ExecutionGrant:
     return ExecutionGrant(
         grant_id="G-1",
         run_id="run-1",
@@ -45,21 +45,30 @@ def _grant() -> ExecutionGrant:
         repo_name="HexaGraph",
         base_branch="teamwork-001",
         feature_branch="feat/p1-demo",
-        allowed_tool_refs=[],
+        allowed_tool_refs=list(tool_refs or ["python -m pytest"]),
         created_at="2026-11-19T00:00:00+00:00",
     )
 
 
-async def _granted_run(tmp_path: Path, *, card_command: list[str] | None = None):
+async def _granted_run(
+    tmp_path: Path,
+    *,
+    card_command: list[str] | None = None,
+    tool_refs: list[str] | None = None,
+):
+    refs = list(tool_refs or ["python -m pytest"])
     bench = make_bench(tmp_path)
     project = bench.create_project("p1-rev03")
     run = bench.create_run(project["id"], "idea")
     install_plan(bench, run, ["T-01"])
     if card_command:
         run.tasks["T-01"]["card"]["acceptance"][0]["cmd"] = card_command
+        bench.profile["whitelist_prefixes"] = list(bench.profile.get("whitelist_prefixes") or []) + [
+            ref for ref in refs if ref not in (bench.profile.get("whitelist_prefixes") or [])
+        ]
     plan_hash = bench._record_approved_baseline(run, "PLAN", run.artifacts["plan"])
     await bench.enable_granted_execution(run.id, {"PLAN": plan_hash})
-    await bench.add_grant(make_grant(run.id, ["T-01"], hashes={"PLAN": plan_hash}))
+    await bench.add_grant(make_grant(run.id, ["T-01"], hashes={"PLAN": plan_hash}, allowed_tool_refs=refs))
     bench.execution_safety_ready = True
     return bench, run
 
@@ -85,6 +94,7 @@ async def test_disabled_backend_blocks_granted_execution_without_side_effects(
     bench, run = await _granted_run(
         tmp_path,
         card_command=["python", "-c", f"open({str(escape)!r}, 'w').write('escaped')"],
+        tool_refs=["python -c"],
     )
     monkeypatch.setenv(BACKEND_ENV, "none")
     reset_preflight_cache()
@@ -118,6 +128,7 @@ async def test_failed_preflight_blocks_before_worktree_and_process(
     bench, run = await _granted_run(
         tmp_path,
         card_command=["python", "-c", f"open({str(escape)!r}, 'w').write('escaped')"],
+        tool_refs=["python -c"],
     )
     monkeypatch.setattr(
         "app.services.runtime.preflight_isolation",
@@ -168,10 +179,12 @@ async def test_worker_rejects_bad_write_specs_before_any_probe(tmp_path: Path) -
             await execute_task_granted(
                 "run-1",
                 "T-01",
-                _grant(),
+                _grant(["python -c"]),
                 isolation_root=root,
                 writes=[spec],
                 test_command=["python", "-c", "print('ok')"],
+                tool_refs=["python -c"],
+                whitelist=["python -c"],
             )
     assert outside.read_text(encoding="utf-8") == "keep"
     assert not (tmp_path / "absolute.txt").exists()
@@ -189,10 +202,12 @@ async def test_worker_fails_closed_without_backend(tmp_path: Path) -> None:
         await execute_task_granted(
             "run-1",
             "T-01",
-            _grant(),
+            _grant(["python -c"]),
             isolation_root=root,
             writes=[WriteSpec("planned.txt", "must not be written")],
             test_command=["python", "-c", "print('ok')"],
+            tool_refs=["python -c"],
+            whitelist=["python -c"],
         )
     assert list(root.iterdir()) == []
 
@@ -216,11 +231,12 @@ async def test_escape_is_contained_when_backend_available(tmp_path: Path) -> Non
     result = await execute_task_granted(
         "run-1",
         "T-01",
-        _grant(),
+        _grant(["python -m pytest"]),
         isolation_root=root,
         writes=[],
         test_command=["python", "-m", "pytest", "tests/test_escape.py", "-q"],
         whitelist=["python -m pytest"],
+        tool_refs=["python -m pytest"],
     )
     assert not outside.exists()
     assert result.exit_code != 0
