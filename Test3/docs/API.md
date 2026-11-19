@@ -35,6 +35,11 @@
 | GET | `/runs/{id}/todos` | 未决关卡 + `needs_human` 任务 |
 | POST | `/gates/{id}/resolve` | `decision` + `payload` |
 | GET | `/runs/{id}/tasks` | 任务列表 |
+| GET | `/runs/{id}/plan/preview` | 当前任务计划的点数排期、并发数及依赖关键路径。没有通过校验的计划时返回 `null` |
+| PATCH | `/runs/{id}/plan` | 按运行修订号编辑待确认计划中的任务名称、估算点数和前置依赖 |
+| GET | `/projects/{id}/experiences` | 汇总项目各轮运行的经验候选与审核状态 |
+| POST | `/runs/{id}/experiences` | 用 `title`、`lesson` 记录与本轮运行关联的待审核经验 |
+| POST | `/runs/{id}/experiences/{experience_id}` | 用 `decision: publish` 或 `reject` 审核候选经验 |
 | GET | `/tasks/{id}` | 任务详情 |
 | POST | `/tasks/{id}/{action}` | pause/resume/retry/skip/takeover/submit-takeover/force-pass/patch |
 | POST | `/runs/{id}/pause` `/resume` `/terminate` | 运行级控制；终止必须 `{confirm: true}` |
@@ -50,6 +55,12 @@
 | GET/PUT | `/config/models` | 读/写进程内槽位 |
 | POST | `/config/models/test` | 占位，返回提示用 `make check-models` |
 | POST | `/runs/{id}/schedule` | 调度一轮就绪任务 |
+
+## 项目主理人
+
+创建运行时传入 `steward: true` 可启用主理人流程，`provider` 为 `existing`（默认使用后端配置）或 `deepseek`。真实模型运行在讨论之后并行生成两份候选，校验通过后进入 `方案比选` 关卡。批准时用 `payload.candidate` 传入候选编号 `A` / `B`，或在两份方案均有效时传入 `fusion` 进行综合，再走既有评审和基线关卡。课堂预置提供两份示例方案，回放沿用记录中的单份方案。
+
+计划修改体包含 `code`、`title`、`points`、`depends_on` 和 `expected_revision`。校验失败返回 400，版本不符返回 409，成功后重算排期。计划批准后冻结，此接口只能修改尚未执行的初始计划。
 
 ## 设计规格导入
 

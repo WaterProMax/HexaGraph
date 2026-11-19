@@ -63,8 +63,8 @@ export const api = {
   health: () => req("/health"),
   projects: () => req("/projects"),
   createProject: (name: string) => req("/projects", { method: "POST", body: JSON.stringify({ name }) }),
-  createRun: (projectId: string, idea: string) =>
-    req(`/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify({ idea }) }),
+  createRun: (projectId: string, idea: string, options?: { steward: true; provider: "existing" | "deepseek" }) =>
+    req(`/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify({ idea, ...options }) }),
   createDesignRun: (
     projectId: string,
     text: string,
@@ -98,6 +98,14 @@ export const api = {
     req(`/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify({ expected_revision, reason, payload }) }),
   schedule: (id: string) => req(`/runs/${id}/schedule`, { method: "POST" }),
   accept: (id: string) => req(`/runs/${id}/accept`, { method: "POST" }),
+  planPreview: (id: string) => req(`/runs/${id}/plan/preview`),
+  editPlan: (id: string, edit: { code: string; title: string; points: number; depends_on: string[]; expected_revision: number }) =>
+    req(`/runs/${id}/plan`, { method: "PATCH", body: JSON.stringify(edit) }),
+  experiences: (projectId: string) => req(`/projects/${projectId}/experiences`),
+  saveExperience: (runId: string, title: string, lesson: string) =>
+    req(`/runs/${runId}/experiences`, { method: "POST", body: JSON.stringify({ title, lesson }) }),
+  reviewExperience: (runId: string, id: string, decision: "publish" | "reject") =>
+    req(`/runs/${runId}/experiences/${id}`, { method: "POST", body: JSON.stringify({ decision }) }),
   pauseRun: (id: string) => req(`/runs/${id}/pause`, { method: "POST" }),
   resumeRun: (id: string) => req(`/runs/${id}/resume`, { method: "POST" }),
   terminate: (id: string) => req(`/runs/${id}/terminate`, { method: "POST", body: JSON.stringify({ confirm: true }) }),

@@ -1,0 +1,91 @@
+.ws.steward {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+
+.steward .topbar { position: sticky; top: 0; z-index: 2; }
+.steward .topbar h1 { margin: 0; font-size: 16px; }
+.steward .topbar-left, .steward .topbar-right { min-width: 0; }
+.steward .topbar select { max-width: min(300px, 45vw); }
+.steward h2, .steward h3 { margin: 0; font-size: 15px; }
+.steward p { margin: 8px 0; }
+.steward .steward-page-body { width: 100%; max-width: 1400px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+.steward .steward-grid { display: grid; grid-template-columns: minmax(220px, 285px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.steward .steward-side, .steward .steward-composer, .steward .steward-content {
+  min-width: 0;
+  background: var(--glass-surface);
+  border-radius: var(--glass-radius-panel);
+  color: var(--glass-ink);
+}
+.steward .steward-side, .steward .steward-composer, .steward .steward-view { padding: var(--glass-space); }
+.steward .steward-composer { width: min(100%, 840px); }
+.steward .steward-heading, .steward .steward-actions, .steward .steward-status {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+}
+.steward .steward-heading { justify-content: space-between; }
+.steward .steward-status .dot { flex: 0 0 auto; }
+.steward .steward-gate {
+  background: #fff5e9; color: #8d4513; border-radius: var(--glass-radius-item);
+  display: grid; gap: 9px; padding: 12px; margin: 12px 0;
+}
+.steward .steward-gate p { margin: 0; overflow-wrap: anywhere; }
+.steward .steward-error { color: #a02537; overflow-wrap: anywhere; }
+.steward .steward-form, .steward .steward-stack { display: grid; gap: 12px; }
+.steward .steward-form > .ant-btn { justify-self: start; }
+.steward .steward-form label, .steward .steward-gate label { display: grid; gap: 5px; min-width: 0; }
+.steward .steward-form fieldset { min-width: 0; border: 0; padding: 0; }
+.steward .steward-form legend { margin-bottom: 4px; }
+.steward label.steward-check, .steward .steward-form label.steward-check { display: flex; align-items: baseline; gap: 6px; overflow-wrap: anywhere; }
+.steward .steward-check input { accent-color: var(--glass-accent); }
+.steward select, .steward .ant-input {
+  max-width: 100%; min-height: 34px; color: var(--glass-ink);
+  background: var(--glass-field); border: 1px solid #dce6ec; border-radius: var(--glass-radius-field);
+  padding: 5px 9px; font: inherit;
+}
+.steward textarea.ant-input { resize: vertical; }
+.steward :where(button, a, select, input, textarea, summary):focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
+.steward .steward-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px; border-bottom: 1px solid #dce6ec; }
+.steward .steward-tabs button {
+  border: 0; border-radius: 999px; background: transparent; color: var(--glass-secondary);
+  padding: 7px 12px; min-height: 34px; cursor: pointer; font: inherit;
+}
+.steward .steward-tabs button:hover { background: var(--glass-hover); }
+.steward .steward-tabs button[aria-pressed="true"] { color: #0054b8; background: #e2edf7; font-weight: 650; }
+.steward .steward-field { padding: 12px; border-radius: var(--glass-radius-item); background: var(--glass-field); overflow-wrap: anywhere; }
+.steward .steward-field ul { margin: 8px 0; padding-inline-start: 22px; }
+.steward summary { cursor: pointer; font-weight: 650; }
+.steward .steward-candidates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.steward .steward-wrap { min-width: 0; overflow-wrap: anywhere; }
+.steward .steward-multiline { white-space: pre-wrap; overflow-wrap: anywhere; }
+.steward .steward-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin-block: 10px; }
+.steward .steward-facts dt { font-weight: 650; }
+.steward .steward-facts dd { margin: 0; }
+.steward .steward-gantt { display: grid; gap: 5px; margin: 12px 0; --gantt-label: minmax(90px, 26%); }
+.steward .steward-gantt-row { display: grid; grid-template-columns: var(--gantt-label) minmax(0, 1fr); gap: 8px; align-items: center; }
+.steward .steward-gantt-row > span { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+.steward .steward-ticks { display: flex; justify-content: space-between; margin-left: calc(26% + 8px); color: var(--glass-muted); }
+.steward .steward-track { position: relative; min-height: 26px; border-radius: 7px; background: #e7eff5; }
+.steward .steward-track button {
+  position: absolute; top: 3px; bottom: 3px; min-width: 4px; cursor: pointer;
+  border: 1px solid transparent; border-radius: 6px; background: #52738c;
+}
+.steward .steward-track button.critical { background: #a85a21; }
+.steward .steward-track button[aria-pressed="true"] { border-color: white; outline: 2px solid var(--glass-accent); }
+.steward .steward-field + .steward-heading, .steward .steward-heading + .steward-field { margin-top: 10px; }
+.steward .phase-items .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; width: 100%; align-items: center; text-align: left; }
+.steward progress { width: 100%; accent-color: var(--glass-accent); }
+.steward pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.steward .steward-events { margin: 0; padding: 0; list-style: none; overflow-wrap: anywhere; }
+.steward .steward-events li { padding: 8px; border-bottom: 1px solid #dce6ec; }
+
+@media (max-width: 1000px) {
+  .steward .steward-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .steward .steward-candidates { grid-template-columns: minmax(0, 1fr); }
+  .steward .steward-page-body { padding: 8px; }
+  .steward .steward-gantt { --gantt-label: minmax(75px, 26%); }
+}

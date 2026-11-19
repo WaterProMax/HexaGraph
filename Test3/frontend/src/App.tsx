@@ -1,4 +1,4 @@
-import { ApiOutlined, DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined, SettingOutlined } from "@ant-design/icons";
+import { ApiOutlined, DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined, ProjectOutlined, SettingOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
@@ -15,6 +15,7 @@ import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 import StaticClassroomDemo from "./pages/StaticClassroomDemo";
+import ProjectSteward from "./pages/ProjectSteward";
 import { COMPACT_VIEWPORT } from "./workstationLayout";
 
 export function runDot(run: any): string {
@@ -47,6 +48,7 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
   const nav = [
     { to: "/workstation/static-classroom", icon: <PlayCircleOutlined />, label: "静态课堂演示", match: "/workstation/static-classroom" },
     { to: "/workstation", icon: <DesktopOutlined />, label: "工作台", match: "/workstation" },
+    { to: "/steward", icon: <ProjectOutlined />, label: "项目主理人", match: "/steward" },
     { to: "/deepseek", icon: <ApiOutlined />, label: "DeepSeek", match: "/deepseek" },
     { to: "/projects", icon: <FolderOpenOutlined />, label: "项目", match: "/projects" },
     { to: "/settings", icon: <SettingOutlined />, label: "模型槽位", match: "/settings" },
@@ -144,6 +146,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/workstation" replace />} />
           <Route path="/workstation/static-classroom" element={<StaticClassroomDemo />} />
+          <Route path="/steward/:id?" element={<ProjectSteward />} />
           <Route path="/deepseek/:id?" element={<Workstation deepSeekOnly />} />
           <Route path="/workstation/:id?" element={<Workstation />} />
           <Route path="/projects" element={<Projects />} />
