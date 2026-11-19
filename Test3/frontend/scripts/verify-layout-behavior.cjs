@@ -9,7 +9,6 @@ const { mock, dagCards } = require('./flow-layout-fixtures.cjs');
 
 const baseUrl = process.env.UI_BASE_URL || 'http://127.0.0.1:5181';
 const LAYOUT_KEY = 'hexagraph.workstation.layout.v1';
-const STATIC_KEY = 'hexagraph.static-classroom-demo.v1';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -291,34 +290,14 @@ async function main() {
     await context.close();
   }
 
-  // ---- static classroom keeps working with the shared layout ----
+  // ---- retired static classroom route explains itself and never mounts a demo ----
   {
     const { context, page, errors } = await open(browser, [1440, 900], '/workstation/static-classroom');
-    await page.getByTestId('static-classroom-demo').waitFor();
-    await page.getByRole('button', { name: '开始静态演示' }).click();
-    await page.waitForTimeout(600);
-    let approvals = 0;
-    for (let guard = 0; guard < 120 && approvals < 6; guard += 1) {
-      if ((await page.getByTestId('static-gate').count()) === 1) {
-        await page.getByRole('button', { name: '批准并推进' }).click();
-        approvals += 1;
-      } else if (await page.getByRole('button', { name: '下一步' }).isEnabled()) {
-        await page.getByRole('button', { name: '下一步' }).click();
-      } else if (approvals > 0 && (await page.getByRole('button', { name: '下一步' }).isDisabled()) && guard > 40) break;
-      await page.waitForTimeout(150);
-    }
-    check('static classroom: still exactly four human gates', approvals === 4, `approvals=${approvals}`);
-
-    const stat = await page.evaluate((key) => localStorage.getItem(key), STATIC_KEY);
-    check('static classroom: keeps its own storage key', stat !== null, 'present');
-    const t = await transformOf(page).catch(() => '');
-    await dragSplitter(page, 650);
-    await page.waitForTimeout(500);
-    const wide = await leftWidth(page);
-    check('static classroom: splitter works', wide > 320 && wide <= 560, `${wide}px`);
-    check('static classroom: splitter drag does not refit', (await transformOf(page).catch(() => '')) === t);
-    check('static classroom: no horizontal scroll', (await overflowOf(page)) <= 0);
-    check('static classroom: no uncaught page errors', errors.length === 0, errors.join(' | '));
+    await page.getByTestId('retired-feature').waitFor();
+    check('retired static classroom: explicit offline notice', (await page.getByTestId('retired-feature').innerText()).includes('已下线'));
+    check('retired static classroom: no demo storage key written', (await page.evaluate(() => localStorage.getItem('hexagraph.static-classroom-demo.v1'))) === null);
+    check('retired static classroom: no horizontal scroll', (await overflowOf(page)) <= 0);
+    check('retired static classroom: no uncaught page errors', errors.length === 0, errors.join(' | '));
     await context.close();
   }
 

@@ -3,7 +3,7 @@ import { Alert, Button, message } from "antd";
 import { FileTextOutlined, UploadOutlined } from "@ant-design/icons";
 import { api } from "../api/client";
 import { UX_TIMEOUT_MS, startedAtMs, useImportWaitText } from "./designImportWait";
-import { composeDeepSeekSubmission, stripRuntimeBoundary } from "./designSpecText";
+import { stripRuntimeBoundary } from "./designSpecText";
 
 const MAX_BYTES = 100 * 1024;
 const POLL_MS = 1000;
@@ -30,7 +30,6 @@ interface Props {
   projectId?: string;
   onProjectId?: (id: string) => void;
   runId?: string;
-  provider?: "existing" | "deepseek";
   /** Bump to open the original text and focus it (e.g. "去改原文" in the preview). */
   editSourceSignal?: number;
 }
@@ -76,14 +75,12 @@ export default function DesignSpecInput({
   projectId,
   onProjectId,
   runId,
-  provider = "existing",
   editSourceSignal = 0,
 }: Props) {
   const initial = fieldsFromInput(importArtifacts?.design_input);
   const [title, setTitle] = useState(initial.title);
   const [text, setText] = useState(initial.text);
   const [fileName, setFileName] = useState(initial.fileName);
-  const [boundaries, setBoundaries] = useState({ language: "", framework: "", storage: "", deployment: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pollStep, setPollStep] = useState("");
@@ -208,9 +205,9 @@ export default function DesignSpecInput({
       setError("设计规格为空");
       return;
     }
-    const submissionText = provider === "deepseek" ? composeDeepSeekSubmission(text, boundaries) : text;
+    const submissionText = text;
     if (byteLength(submissionText) > MAX_BYTES) {
-      setError(provider === "deepseek" ? "设计规格与运行边界超过 100 KiB 上限" : "设计规格超过 100 KiB 上限");
+      setError("设计规格超过 100 KiB 上限");
       return;
     }
     abortRef.current?.abort();
@@ -231,9 +228,8 @@ export default function DesignSpecInput({
       const result = await api.createDesignRun(
         pid,
         submissionText,
-        { kind: fileName ? "file" : "text", name: fileName, note: provider === "deepseek" ? "DeepSeek 真实运行" : "" },
+        { kind: fileName ? "file" : "text", name: fileName, note: "" },
         title.trim(),
-        provider,
         { signal: ac.signal },
       );
       onCreated(result);
@@ -266,37 +262,10 @@ export default function DesignSpecInput({
 
   const disabled = busy || watchingImport;
   const retryable = RETRY_STATUSES.has(importArtifacts?.design_input_status || "");
-  const submitLabel = retryable
-    ? "修改原文后重新提交"
-    : provider === "deepseek"
-      ? "调用 DeepSeek 并检查"
-      : "整理并检查";
+  const submitLabel = retryable ? "修改原文后重新提交" : "整理并检查";
 
   return (
-    <div className="composer-fields" data-testid="design-spec-input" data-provider={provider}>
-      {provider === "deepseek" && (
-        <>
-          <div className="design-boundaries" aria-label="DeepSeek 运行边界">
-            {([
-              ["language", "目标语言", "例如 Python 3.11"],
-              ["framework", "目标框架", "例如 FastAPI；未指定可留空"],
-              ["storage", "存储", "例如 SQLite；未指定可留空"],
-              ["deployment", "部署边界", "默认：本地受限工作区"],
-            ] as const).map(([key, label, placeholder]) => (
-              <input
-                key={key}
-                aria-label={label}
-                value={boundaries[key]}
-                placeholder={placeholder}
-                onChange={(e) => {
-                  markDirty();
-                  setBoundaries((current) => ({ ...current, [key]: e.target.value }));
-                }}
-              />
-            ))}
-          </div>
-        </>
-      )}
+    <div className="composer-fields" data-testid="design-spec-input">
       <input
         className="composer-name"
         aria-label="项目名称"
@@ -366,9 +335,7 @@ export default function DesignSpecInput({
       <details className="design-hint" data-testid="design-demo-hint">
         <summary>输入说明</summary>
         <div className="mono muted" style={{ lineHeight: 1.5 }}>
-          {provider === "deepseek"
-            ? "请提供明确的功能、模块、接口或数据要求和验收条件。整理后仍需你确认 DESIGN，再生成 PLAN；确认 PLAN 后才会物化并调度任务。"
-            : "离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted 使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。"}
+          离线主演示请用 examples/design-specs/self-study-room.md，与预置座位查询任务一致。scripted 使用预置测试输出，不会按任意文档理解业务。club-signup.md 只验证上传与原文保存，不代表系统从该文档生成了任务。
         </div>
       </details>
       <div className="composer-actions" style={{ justifyContent: "space-between" }}>

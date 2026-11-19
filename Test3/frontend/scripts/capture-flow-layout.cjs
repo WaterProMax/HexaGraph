@@ -77,15 +77,6 @@ async function main() {
     }
     await context.close();
   }
-  {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
-    const page = await context.newPage();
-    await mock(page);
-    await page.goto(`${baseUrl}/workstation/static-classroom`);
-    await page.getByTestId('static-classroom-demo').waitFor();
-    await shot(page, 'static-classroom-1440x900');
-    await context.close();
-  }
   await browser.close();
 }
 

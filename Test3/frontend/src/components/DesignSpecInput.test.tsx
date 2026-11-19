@@ -426,11 +426,4 @@ describe("DesignSpecInput compact source panel", () => {
     expect(document.activeElement).toBe(textarea);
     expect(textarea.value).toBe("正在输入的内容");
   });
-
-  it("keeps the DeepSeek entry free of a banner while still exposing the run boundaries", () => {
-    render(<DesignSpecInput {...props} provider="deepseek" />);
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByLabelText("目标语言")).toBeTruthy();
-    expect(screen.getByTestId("design-demo-hint").textContent).toMatch(/确认 DESIGN/);
-  });
 });

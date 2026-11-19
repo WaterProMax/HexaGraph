@@ -70,12 +70,11 @@ export const api = {
     text: string,
     source: { kind: "text" | "file"; name?: string; note?: string },
     title = "",
-    provider: "existing" | "deepseek" = "existing",
     init?: RequestInit,
   ) =>
     req(`/projects/${projectId}/design-runs`, {
       method: "POST",
-      body: JSON.stringify({ text, source, title, provider }),
+      body: JSON.stringify({ text, source, title }),
       signal: init?.signal,
     }),
   runs: () => req("/runs"),

@@ -130,11 +130,11 @@ function aspectBucket(w: number, h: number): number {
   return Math.min(3, Math.max(1, Math.round((w / h) * 2) / 2));
 }
 
-export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: boolean }) {
+export default function Workstation() {
   const { id: routeRunId } = useParams();
   const nav = useNavigate();
   const qc = useQueryClient();
-  const routeBase = deepSeekOnly ? "/deepseek" : "/workstation";
+  const routeBase = "/workstation";
 
   const [projectName, setProjectName] = useState("自习室空位查询小程序");
   const [ideaInput, setIdeaInput] = useState(DEFAULT_IDEA);
@@ -145,7 +145,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
   const [supplementText, setSupplementText] = useState("");
   const [activeTab, setActiveTab] = useState("graph");
   const [autoAdvance, setAutoAdvance] = useState(false);
-  const [flowMode, setFlowMode] = useState<"idea" | "design" | "deepseek">(deepSeekOnly ? "deepseek" : "idea");
+  const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
   const [designResult, setDesignResult] = useState<any>(null);
   const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
   const [canvasAspect, setCanvasAspect] = useState(0);
@@ -163,10 +163,8 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
   });
 
   const availableRuns = useMemo(
-    () => (Array.isArray(runsList)
-      ? runsList.filter((item: any) => (item.provenance?.mode === "deepseek") === deepSeekOnly)
-      : runsList),
-    [runsList, deepSeekOnly],
+    () => (Array.isArray(runsList) ? runsList : []),
+    [runsList],
   );
 
   const activeRunId = useMemo(() => {
@@ -188,14 +186,6 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     enabled: !!activeRunId,
     refetchInterval: 2000,
   });
-
-  useEffect(() => {
-    if (!routeRunId || !run) return;
-    const isDeepSeekRun = run.provenance?.mode === "deepseek";
-    if (isDeepSeekRun !== deepSeekOnly) {
-      nav(`${isDeepSeekRun ? "/deepseek" : "/workstation"}/${routeRunId}`, { replace: true });
-    }
-  }, [routeRunId, run, deepSeekOnly, nav]);
 
   const { data: artifacts } = useQuery({
     queryKey: ["arts", activeRunId],
@@ -287,19 +277,18 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     activeRunId,
   });
   const waitingForRun = Boolean(activeRunId) && runPending && !run;
-  const composerMode: "idea" | "design" | "deepseek" = deepSeekOnly
-    ? "deepseek"
-    : designComposerForced(artifacts, run) && flowMode === "idea"
-      ? "design"
-      : flowMode;
+  const composerMode: "idea" | "design" = designComposerForced(artifacts, run) && flowMode === "idea"
+    ? "design"
+    : flowMode;
+  const legacyRetired = Boolean(run?.read_only || run?.provenance?.mode === "deepseek");
   const showDesignPreview = Boolean(
     activeRunId && (isDesignRun || designView || artifacts?.design_input_status),
   );
   const designProjectId = run?.project_id || sessionProjectId;
   const controlOpts = { importing: importingDesign, statusQueryFailed: runQueryFailed };
-  const runPauseKind = pauseResumeKind(run);
-  const runPauseEnabled = pauseResumeEnabled(run, controlOpts);
-  const canSchedule = scheduleEnabled(run, controlOpts);
+  const runPauseKind = legacyRetired ? null : pauseResumeKind(run);
+  const runPauseEnabled = !legacyRetired && pauseResumeEnabled(run, controlOpts);
+  const canSchedule = !legacyRetired && scheduleEnabled(run, controlOpts);
   const scheduleMode = health?.schedule_mode;
   const persistentProvenance = provenanceMarks(artifacts?.provenance || run?.provenance);
 
@@ -396,11 +385,12 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     statusQueryFailed: runQueryFailed,
   });
 
+  const autoAdvanceActive = autoAdvance && !legacyRetired;
   useEffect(() => {
     if (!activeRunId || !run) return;
     if (
       !autoAdvanceAllowed({
-        autoAdvance,
+        autoAdvance: autoAdvanceActive,
         hasPendingGate: Boolean(pendingGate),
         gatesLocked,
       })
@@ -411,7 +401,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
       resolveGateMut.mutate({ decision: "approve" });
     }, 600);
     return () => clearTimeout(timer);
-  }, [autoAdvance, activeRunId, run, pendingGate, gatesLocked]);
+  }, [autoAdvanceActive, activeRunId, run, pendingGate, gatesLocked]);
 
   const { phases, allItems } = useMemo(
     () => buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDesignRun }),
@@ -486,12 +476,11 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
     allItems,
     isDesignRun,
   });
-  const modeBadge =
-    deepSeekOnly || run?.provenance?.mode === "deepseek" || composerMode === "deepseek"
-      ? "DeepSeek"
-      : isDesignRun || composerMode === "design"
-        ? "设计规格"
-        : "完整流程";
+  const modeBadge = legacyRetired
+    ? "已下线 · 只读"
+    : isDesignRun || composerMode === "design"
+      ? "设计规格"
+      : "完整流程";
   const graphCaption =
     mainGraph.kind === "tasks"
       ? `任务依赖图 · ${mainGraph.items.length} 个任务`
@@ -544,7 +533,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
           <Button
             size="small"
             type={compact ? "text" : "default"}
-            disabled={!controlEnabled(action, selectedItem!.detail.state)}
+            disabled={legacyRetired || !controlEnabled(action, selectedItem!.detail.state)}
             loading={controlMut.isPending && controlMut.variables?.action === action}
             onClick={() =>
               controlMut.mutate({
@@ -566,7 +555,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
       <header className="topbar">
         <div className="topbar-left">
           <span className="crumb">
-            {deepSeekOnly ? "DeepSeek" : "工作台"} <span style={{ color: "var(--ink-4)" }}>/</span>
+            工作台 <span style={{ color: "var(--ink-4)" }}>/</span>
             <strong>{run ? `运行 #${String(run.id).slice(0, 6)}` : "新运行"}</strong>
           </span>
           {Array.isArray(availableRuns) && availableRuns.length > 0 && (
@@ -581,7 +570,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
               onChange={(val) => nav(`${routeBase}/${val}`)}
               options={[...availableRuns].reverse().map((r: any) => ({
                 value: r.id,
-                label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${RUN_STATUS[r.status] || r.status}`,
+                label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${r.read_only ? "已下线（只读）" : RUN_STATUS[r.status] || r.status}`,
               }))}
             />
           )}
@@ -605,7 +594,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             </Tooltip>
             <Tooltip title="自动批准当前挂起关卡以快速推进">
               <span className="pill auto-advance">
-                <Switch size="small" aria-label="自动过关" checked={autoAdvance} onChange={setAutoAdvance} />
+                <Switch size="small" aria-label="自动过关" checked={autoAdvanceActive} disabled={legacyRetired} onChange={setAutoAdvance} />
                 自动过关
               </span>
             </Tooltip>
@@ -628,7 +617,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                 type="primary"
                 icon={<CheckOutlined />}
                 loading={acceptMut.isPending}
-                disabled={runQueryFailed || importingDesign}
+                disabled={legacyRetired || runQueryFailed || importingDesign}
                 onClick={() => acceptMut.mutate()}
               >
                 生成验收报告
@@ -683,17 +672,26 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
               <h2 id="composer-heading">
-                {waitingForRun && composerMode === "idea"
-                  ? "运行加载中"
-                  : composerMode === "deepseek"
-                    ? "DeepSeek"
+                {legacyRetired
+                  ? "历史运行（只读）"
+                  : waitingForRun && composerMode === "idea"
+                    ? "运行加载中"
                     : composerMode === "design"
                       ? "设计规格输入"
                       : "想法输入"}
               </h2>
             </div>
-            {!deepSeekOnly && (
-              <Segmented
+            {legacyRetired ? (
+              <Alert
+                type="warning"
+                showIcon
+                data-testid="retired-run-notice"
+                message="已下线，只读，不支持继续调用"
+                description="该历史运行由已下线的 DeepSeek 专用入口创建。历史产物、事件与任务快照仍可查看；新建、重试、恢复或继续生成 PLAN 均不会发往模型。"
+              />
+            ) : (
+              <>
+            <Segmented
                 block
                 size="small"
                 aria-label="选择流程入口"
@@ -705,10 +703,9 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                   { label: "从设计规格开始", value: "design" },
                 ]}
               />
-            )}
             {waitingForRun && composerMode === "idea" ? (
               <div className="mono muted">正在加载运行…</div>
-            ) : composerMode !== "idea" ? (
+            ) : composerMode === "design" ? (
               <DesignSpecInput
                 projectName={projectName}
                 onProjectName={setProjectName}
@@ -718,7 +715,6 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                 projectId={designProjectId}
                 onProjectId={setSessionProjectId}
                 runId={activeRunId}
-                provider={composerMode === "deepseek" ? "deepseek" : "existing"}
                 editSourceSignal={editSourceSignal}
               />
             ) : (
@@ -762,6 +758,8 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
                 </div>
               </>
             )}
+              </>
+            )}
           </section>
 
           {runQueryFailed && (
@@ -784,18 +782,6 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             </div>
           )}
 
-          {artifacts?.model_stage?.status === "running" && (
-            <Alert type="info" showIcon message="DeepSeek 正在生成任务计划" description="真实请求有总超时；可终止当前运行，不会自动生成演示计划。" />
-          )}
-          {["failed", "timeout", "interrupted", "cancelled"].includes(artifacts?.model_stage?.status || "") && (
-            <Alert
-              type="error"
-              showIcon
-              message="DeepSeek 模型阶段未成功"
-              description={artifacts?.model_stage?.error || "请求已取消，未生成可执行计划。"}
-            />
-          )}
-
           {showDesignPreview && (
             <DesignSpecPreview
               artifacts={artifacts}
@@ -805,7 +791,7 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             />
           )}
 
-          {pendingGate && !runQueryFailed && (
+          {pendingGate && !runQueryFailed && !legacyRetired && (
             <section className="gate-card glass-panel" aria-labelledby="gate-heading">
               <div>
                 <div className="gate-kicker">等待你确认</div>
@@ -863,7 +849,13 @@ export default function Workstation({ deepSeekOnly = false }: { deepSeekOnly?: b
             </section>
           )}
 
-          {hasReadyTasks && !pendingGate && (
+          {pendingGate && legacyRetired && (
+            <div className="notice" data-testid="retired-gate-notice">
+              <span>历史关卡「{pendingGate.kind}」保留为只读；已下线模式不支持继续裁决。</span>
+            </div>
+          )}
+
+          {hasReadyTasks && !pendingGate && !legacyRetired && (
             <div className="notice" data-testid="schedule-notice">
               <span>{scheduleNoticeText(scheduleMode)}</span>
               <Button

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 
-/** Own key. Never reuse the static classroom key `hexagraph.static-classroom-demo.v1`. */
+/** Own key. The retired static classroom key `hexagraph.static-classroom-demo.v1` stays unused. */
 export const LAYOUT_STORAGE_KEY = "hexagraph.workstation.layout.v1";
 
 export const LEFT_DEFAULT = 320;

@@ -23,7 +23,7 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe("workstation layout persistence", () => {
-  it("uses its own key, never the static classroom key", () => {
+  it("uses its own key and never writes the retired static classroom key", () => {
     expect(LAYOUT_STORAGE_KEY).toBe("hexagraph.workstation.layout.v1");
     expect(LAYOUT_STORAGE_KEY).not.toBe("hexagraph.static-classroom-demo.v1");
     const storage = memoryStorage({ "hexagraph.static-classroom-demo.v1": "{\"keep\":true}" });

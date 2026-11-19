@@ -420,7 +420,7 @@ export function runStatusLine(opts: {
   if (run.status === "stopped") return { text: "运行已停止", tone: "idle" };
   const modelStage = artifacts?.model_stage?.status;
   if (["failed", "timeout", "interrupted", "cancelled"].includes(modelStage || "")) {
-    return { text: "DeepSeek 模型阶段未成功，未生成可执行计划", tone: "error" };
+    return { text: "模型阶段未成功，未生成可执行计划", tone: "error" };
   }
   if (run.paused) return { text: "运行已暂停", tone: "awaiting" };
   if (pendingGate) return { text: `等待你确认：${pendingGate.kind}`, tone: "awaiting" };
