@@ -658,6 +658,9 @@ class Workbench:
     def create_project(self, name: str, profile: str = "python-pytest") -> dict[str, Any]:
         pid = str(uuid.uuid4())
         self.projects[pid] = {"id": pid, "name": name, "profile": profile}
+        # Projects without runs (e.g. discussion-only) never reach a run snapshot,
+        # so persist the registry here or they vanish on restart.
+        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
         return self.projects[pid]
 
     def create_run(self, project_id: str, idea: str) -> RunState:

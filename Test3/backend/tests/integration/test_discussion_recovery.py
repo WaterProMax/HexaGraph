@@ -401,3 +401,52 @@ async def test_resume_after_restart_finishes_to_decision_package(tmp_path) -> No
     finally:
         await client2.aclose()
         await bench2.close()
+
+@pytest.mark.asyncio
+async def test_recovery_skips_draft_sessions(bench) -> None:
+    # A draft never started a driver, so restart must not claim it was interrupted.
+    await _store_create(
+        bench, _record("s-draft", status="draft", created_at="2026-01-01T00:00:01+00:00")
+    )
+    await _store_create(
+        bench, _record("s-live", status="cross_review", created_at="2026-01-01T00:00:02+00:00")
+    )
+
+    recovered = await driver.recover_interrupted_sessions(bench)
+
+    assert recovered == ["s-live"]
+    draft = await _get(bench, "s-draft")
+    assert draft.paused is False
+    assert _paused_events(await _messages(bench, "s-draft")) == []
+
+
+@pytest.mark.asyncio
+async def test_project_without_runs_survives_restart(tmp_path) -> None:
+    # Discussion-only projects never write a run snapshot, so the registry itself
+    # must be on disk right after creation.
+    models = load_models()
+    bench1 = Workbench(
+        Gateway(models, ScriptedProvider(), data_dir=tmp_path),
+        RoleRegistry(load_roles()),
+        tmp_path,
+    )
+    project = bench1.create_project("自习室空位查询小程序")
+    project_id = project["id"]
+    await bench1.close()
+
+    bench2 = Workbench(
+        Gateway(models, ScriptedProvider(), data_dir=tmp_path),
+        RoleRegistry(load_roles()),
+        tmp_path,
+    )
+    app = create_app()
+    app.state.workbench = bench2
+    client = _client(app)
+    try:
+        assert bench2.projects[project_id]["name"] == "自习室空位查询小程序"
+        listed = await client.get("/api/projects")
+        assert listed.status_code == 200, listed.text
+        assert [item["id"] for item in listed.json()] == [project_id]
+    finally:
+        await client.aclose()
+        await bench2.close()

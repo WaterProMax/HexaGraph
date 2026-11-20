@@ -1402,7 +1402,9 @@ async def _leader_request_revision(
 
 
 def _needs_recovery(record: DiscussionSession) -> bool:
-    if record.status in TERMINAL_STATUSES or record.paused:
+    # ``draft`` never started a driver (create is immediately followed by run),
+    # so pausing it would claim work was interrupted when none was.
+    if record.status in TERMINAL_STATUSES or record.paused or record.status == "draft":
         return False
     if record.status == "converged_pending_human" and record.decision_package is not None:
         return False
