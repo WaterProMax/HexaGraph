@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from app.agents.runtime import RoleRegistry
 from app.discussion.session_store import DiscussionSessionStore
+from app.execution.baseline import hash_artifact
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
@@ -384,3 +385,178 @@ async def test_budget_exhausted_http(app) -> None:
     async with bench.db_session() as session:
         stored = await DiscussionSessionStore(session).get(session_id)
     assert stored.status == "budget_exhausted"
+
+
+def _review_body(
+    reviewer: str,
+    proposal_id: str,
+    *,
+    dissent: list[str] | None = None,
+    gates: dict | None = None,
+) -> dict:
+    return {
+        "reviewer_bot_id": reviewer,
+        "proposal_id": proposal_id,
+        "scores": {"coverage": 4},
+        "score_justification": {"coverage": "ok"},
+        "hard_gate_results": gates
+        or {
+            "coverage": True,
+            "conflicts_closed_or_recorded": True,
+            "evidence_complete": True,
+        },
+        "dissent_items": list(dissent or []),
+    }
+
+
+async def _review(client: AsyncClient, session_id: str, actor: str, body: dict):
+    return await client.post(
+        f"/api/discussion-sessions/{session_id}/reviews",
+        json=body,
+        headers=_headers(actor),
+    )
+
+
+async def _cross_reviewed(app, *, dissent: list[str] | None = None):
+    _bench, _p1, bots, session_id = await _grouped_session(app)
+    leader, alice, bob, _outsider = bots
+    async with _client(app) as client:
+        await _start_round(client, session_id, leader)
+        alice_proposal = await _submit_proposal(
+            client, session_id, alice, alice, "Alice-plan"
+        )
+        bob_proposal = await _submit_proposal(client, session_id, bob, bob, "Bob-plan")
+        await _review(
+            client,
+            session_id,
+            bob,
+            _review_body(bob, alice_proposal.json()["proposal_id"], dissent=dissent),
+        )
+        await _review(
+            client,
+            session_id,
+            alice,
+            _review_body(alice, bob_proposal.json()["proposal_id"]),
+        )
+    return app, bots, session_id
+
+
+async def _converge(client: AsyncClient, session_id: str, actor: str, body=None):
+    return await client.post(
+        f"/api/discussion-sessions/{session_id}/converge",
+        json=body or {},
+        headers=_headers(actor),
+    )
+
+
+@pytest.mark.asyncio
+async def test_converge_submit_human_returns_dissent(app) -> None:
+    _app, bots, session_id = await _cross_reviewed(app, dissent=["风险X"])
+    async with _client(app) as client:
+        res = await _converge(client, session_id, bots[0])
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["action"] == "submit_human"
+    assert "风险X" in payload["reason"]
+    assert payload["dissent_items"] == ["风险X"]
+    assert payload["session"]["status"] == "converged_pending_human"
+
+
+@pytest.mark.asyncio
+async def test_converge_outside_cross_review_is_409(app) -> None:
+    _bench, _p1, bots, session_id = await _grouped_session(app)
+    async with _client(app) as client:
+        res = await _converge(client, session_id, bots[0])
+    assert res.status_code == 409
+    assert res.json()["error_category"] == "invalid_status"
+
+
+@pytest.mark.asyncio
+async def test_converge_concurrent_has_one_winner(app) -> None:
+    _app, bots, session_id = await _cross_reviewed(app)
+    async with _client(app) as first, _client(app) as second:
+        left, right = await asyncio.gather(
+            _converge(first, session_id, bots[0]),
+            _converge(second, session_id, bots[0]),
+        )
+    assert sorted([left.status_code, right.status_code]) == [200, 409]
+    async with app.state.workbench.db_session() as session:
+        stored = await DiscussionSessionStore(session).get(session_id)
+    assert stored.status == "converged_pending_human"
+
+
+@pytest.mark.asyncio
+async def test_converge_no_improvement_sets_pending_human(app) -> None:
+    _bench, _p1, bots, session_id = await _grouped_session(app)
+    leader, alice, bob, _outsider = bots
+    partial = {
+        "coverage": True,
+        "conflicts_closed_or_recorded": False,
+        "evidence_complete": False,
+    }
+    async with _client(app) as client:
+        await _start_round(client, session_id, leader)
+        alice_proposal = await _submit_proposal(client, session_id, alice, alice, "A1")
+        bob_proposal = await _submit_proposal(client, session_id, bob, bob, "B1")
+        await _review(client, session_id, bob, _review_body(bob, alice_proposal.json()["proposal_id"], gates=partial))
+        await _review(client, session_id, alice, _review_body(alice, bob_proposal.json()["proposal_id"], gates=partial))
+        await _start_round(client, session_id, leader)
+        alice_proposal = await _submit_proposal(client, session_id, alice, alice, "A2")
+        bob_proposal = await _submit_proposal(client, session_id, bob, bob, "B2")
+        await _review(client, session_id, bob, _review_body(bob, alice_proposal.json()["proposal_id"], gates=partial))
+        await _review(client, session_id, alice, _review_body(alice, bob_proposal.json()["proposal_id"], gates=partial))
+        res = await _converge(client, session_id, leader)
+    assert res.status_code == 200, res.text
+    assert res.json()["action"] == "no_improvement"
+    assert res.json()["session"]["status"] == "converged_pending_human"
+
+
+@pytest.mark.asyncio
+async def test_converge_token_budget_exhausted(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader = await _create_bot(client, "Leader")
+        alice = await _create_bot(client, "Alice")
+        bob = await _create_bot(client, "Bob")
+        await _add_member(client, p1, leader, leader=True)
+        await _add_member(client, p1, alice)
+        await _add_member(client, p1, bob)
+        created = await _create_session(
+            client, p1, leader, [alice, bob], budget={"max_tokens": 10}
+        )
+        session_id = created.json()["session_id"]
+        await client.post(
+            f"/api/discussion-sessions/{session_id}/group",
+            json={"participant_bot_ids": [alice, bob]},
+            headers=_headers(leader),
+        )
+        await _start_round(client, session_id, leader)
+        await _submit_proposal(client, session_id, alice, alice, "A")
+        await _submit_proposal(client, session_id, bob, bob, "B")
+        res = await _converge(client, session_id, leader, {"tokens_used": 10})
+    assert res.status_code == 200, res.text
+    assert res.json()["action"] == "budget_exhausted"
+    assert res.json()["session"]["status"] == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_create_session_accepts_string_requirement_snapshot(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader = await _create_bot(client, "Leader")
+        alice = await _create_bot(client, "Alice")
+        await _add_member(client, p1, leader, leader=True)
+        await _add_member(client, p1, alice)
+        res = await client.post(
+            f"/api/projects/{p1}/discussion-sessions",
+            json={
+                "leader_bot_id": leader,
+                "participant_bot_ids": [alice],
+                "requirement_snapshot": "plain requirement",
+            },
+            headers=_headers(leader),
+        )
+    assert res.status_code == 201, res.text
+    assert res.json()["requirement_snapshot_hash"] == hash_artifact("plain requirement")

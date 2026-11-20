@@ -101,3 +101,52 @@
 - 会话不存在 → 404 session_not_found；提案不存在/跨会话 → 404 proposal_not_found。
 - 非 participant → 403 not_participant；状态不对 → 409 invalid_status。
 - 自评 → 409 self_review_forbidden；重复票 → 409 duplicate_review；成功 → 201 票。
+
+## T04 · should_converge：硬门槛、异议、轮次与预算
+
+- 时间：2026-11-20 11:27 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_should_converge.py tests/integration/test_discussion_session_api.py -v`
+- 退出码：0
+- 计数：26 passed（should_converge 8 / 会话 HTTP 18，含 T01–T03 回归）
+- 回归：`tests/unit/test_discussion_rules.py tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 40 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+
+### 触及文件
+
+- `app/discussion/converge.py`（NEW）
+- `tests/unit/test_should_converge.py`（NEW）
+- `app/api/routes_discussion.py`（MODIFY：converge 路由；`requirement_snapshot` 改 `str | dict`）
+- `tests/integration/test_discussion_session_api.py`（MODIFY：converge / 字符串快照）
+- `Test3/docs/plans/P4-report.md`（MODIFY）
+
+### should_converge 决策表（按序写死）
+
+| 顺序 | 条件 | 返回 action |
+|---|---|---|
+| 1 | `max_tokens` 非空且 `tokens_used >= max_tokens`，或 `max_wallclock_seconds` 非空且 `elapsed_seconds >= max_wallclock_seconds` | `budget_exhausted` |
+| 2 | 全部硬门槛通过；或未通过数 `3 - latest_pass_count` 已被 `dissent_items` 覆盖（去重后数量足够） | `submit_human` |
+| 3 | `current_round >= budget.max_rounds` | `submit_human`（带未决项，不再 revise） |
+| 4 | 最近两轮 `hard_gate_pass_counts[-1] <= [-2]` | `no_improvement` |
+| 5 | 其他 | `revise` |
+
+- `submit_human` 的 reason 必须保留 dissent 原文；测试覆盖 `风险X`。
+- `budget_exhausted` 优先于一切；`current_round >= max_rounds` 优先于 no_improvement。
+- `DiscussionRoundState` 与 `should_converge` 均不含 score / delta / variance；`converge.py` 源码文本不含 `score_delta` / `score_spread` / `variance`（测试用 inspect/源码检查）。
+
+### HTTP converge
+
+- `POST /api/discussion-sessions/{sid}/converge`；X-Bot-Id 必填；actor 必须是 leader 或 participant，否则 403 forbidden。
+- 可选 body（扩展登记）：`{tokens_used?: int, elapsed_seconds?: int, dissent_items?: list[str]}`；无 body 为 0/0/[]；非法类型 400 validation_error。
+- 从 DB 组装 `DiscussionRoundState`：
+  - 每轮取 proposals 与 reviews；仅有当该轮每个 proposal 至少一条 review 时，才统计三个硬门槛“所有 review 均 true”的条数，否则该轮记 0；绝不使用分数。
+  - dissent = 所有 review ballot 的 dissent_items（去重保序）+ body 额外 dissent。
+  - `all_required_hard_gates_pass = 当前轮通过数 == 3`。
+- 写锁后重新检查 status 必须 `cross_review`，否则 409 invalid_status。
+- 状态映射：budget_exhausted → `budget_exhausted`；submit_human / no_improvement → `converged_pending_human`；revise → `round_n_revise`。
+- 返回 `{action, reason, session, dissent_items}`；`dissent_items` 原样返回（扩展登记）。
+- 并发两个 converge：写锁串行，第二个看到 status 已非 cross_review → 409；最终状态不分叉。
+
+### requirement_snapshot 修正
+
+- `CreateSessionBody.requirement_snapshot` 由 `dict` 改为 `str | dict`，service 注解保持 `Any`；同时接受字符串与对象，契约要求字符串。
+- 新增 HTTP 测试：字符串 `"plain requirement"` 创建成功，`requirement_snapshot_hash == hash_artifact("plain requirement")`；既有 dict 测试保持。

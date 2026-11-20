@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from app.discussion.converge import build_round_state, should_converge
 from app.discussion.cross_review import (
     DuplicateReview,
     ProposalNotFound,
@@ -22,10 +23,12 @@ from app.discussion.proposals import (
     submit_proposal,
 )
 from app.discussion.session_store import (
+    DiscussionSessionStore,
     Forbidden,
     InvalidStatus,
     NotParticipant,
     SessionNotFound,
+    retry_locked,
 )
 from app.leader.steward import (
     DiscussionSteward,
@@ -40,7 +43,7 @@ router = APIRouter()
 class CreateSessionBody(BaseModel):
     leader_bot_id: str
     participant_bot_ids: list[str]
-    requirement_snapshot: dict
+    requirement_snapshot: str | dict
     budget: DiscussionBudget | None = None
 
 
@@ -55,6 +58,12 @@ class StartRoundBody(BaseModel):
 class ProposalBody(BaseModel):
     author_bot_id: str
     body_md: str
+
+
+class ConvergeBody(BaseModel):
+    tokens_used: int = 0
+    elapsed_seconds: int = 0
+    dissent_items: list[str] = []
 
 
 def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
@@ -294,3 +303,68 @@ async def create_review(session_id: str, request: Request) -> Any:
             await session.rollback()
             return _json_error(409, "duplicate_review", str(exc))
     return JSONResponse(status_code=201, content=result)
+
+
+_CONVERGE_STATUS = {
+    "budget_exhausted": "budget_exhausted",
+    "submit_human": "converged_pending_human",
+    "no_improvement": "converged_pending_human",
+    "revise": "round_n_revise",
+}
+
+
+async def _converge_once(session, session_id: str, actor: str, body: ConvergeBody):
+    store = DiscussionSessionStore(session)
+    record = await store.get_locked(session_id)
+    if actor != record.leader_bot_id and actor not in record.participant_bot_ids:
+        raise Forbidden("only the leader or a participant can converge")
+    if record.status != "cross_review":
+        raise InvalidStatus(record.status)
+    state = await build_round_state(
+        session,
+        record,
+        tokens_used=body.tokens_used,
+        elapsed_seconds=body.elapsed_seconds,
+        extra_dissent=body.dissent_items,
+    )
+    action, reason = should_converge(state)
+    updated = record.model_copy(update={"status": _CONVERGE_STATUS[action]})
+    await store.save(updated)
+    return action, reason, updated, state.dissent_items
+
+
+@router.post("/discussion-sessions/{session_id}/converge")
+async def converge_session(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _optional_body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ConvergeBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    async with bench.db_session() as session:
+        try:
+            action, reason, record, dissent_items = await retry_locked(
+                session,
+                lambda: _converge_once(session, session_id, actor, body),
+            )
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            await session.rollback()
+            return _json_error(403, "forbidden", str(exc))
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+    return {
+        "action": action,
+        "reason": reason,
+        "session": record.model_dump(),
+        "dissent_items": dissent_items,
+    }
