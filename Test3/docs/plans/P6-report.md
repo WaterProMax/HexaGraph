@@ -6,10 +6,10 @@
 
 | 卡片 | 完整 SHA | 提交信息 |
 |---|---|---|
-| T01 | 待 T05 汇总 | `feat(test3): P6-T01 add AppShell sidebar with bots projects settings` |
-| T02 | 待 T05 汇总 | `feat(test3): P6-T02 add bot list and form with model skill pins` |
-| T03 | 待 T05 汇总 | `feat(test3): P6-T03 add project workstation tree and tabs` |
-| T04 | 待 T05 汇总 | `feat(test3): P6-T04 add grant banner discussion defects` |
+| T01 | `6930003b8ec1fe6dfcc1a28f65d51bd7106c8d02` | `feat(test3): P6-T01 add AppShell sidebar with bots projects settings` |
+| T02 | `eb5bdc60d9910c4add65c13a8f90f87b7346af82` | `feat(test3): P6-T02 add bot list and form with model skill pins` |
+| T03 | `ae9f1f18c5feccbf1aab3a9e9a55c8e6910ba6a9` | `feat(test3): P6-T03 add project workstation tree and tabs` |
+| T04 | `15b32da8b952a2695c555acb7d96d039f26d8359` | `feat(test3): P6-T04 add grant banner discussion defects` |
 | T05 | 本报告所在提交 | `docs(test3): P6-T05 exit report and walkthrough screenshots` |
 
 ## 前端工程命令实态
@@ -27,6 +27,7 @@
 - 实现：`components/AppShell.tsx` 从原 `App.tsx` 内联 Sidebar 抽取，保留折叠（`COMPACT_VIEWPORT=1100`）、最近运行、品牌区；导出 `DEFAULT_NAV_ITEMS`、`REQUIRED_NAV_KEYS`、`LoadState`、`AppShellProps`。`App.tsx` 导出 `APP_ROUTE_PATHS`，新增 `/bots`、`/bots/new`、`/bots/:id`、`/projects/:projectId`；`/settings` 继续渲染既有 `pages/Settings.tsx`。
 - 保留：`/workstation/static-classroom` → `RetiredFeature feature="static-classroom"`、`/deepseek/:id?` → `RetiredFeature feature="deepseek"` 原样保留；无顶级 `/models`、`/skills`。
 - Settings 回归：成功探测仍 `POST /api/config/models/test` 并展示结果；失败探测页面不崩溃、请求路径不变。
+
 ## T02 · Bot 列表与表单：Model / Skill pin、四种加载态
 
 - 命令：`cd Test3/frontend && npm test -- src/pages/bots/BotListPage.test.tsx src/pages/bots/BotForm.test.tsx src/api/client.test.ts`
@@ -64,3 +65,96 @@
 - 盲轮安全：`reviews` 只返回投票 payload，不含任何提案正文，盲首轮不会经此泄漏他人草案（测试断言无 `body_md`）。
 - OpenAPI：`UPDATE_OPENAPI_SNAPSHOT=1 … tests/integration/test_api_contract.py` → 28 passed；路径 65 → 70（+5，删除 0），既有 65 条路径（含 `GET /api/runs/{run_id}/discussion`、`POST /api/runs/{run_id}/accept`）全部保留。`Test3/docs/API.md` 已新增 P6 只读查询章节（标题前空行）。未新增写接口、未新增 Alembic（head 仍 0010）。
 - 契约：规格批准按钮未新增；前端不提供开闸控件，`execution_safety_ready` 只展示。
+
+## T05 · 出口：测试、构建、走查与截图
+
+### A. 前端出口命令
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `cd Test3/frontend && npx tsc --noEmit` | 0 | strict + noEmit 通过 |
+| `npm test` | 0 | 27 test files / 209 tests passed |
+| `npm run build` | 0 | `tsc -b && vite build`，3304 modules，`dist/index.html + assets` 生成（chunk > 500 kB 为既有体积告警，非失败） |
+| `npm test -- src/pages/project/ProjectWorkstationPage.test.tsx` | 0 | 12 passed（四 Tab testid、四态、缺陷定位、备注脏标记） |
+| `npm run test:e2e:types` | 0 | e2e TypeScript 通过 |
+| `./node_modules/.bin/playwright test e2e/p6-walkthrough.pw.ts` | 0 | 2 passed（UI-A1 走查 + 错误/无权限态） |
+
+- 既有 `App.retired.test.tsx`、`App.routes.test.tsx`、`Workstation.test.tsx`、`WorkstationSplitter.test.tsx`、`api/client.test.ts` 均在全量 `npm test` 中通过。
+- 走查使用 Playwright `page.route` HTTP mock，真实 React 页面与真实 api client；零付费模型调用。为跑 Playwright 1.65 所需的 chromium 1254，执行了 `./node_modules/.bin/playwright install chromium`（浏览器下载，非 Docker）。
+
+### B. 后端（本阶段改了后端只读 GET 与 OpenAPI）
+
+隔离镜像：`TEST3_ISOLATION_IMAGE=sha256:af6493938f5df1f06ca97f63bac9e0eebd9119185183dbc25cc4cc7143ef72cd`（不可变 Id，未 `docker tag`、未 pull/build）。
+
+| 命令 | 退出码 | 计数 |
+|---|---|---|
+| `.venv/bin/python -m pytest -o addopts='' -v tests/integration/test_api_contract.py` | 0 | 28 passed |
+| `.venv/bin/python -m pytest -o addopts='' -m 'not live' -q tests/unit/test_p1_rev01_execution_boundary.py tests/integration/test_schedule_grant_http.py tests/integration/test_module_acceptance_and_defects.py tests/integration/test_discussion_session_api.py` | 0 | 56 passed |
+| `.venv/bin/python -m pytest -o addopts='' -m 'not live' -q` | 0 | 609 passed, 1 skipped, 2 deselected, 0 failed |
+
+- skip 仍为 `test_worker_fails_closed_without_backend`，2 deselected 为 `live`。
+- 新增后端测试 `tests/integration/test_p6_readonly_get.py`：4 passed（defects/acceptances 列表、缺头 400、404、讨论会话与评审的 200/403/404）。
+
+### C. 默认镜像仍 fail-closed
+
+- `cd Test3/backend && env -u TEST3_ISOLATION_IMAGE .venv/bin/python -m pytest -o addopts='' -m 'not live' -rs tests/unit/test_p1_rev03_isolation_preflight.py` → 退出码 0，8 passed / 1 skipped。
+- skip 原因：`isolation image is not present locally: python:3.11-slim (no pull attempted)`；跑后 `docker image inspect python:3.11-slim` 仍非 0。
+
+## UI-A1 八步走查
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| 1. 侧栏可进入 Bot、Project、Settings | PASS | `screenshots/p6-t01-sidebar.png`；Playwright 断言三个 href 并逐页打开 |
+| 2. 无顶级 Model/Skill/Market/Cron | PASS | 断言导航无 `/models`、`/skills`，页面无 Market/Cron 文本；`APP_ROUTE_PATHS` 单测 |
+| 3a. /bots 空态可见 | PASS | `p6-t02-empty.png` |
+| 3b. 创建 Bot（表单内选 model 与 skill 版本）后列表出现 | PASS | `p6-t02-create.png`、`p6-t02-ready.png` |
+| 4. 打开项目工作台，左树有任务、进度可见 | PASS | `p6-t03-workstation.png`；T-01=100、T-02=40 |
+| 5. 右四个 Tab 均可切换 | PASS | `p6-t03-workstation.png`；四个 `panel-*` 依次可见 |
+| 6. splitter 可拖 | PASS | 拖动后 `aria-valuenow` 增大；手柄 `data-testid="ws-splitter"` 保留 |
+| 7. baseline_stale banner 正确 | PASS | `p6-t04-banner.png`；含「baseline_stale」「基线」「重新审批」 |
+| 8. 缺陷点击落到对应任务；错误/无权限有明确错误态 | PASS | `p6-t04-defect-locate.png`（detail=T-02）、`p6-t05-forbidden.png` |
+
+## 新增与修改文件总表
+
+新增前端：
+
+- `src/components/AppShell.tsx`、`AppShell.test.tsx`
+- `src/api/types.ts`
+- `src/pages/Settings.test.tsx`
+- `src/pages/bots/BotListPage.tsx`、`BotForm.tsx` 及测试
+- `src/pages/project/ProjectWorkstationPage.tsx`、`GrantStatusBanner.tsx`、`DiscussionReviewPanel.tsx`、`DefectList.tsx` 及测试
+- `e2e/p6-walkthrough.pw.ts`
+- `docs/plans/screenshots/*.png`、`screenshots/P6-index.md`
+
+新增后端：
+
+- `tests/integration/test_p6_readonly_get.py`
+
+修改：
+
+- `src/App.tsx`（AppShell 挂载、`APP_ROUTE_PATHS`、`/bots*`、`/projects/:projectId`）
+- `src/api/client.ts`（错误体兼容 + P2–P5 方法）、`client.test.ts`
+- `src/pages/Projects.tsx`（项目卡片工作台链接）
+- `src/styles.css`（Bot 表单、工作台、Grant/互评/缺陷样式）
+- `app/api/routes_acceptance.py`、`app/api/routes_discussion.py`、`app/execution/acceptance.py`（只读列表）
+- `tests/integration/snapshots/openapi_structure.json`（65 → 70）
+- `docs/API.md`、`docs/plans/P6-report.md`
+
+## 契约核对
+
+- 无顶级 Model/Skill/Market/Cron：路由表与导航测试通过。
+- 下线路由仍在：`/workstation/static-classroom`、`/deepseek/:id?` 指向 `RetiredFeature`，`App.retired.test.tsx` 全绿。
+- `POST /api/bots` body 无 `bot_id`（单测断言）；编辑走 PATCH；归档需确认。
+- 四态齐全：Bot 列表与工作台均有 loading / empty / error / forbidden。
+- 未开闸：`execution_safety_ready` 仍只在 `Test3/backend/app/services/runtime.py:230` 赋 `False`；前端只展示，无开闸控件。
+- `p1-pr-record.json` 无 diff，仍 `status=BLOCKED`、`github_pr_url=null`。
+- 未 push；原 5 个未跟踪文件未纳入；`node_modules/`、`dist/`、`test-results/`、`playwright-report/` 未纳入（`Test3/.gitignore` 已覆盖）。
+- OpenAPI 只增不删：65 → 70，删除 0，既有路径全部保留。
+- 错误体解析同时兼容 `{"error_category","detail"}` 与旧 `{"detail":{category,summary,run_id}}`。
+- 零真实付费 API：单测 mock fetch、走查 mock 路由；无 `model_live`。
+
+## 声明
+
+- 未进入 P7；未做杀进程恢复、真实 PR 闭环或自动 merge/deploy。
+- 恰好 5 个普通本地 commit，parent 链从 `4c1dc888fd3d1f53d0011ab454ea49523af0424d` 起连续；无 amend/reset/force。
+- T05 期间为走查补齐「项目 leader 作为默认 actor」的容器接线（`ProjectWorkstationPage.tsx`），与 T04 组件同属只读面板，本报告如实记录；该文件随 T05 提交。

@@ -287,6 +287,7 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
   const [tasks, setTasks] = useState<WorkstationTask[]>([]);
   const [runId, setRunId] = useState<string>("");
   const [grantStatus, setGrantStatus] = useState<GrantStatus | undefined>();
+  const [derivedGrantError, setDerivedGrantError] = useState<string | null>(null);
   const [defects, setDefects] = useState<DefectRecord[]>([]);
   const [ballots, setBallots] = useState<ReviewBallot[]>([]);
   const [dissentItems, setDissentItems] = useState<string[]>([]);
@@ -313,21 +314,36 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
         const items = Array.isArray(grants?.items) ? grants.items : [];
         const active = items[items.length - 1];
         if (active?.status) setGrantStatus(active.status as GrantStatus);
+        // A stale grant means the signed baseline changed; surface the same
+        // category the schedule API would return.
+        setDerivedGrantError(active?.status === "stale" ? "baseline_stale" : null);
       } catch {
         setGrantStatus(undefined);
       }
-      if (actorBotId) {
+      let actor = actorBotId;
+      if (!actor) {
+        // Discussion/defect reads need an explicit actor; the project leader is
+        // the natural default. A missing membership simply hides those panels.
         try {
-          const listed = await api.defects(String(latest.id), actorBotId);
+          const members = await api.memberships(String(id));
+          const items = Array.isArray(members?.items) ? members.items : [];
+          actor = items.find((member: any) => member.is_leader)?.bot_id;
+        } catch {
+          actor = undefined;
+        }
+      }
+      if (actor) {
+        try {
+          const listed = await api.defects(String(latest.id), actor);
           setDefects(Array.isArray(listed?.items) ? listed.items : []);
         } catch {
           setDefects([]);
         }
         try {
-          const sessions = await api.discussionSessions(String(id), actorBotId);
+          const sessions = await api.discussionSessions(String(id), actor);
           const session = (Array.isArray(sessions?.items) ? sessions.items : [])[0];
           if (session?.session_id) {
-            const reviews = await api.discussionReviews(String(session.session_id), actorBotId);
+            const reviews = await api.discussionReviews(String(session.session_id), actor);
             const items = Array.isArray(reviews?.items) ? reviews.items : [];
             setBallots(items);
             setDissentItems(
@@ -361,7 +377,7 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
       dirtyRef={dirtyRef}
       errorText={errorText}
       runId={runId}
-      grantErrorCategory={grantErrorCategory}
+      grantErrorCategory={grantErrorCategory || derivedGrantError}
       grantStatus={grantStatus}
       ballots={ballots}
       dissentItems={dissentItems}
