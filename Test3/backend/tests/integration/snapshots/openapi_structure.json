@@ -1,5 +1,36 @@
 {
   "paths": {
+    "DELETE /api/projects/{project_id}/memberships/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*",
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/bots": {
+      "body": null,
+      "params": [
+        "query:status"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/bots/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/config/models": {
       "body": null,
       "params": [],
@@ -19,6 +50,16 @@
       "params": [],
       "responses": [
         "200"
+      ]
+    },
+    "GET /api/projects/{project_id}/memberships": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
       ]
     },
     "GET /api/runs": {
@@ -181,6 +222,23 @@
         "422"
       ]
     },
+    "GET /api/skills": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/skills/{skill_id}/versions": {
+      "body": null,
+      "params": [
+        "path:skill_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/tasks/{task_id}": {
       "body": null,
       "params": [
@@ -191,10 +249,37 @@
         "422"
       ]
     },
+    "PATCH /api/bots/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "PATCH /api/runs/{run_id}/limits": {
       "body": "object",
       "params": [
         "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/bots": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
+      ]
+    },
+    "POST /api/bots/{bot_id}/archive": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
       ],
       "responses": [
         "200",
@@ -243,6 +328,16 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/memberships": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },
@@ -344,6 +439,13 @@
       "responses": [
         "200",
         "422"
+      ]
+    },
+    "POST /api/skills": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
       ]
     },
     "POST /api/tasks/{task_id}/{action}": {

@@ -88,3 +88,32 @@
 ## 控制动作可用状态
 
 后端 `require_control` 与前端 `controlEnabled` 对齐 Design.md 16.3 的子集：`retry`/`force-pass` 仅 `needs_human|failed`；`skip`/`pause` 覆盖未完成态。缺理由的 `force-pass` 被拒绝。
+## P2 新增路由（Skills / Bots / Memberships）
+
+P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请求体校验失败返回 **400**（不是 FastAPI 默认 422），错误体统一为：
+
+```json
+{"error_category": "validation_error", "detail": "..."}
+```
+
+可选 `extras` 字段保留给后续扩展。
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/skills` | 201 `SkillDefinition` | 400 `validation_error`；409 `skill_version_exists` |
+| GET | `/api/skills` | 200 `{"items": [...]}` | — |
+| GET | `/api/skills/{skill_id}/versions` | 200 `{"items": [...]}` | 404 `skill_not_found` |
+| POST | `/api/bots` | 201 `BotInstance`（服务器生成 `bot_id`） | 400 `validation_error`；409 `bot_name_conflict` |
+| GET | `/api/bots?status=active\|archived` | 200 `{"items": [...]}` | 400 `validation_error`（非法 status） |
+| GET | `/api/bots/{bot_id}` | 200 `BotInstance` | 404 `bot_not_found` |
+| PATCH | `/api/bots/{bot_id}` | 200 更新后的 `BotInstance`，附加只读整数 `pin_revision` | 400 `validation_error`；404 `bot_not_found`；409 `bot_name_conflict` / `bot_archived` |
+| POST | `/api/bots/{bot_id}/archive` | 200 `{"bot_id", "status": "archived"}` | 404 `bot_not_found`；409 `bot_already_archived` |
+| POST | `/api/projects/{project_id}/memberships` | 201 `ProjectMembership` | 404 `project_not_found` / `bot_not_found`；403 `bot_archived`；409 `membership_exists` / `leader_already_set` |
+| GET | `/api/projects/{project_id}/memberships` | 200 `{"items": [...]}` | 404 `project_not_found` |
+| DELETE | `/api/projects/{project_id}/memberships/{bot_id}` | 204，无响应体 | 404 `membership_not_found` |
+
+- 未注册 `POST /api/projects/{project_id}/bots`；该路径自然 404，且不写 `bots` 表。
+- 同一项目至多一个 `is_leader=true`；同一 Bot 可加入多个项目。移出项目只解除成员关系，不删除 Bot 或其 pin 历史。
+- Bot 的 `model` / `provider_ref` / `skill_bindings` 变更会追加 pin revision；同一 `(run_id, bot_id)` 的冻结快照在运行开始时写入 `run_bot_pin_snapshots`，运行中 PATCH Bot 不改变已冻结值。
+- `PATCH /api/bots/{bot_id}` 的 200 响应增加只读 `pin_revision` 是 P2 的契约扩展；请求体不接受 `bot_id` / `status` / `role_template`。
+- Skill 的 `description_md` 只是说明文本，不扩展工具权限；`allowed_tool_refs` 为空表示该层无授权，不是通配符。实际权限取平台 ∩ Bot.tool_policy ∩ Grant.allowed_tool_refs（再 ∩ 冻结 skill 版本）。
