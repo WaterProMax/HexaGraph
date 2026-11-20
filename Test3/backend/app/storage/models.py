@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -315,6 +315,52 @@ class MemoryRecordRow(Base):
     project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     visibility: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DiscussionSessionRow(Base):
+    __tablename__ = "discussion_sessions"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DiscussionProposalRow(Base):
+    __tablename__ = "discussion_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "author_bot_id",
+            "round",
+            name="uq_discussion_proposals_author_round",
+        ),
+    )
+
+    proposal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    author_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    sealed: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class DiscussionReviewRow(Base):
+    __tablename__ = "discussion_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "reviewer_bot_id",
+            "proposal_id",
+            name="uq_discussion_reviews_reviewer_proposal",
+        ),
+    )
+
+    review_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
