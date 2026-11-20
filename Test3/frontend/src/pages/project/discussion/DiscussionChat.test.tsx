@@ -1,7 +1,14 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BotInstance, DiscussionMessage, DiscussionTimelineItem } from "../../../api/types";
+import type {
+  BotInstance,
+  DiscussionMessage,
+  DiscussionSession,
+  DiscussionSessionStatus,
+  DiscussionTimelineItem,
+} from "../../../api/types";
 import { DiscussionChat } from "./DiscussionChat";
+import { isProposalSealed } from "./MessageBubble";
 
 const BOTS: BotInstance[] = [
   {
@@ -49,12 +56,32 @@ function message(
   } as DiscussionMessage;
 }
 
-function proposal(seq = 1): DiscussionTimelineItem {
+function proposal(seq = 1, round = 1, proposalId = "prop-1"): DiscussionTimelineItem {
   return {
     type: "message",
     message: message(seq, "proposal", {
-      payload: { proposal_id: "prop-1", chars: 842, truncated: false, round: 1 },
+      round,
+      payload: { proposal_id: proposalId, chars: 842, truncated: false, round },
     }),
+  };
+}
+
+function session(status: DiscussionSessionStatus, currentRound = 1): DiscussionSession {
+  return {
+    session_id: "s1",
+    project_id: "p-1",
+    leader_bot_id: "bot-a",
+    participant_bot_ids: ["bot-a", "bot-b"],
+    status,
+    current_round: currentRound,
+    budget: { max_rounds: 3, max_tokens: null, max_wallclock_seconds: null, score_gap_threshold: 2 },
+    requirement_snapshot_hash: "hash",
+    decision_package: null,
+    requirement_text: "做一个座位预约工具",
+    previous_session_id: null,
+    resolution_comment: null,
+    paused: false,
+    created_at: "2026-11-20T10:00:00Z",
   };
 }
 
@@ -69,7 +96,13 @@ afterEach(cleanup);
 describe("DiscussionChat", () => {
   it("shows an empty state before any message arrives", () => {
     render(
-      <DiscussionChat timeline={[]} bots={BOTS} stage="idea" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={[]}
+        bots={BOTS}
+        stage="idea"
+        session={null}
+        loadProposalBody={loadSpy()}
+      />,
     );
     expect(screen.getByTestId("disc-chat").textContent).toContain("还没有消息");
   });
@@ -81,6 +114,7 @@ describe("DiscussionChat", () => {
         timeline={[proposal()]}
         bots={BOTS}
         stage="independent"
+        session={session("round1_independent")}
         loadProposalBody={loadProposalBody}
       />,
     );
@@ -99,6 +133,7 @@ describe("DiscussionChat", () => {
         timeline={[proposal()]}
         bots={BOTS}
         stage="review"
+        session={session("cross_review")}
         loadProposalBody={loadProposalBody}
       />,
     );
@@ -125,6 +160,7 @@ describe("DiscussionChat", () => {
         timeline={[proposal()]}
         bots={BOTS}
         stage="approval"
+        session={session("converged_pending_human")}
         loadProposalBody={loadProposalBody}
       />,
     );
@@ -148,6 +184,7 @@ describe("DiscussionChat", () => {
         timeline={[truncated]}
         bots={BOTS}
         stage="independent"
+        session={session("round1_independent")}
         loadProposalBody={loadSpy()}
       />,
     );
@@ -191,7 +228,13 @@ describe("DiscussionChat", () => {
     ];
 
     render(
-      <DiscussionChat timeline={timeline} bots={BOTS} stage="leader" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={timeline}
+        bots={BOTS}
+        stage="leader"
+        session={session("cross_review")}
+        loadProposalBody={loadSpy()}
+      />,
     );
 
     const chat = screen.getByTestId("disc-chat");
@@ -224,7 +267,13 @@ describe("DiscussionChat", () => {
       },
     ];
     render(
-      <DiscussionChat timeline={timeline} bots={BOTS} stage="leader" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={timeline}
+        bots={BOTS}
+        stage="leader"
+        session={session("cross_review")}
+        loadProposalBody={loadSpy()}
+      />,
     );
     const avatar = screen.getByTestId("bot-avatar");
     expect(avatar.getAttribute("data-bot-id")).toBe("bot-missing");
@@ -236,11 +285,93 @@ describe("DiscussionChat", () => {
       { type: "divider", key: "s2", text: "第 2 次讨论 · 你的意见：补上边界用例" },
     ];
     render(
-      <DiscussionChat timeline={timeline} bots={BOTS} stage="review" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={timeline}
+        bots={BOTS}
+        stage="review"
+        session={session("cross_review")}
+        loadProposalBody={loadSpy()}
+      />,
     );
     const divider = screen.getByTestId("disc-divider");
     expect(divider.textContent).toContain("第 2 次讨论 · 你的意见：补上边界用例");
     expect(divider.getAttribute("role")).toBe("separator");
+  });
+});
+
+describe("isProposalSealed", () => {
+  it("never seals without a session", () => {
+    expect(isProposalSealed(null, 1)).toBe(false);
+  });
+
+  it("seals the current round during the blind independent round", () => {
+    const current = session("round1_independent", 1);
+    expect(isProposalSealed(current, 1)).toBe(true);
+    expect(isProposalSealed(current, 2)).toBe(false);
+  });
+
+  it("seals only the open revision round", () => {
+    const current = session("round_n_revise", 2);
+    expect(isProposalSealed(current, 2)).toBe(true);
+    expect(isProposalSealed(current, 1)).toBe(false);
+  });
+
+  it("unseals every round from cross review onwards", () => {
+    expect(isProposalSealed(session("cross_review", 2), 1)).toBe(false);
+    expect(isProposalSealed(session("cross_review", 2), 2)).toBe(false);
+    expect(isProposalSealed(session("converged_pending_human", 2), 2)).toBe(false);
+  });
+});
+
+describe("DiscussionChat proposal sealing by round", () => {
+  it("seals the open revision round but reveals the previous round", async () => {
+    const loadProposalBody = loadSpy();
+    render(
+      <DiscussionChat
+        timeline={[proposal(1, 1, "prop-r1"), proposal(2, 2, "prop-r2")]}
+        bots={BOTS}
+        stage="revise"
+        session={session("round_n_revise", 2)}
+        loadProposalBody={loadProposalBody}
+      />,
+    );
+
+    const bubbles = screen.getAllByTestId("disc-bubble-proposal");
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[1].textContent).toContain("提交了方案 · 第 2 轮");
+    expect(bubbles[1].textContent).toContain("已提交方案（内容已封存）");
+    expect(within(bubbles[1]).queryByText("展开方案")).toBeNull();
+    expect(within(bubbles[0]).queryByText("展开方案")).toBeTruthy();
+    expect(loadProposalBody).not.toHaveBeenCalled();
+
+    fireEvent.click(within(bubbles[0]).getByText("展开方案"));
+    expect(await within(bubbles[0]).findByText(/先用邮箱登录/)).toBeTruthy();
+    expect(loadProposalBody).toHaveBeenCalledTimes(1);
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1");
+  });
+
+  it("reveals both rounds once cross review starts", async () => {
+    const loadProposalBody = loadSpy();
+    render(
+      <DiscussionChat
+        timeline={[proposal(1, 1, "prop-r1"), proposal(2, 2, "prop-r2")]}
+        bots={BOTS}
+        stage="review"
+        session={session("cross_review", 2)}
+        loadProposalBody={loadProposalBody}
+      />,
+    );
+
+    const bubbles = screen.getAllByTestId("disc-bubble-proposal");
+    expect(within(bubbles[0]).getByText("展开方案")).toBeTruthy();
+    expect(within(bubbles[1]).getByText("展开方案")).toBeTruthy();
+
+    fireEvent.click(within(bubbles[0]).getByText("展开方案"));
+    fireEvent.click(within(bubbles[1]).getByText("展开方案"));
+    expect(await screen.findAllByText(/先用邮箱登录/)).toHaveLength(2);
+    expect(loadProposalBody).toHaveBeenCalledTimes(2);
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r2");
   });
 });
 
@@ -261,7 +392,13 @@ describe("DiscussionChat auto-scroll", () => {
 
   it("follows new messages while the user is already at the bottom", () => {
     const { rerender } = render(
-      <DiscussionChat timeline={[proposal(1)]} bots={BOTS} stage="review" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={[proposal(1)]}
+        bots={BOTS}
+        stage="review"
+        session={session("cross_review")}
+        loadProposalBody={loadSpy()}
+      />,
     );
     const chat = screen.getByTestId("disc-chat");
     const readTop = mockScroll(chat, 700);
@@ -272,6 +409,7 @@ describe("DiscussionChat auto-scroll", () => {
         timeline={[proposal(1), proposal(2)]}
         bots={BOTS}
         stage="review"
+        session={session("cross_review")}
         loadProposalBody={loadSpy()}
       />,
     );
@@ -280,7 +418,13 @@ describe("DiscussionChat auto-scroll", () => {
 
   it("does not yank the user down after they scrolled up", () => {
     const { rerender } = render(
-      <DiscussionChat timeline={[proposal(1)]} bots={BOTS} stage="review" loadProposalBody={loadSpy()} />,
+      <DiscussionChat
+        timeline={[proposal(1)]}
+        bots={BOTS}
+        stage="review"
+        session={session("cross_review")}
+        loadProposalBody={loadSpy()}
+      />,
     );
     const chat = screen.getByTestId("disc-chat");
     const readTop = mockScroll(chat, 100);
@@ -291,6 +435,7 @@ describe("DiscussionChat auto-scroll", () => {
         timeline={[proposal(1), proposal(2)]}
         bots={BOTS}
         stage="review"
+        session={session("cross_review")}
         loadProposalBody={loadSpy()}
       />,
     );

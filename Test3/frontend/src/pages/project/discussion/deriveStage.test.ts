@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiscussionSession, DiscussionSessionStatus } from "../../../api/types";
-import { deriveStage } from "./deriveStage";
+import { deriveStage, type DiscussionStage } from "./deriveStage";
 
 function session(status: DiscussionSessionStatus, overrides: Partial<DiscussionSession> = {}): DiscussionSession {
   return {
@@ -54,8 +54,13 @@ describe("deriveStage", () => {
     expect(deriveStage(session("cross_review"))).toBe("review");
   });
 
-  it("maps round_n_revise to review", () => {
-    expect(deriveStage(session("round_n_revise"))).toBe("review");
+  it("maps round_n_revise to revise", () => {
+    expect(deriveStage(session("round_n_revise"))).toBe("revise");
+  });
+
+  it("includes revise in the discussion stage union", () => {
+    const stage: DiscussionStage = "revise";
+    expect(stage).toBe("revise");
   });
 
   it("maps converged without a decision package to leader", () => {

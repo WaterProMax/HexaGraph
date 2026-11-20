@@ -3,6 +3,7 @@ import type { DiscussionSession } from "../../../api/types";
 export type DiscussionStage =
   | "idea"
   | "independent"
+  | "revise"
   | "review"
   | "leader"
   | "approval"
@@ -24,8 +25,9 @@ export function deriveStage(session: DiscussionSession | null): DiscussionStage 
     case "round1_independent":
       return "independent";
     case "cross_review":
-    case "round_n_revise":
       return "review";
+    case "round_n_revise":
+      return "revise";
     case "converged_pending_human":
       return session.decision_package ? "approval" : "leader";
     case "approved":

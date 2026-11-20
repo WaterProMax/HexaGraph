@@ -1,12 +1,16 @@
 import { useState } from "react";
-import type { BotInstance, DiscussionMessage, DiscussionTimelineItem } from "../../../api/types";
+import type {
+  BotInstance,
+  DiscussionMessage,
+  DiscussionSession,
+  DiscussionTimelineItem,
+} from "../../../api/types";
 import { BotAvatar } from "../../../components/BotAvatar";
-import type { DiscussionStage } from "./deriveStage";
 
 export type MessageBubbleProps = {
   item: DiscussionTimelineItem;
   bots: BotInstance[];
-  stage: DiscussionStage;
+  session: DiscussionSession | null;
   loadProposalBody: (proposalId: string) => Promise<string>;
 };
 
@@ -41,9 +45,20 @@ const SYSTEM_EVENT_LABELS: Record<string, string> = {
   budget_exhausted: "已用尽预算",
 };
 
-/** Only `idea` / `independent` keep proposal bodies sealed; every later stage may reveal them. */
-export function isSealedStage(stage: DiscussionStage): boolean {
-  return stage === "idea" || stage === "independent";
+/**
+ * A proposal stays sealed until its own round is closed. During the blind first
+ * round and an open revision round only the current round is sealed; proposals
+ * from earlier rounds are already revealed by the time the next round starts.
+ */
+export function isProposalSealed(
+  session: DiscussionSession | null,
+  proposalRound: number,
+): boolean {
+  if (!session) return false;
+  if (session.status !== "round1_independent" && session.status !== "round_n_revise") {
+    return false;
+  }
+  return proposalRound === session.current_round;
 }
 
 export function resolveBubbleBot(bots: BotInstance[], botId: string | null | undefined): AvatarBot {
@@ -95,12 +110,12 @@ function SystemBubble({ message }: { message: DiscussionMessage }) {
 function ProposalBubble({
   message,
   bot,
-  stage,
+  session,
   loadProposalBody,
 }: {
   message: DiscussionMessage;
   bot: AvatarBot;
-  stage: DiscussionStage;
+  session: DiscussionSession | null;
   loadProposalBody: (proposalId: string) => Promise<string>;
 }) {
   const proposalId = readString(message.payload, "proposal_id");
@@ -108,7 +123,7 @@ function ProposalBubble({
   const round = Number.isFinite(payloadRound) && payloadRound > 0 ? payloadRound : message.round || 1;
   const chars = typeof message.payload?.chars === "number" ? message.payload.chars : null;
   const truncated = message.payload?.truncated === true;
-  const sealed = isSealedStage(stage);
+  const sealed = isProposalSealed(session, round);
 
   const [expanded, setExpanded] = useState(false);
   const [body, setBody] = useState<string | null>(null);
@@ -273,7 +288,7 @@ function LeaderBubble({ message, bot }: { message: DiscussionMessage; bot: Avata
   );
 }
 
-export function MessageBubble({ item, bots, stage, loadProposalBody }: MessageBubbleProps) {
+export function MessageBubble({ item, bots, session, loadProposalBody }: MessageBubbleProps) {
   if (item.type === "divider") {
     return <Divider text={item.text} />;
   }
@@ -289,7 +304,7 @@ export function MessageBubble({ item, bots, stage, loadProposalBody }: MessageBu
       <ProposalBubble
         message={message}
         bot={bot}
-        stage={stage}
+        session={session}
         loadProposalBody={loadProposalBody}
       />
     );

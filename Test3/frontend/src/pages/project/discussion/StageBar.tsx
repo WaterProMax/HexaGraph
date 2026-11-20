@@ -1,17 +1,13 @@
-export type DiscussionStage =
-  | "idea"
-  | "independent"
-  | "review"
-  | "leader"
-  | "approval"
-  | "approved"
-  | "terminated";
+import type { DiscussionStage } from "./deriveStage";
+
+export type { DiscussionStage };
 
 const STEPS = ["想法", "独立方案", "互评", "Leader 审核", "你的审批", "任务拆解"] as const;
 
 const STAGE_STEP: Record<Exclude<DiscussionStage, "terminated">, number> = {
   idea: 0,
   independent: 1,
+  revise: 1,
   review: 2,
   leader: 3,
   approval: 4,
@@ -20,16 +16,32 @@ const STAGE_STEP: Record<Exclude<DiscussionStage, "terminated">, number> = {
 
 export type StageBarProps = {
   stage: DiscussionStage;
+  /** Current session round, used for the subtitle on the independent / revise / review steps. */
+  round?: number;
 };
+
+function stageSubtitle(stage: DiscussionStage, round: number): string | null {
+  switch (stage) {
+    case "independent":
+      return `第 ${round} 轮 · 独立方案`;
+    case "revise":
+      return `第 ${round} 轮 · 修改方案`;
+    case "review":
+      return `第 ${round} 轮 · 互评`;
+    default:
+      return null;
+  }
+}
 
 /**
  * Discussion progress bar. `deriveStage` decides the stage; this component only
  * maps it to the six fixed steps and marks done / current / terminated.
  */
-export function StageBar({ stage }: StageBarProps) {
+export function StageBar({ stage, round }: StageBarProps) {
   const terminated = stage === "terminated";
   const currentIndex = terminated ? -1 : STAGE_STEP[stage];
   const lastIndex = STEPS.length - 1;
+  const subtitle = stageSubtitle(stage, round ?? 1);
 
   return (
     <div
@@ -55,6 +67,11 @@ export function StageBar({ stage }: StageBarProps) {
                 {done ? "✓" : index + 1}
               </span>
               <span className="disc-stage-label">{label}</span>
+              {current && subtitle && (
+                <span className="disc-stage-subtitle" data-testid="disc-stage-subtitle">
+                  {subtitle}
+                </span>
+              )}
               {waiting && <span className="disc-stage-note">等待任务拆解</span>}
             </li>
           );

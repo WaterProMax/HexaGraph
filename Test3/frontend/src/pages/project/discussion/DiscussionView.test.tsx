@@ -229,6 +229,24 @@ describe("DiscussionView stage routing", () => {
     expect(screen.queryByLabelText("一句话想法")).toBeNull();
   });
 
+  it("shows the chat and score panel for a revision round labelled as 修改方案", () => {
+    const session = makeSession({ status: "round_n_revise", current_round: 2 });
+    setHookState({
+      session,
+      sessions: [session],
+      timeline: [{ type: "divider", key: "d1", text: "第 2 次讨论" }],
+    });
+    renderView();
+
+    expect(stageBarStage()).toBe("revise");
+    const bar = screen.getByTestId("disc-stage-bar");
+    const items = within(bar).getAllByRole("listitem");
+    expect(items[1].getAttribute("aria-current")).toBe("step");
+    expect(within(bar).getByTestId("disc-stage-subtitle").textContent).toBe("第 2 轮 · 修改方案");
+    expect(screen.getByTestId("disc-chat")).toBeTruthy();
+    expect(screen.getByTestId("disc-score-panel")).toBeTruthy();
+  });
+
   it("shows a non-blocking hint when the live connection failed", () => {
     const session = makeSession({ status: "cross_review" });
     setHookState({ session, sessions: [session], connection: "error" });

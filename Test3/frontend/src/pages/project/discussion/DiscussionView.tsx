@@ -22,7 +22,14 @@ export type DiscussionViewProps = {
 };
 
 /** Stages that show the two-column timeline + scoring layout. */
-const CHAT_STAGES: DiscussionStage[] = ["independent", "review", "leader", "approval", "terminated"];
+const CHAT_STAGES: DiscussionStage[] = [
+  "independent",
+  "revise",
+  "review",
+  "leader",
+  "approval",
+  "terminated",
+];
 
 export const SPEC_PREVIEW_CHARS = 240;
 export const UNSEALED_BODY_TEXT = "正文尚未解封";
@@ -137,7 +144,7 @@ export function DiscussionView({
 
   return (
     <div className="disc-view" data-testid="disc-view" data-stage={stage}>
-      <StageBar stage={stage} />
+      <StageBar stage={stage} round={session?.current_round} />
 
       {loading && !session && (
         <p className="disc-view-status" role="status" data-testid="disc-loading">
@@ -182,6 +189,7 @@ export function DiscussionView({
             timeline={timeline}
             bots={bots}
             stage={stage}
+            session={session}
             loadProposalBody={loadProposalBody}
           />
           <aside className="disc-side" aria-label="评分与操作">

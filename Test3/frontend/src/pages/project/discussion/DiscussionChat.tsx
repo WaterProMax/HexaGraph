@@ -1,5 +1,9 @@
 import { useEffect, useRef, type UIEvent } from "react";
-import type { BotInstance, DiscussionTimelineItem } from "../../../api/types";
+import type {
+  BotInstance,
+  DiscussionSession,
+  DiscussionTimelineItem,
+} from "../../../api/types";
 import type { DiscussionStage } from "./deriveStage";
 import { MessageBubble } from "./MessageBubble";
 
@@ -7,6 +11,7 @@ export type DiscussionChatProps = {
   timeline: DiscussionTimelineItem[];
   bots: BotInstance[];
   stage: DiscussionStage;
+  session: DiscussionSession | null;
   loadProposalBody: (proposalId: string) => Promise<string>;
 };
 
@@ -19,7 +24,7 @@ export function timelineItemKey(item: DiscussionTimelineItem): string {
     : `message:${item.message.session_id}:${item.message.seq}`;
 }
 
-export function DiscussionChat({ timeline, bots, stage, loadProposalBody }: DiscussionChatProps) {
+export function DiscussionChat({ timeline, bots, session, loadProposalBody }: DiscussionChatProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const lastKey = timeline.length > 0 ? timelineItemKey(timeline[timeline.length - 1]) : "";
@@ -55,7 +60,7 @@ export function DiscussionChat({ timeline, bots, stage, loadProposalBody }: Disc
             <MessageBubble
               item={item}
               bots={bots}
-              stage={stage}
+              session={session}
               loadProposalBody={loadProposalBody}
             />
           </div>

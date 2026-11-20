@@ -839,6 +839,14 @@
 }
 
 :is(.ws, .ws-page) .disc-stage-label { overflow-wrap: anywhere; }
+:is(.ws, .ws-page) .disc-stage-subtitle {
+  max-width: 100%;
+  color: var(--glass-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 :is(.ws, .ws-page) .disc-stage-step.is-pending .disc-stage-mark { border-style: dashed; }
 
 :is(.ws, .ws-page) .disc-stage-step.is-done { color: var(--glass-secondary); }
