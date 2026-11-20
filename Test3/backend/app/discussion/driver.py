@@ -29,7 +29,11 @@ from app.agents.runtime import bot_endpoint
 from app.bots.chat import system_prompt
 from app.bots.files import BotFileStore, budget_chars, context_window, render_file_slot
 from app.bots.registry import BotRegistry
-from app.discussion.converge import build_round_state, should_converge
+from app.discussion.converge import (
+    REQUIRED_HARD_GATE_COUNT,
+    build_round_state,
+    should_converge,
+)
 from app.discussion.cross_review import (
     DuplicateReview,
     ProposalNotFound,
@@ -924,6 +928,13 @@ async def _converge_round(
         else:
             await session.rollback()
     round_no = locked.current_round
+    threshold = state.budget.score_gap_threshold
+    conditions_met = (
+        state.all_required_hard_gates_pass
+        and state.score_spread is not None
+        and threshold is not None
+        and state.score_spread <= threshold
+    )
 
     if action == "budget_exhausted":
         await _system(
@@ -934,6 +945,22 @@ async def _converge_round(
             round_no=round_no,
         )
         return False
+    if action == "submit_human" and threshold is not None and not conditions_met:
+        latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0
+        unmet = max(0, REQUIRED_HARD_GATE_COUNT - latest)
+        spread_text = (
+            "无法计算" if state.score_spread is None else f"{state.score_spread:g}"
+        )
+        await _system(
+            bench,
+            session_id,
+            "forced_submit",
+            f"已达第 {round_no} 轮上限，仍未达成一致（分差 {spread_text} / "
+            f"阈值 {threshold:g}，未通过硬门槛 {unmet} 项），交由 Leader 综合。",
+            round_no=round_no,
+            action=action,
+        )
+        return True
     if action in {"submit_human", "no_improvement"}:
         await _system(
             bench,
@@ -1085,6 +1112,34 @@ async def _leader_materials(
     return blocks, state.dissent_items
 
 
+async def _forced_convergence_note(
+    bench: Any, record: DiscussionSession
+) -> str | None:
+    async with bench.db_session() as session:
+        state = await build_round_state(session, record)
+    threshold = state.budget.score_gap_threshold
+    if threshold is None or state.current_round < state.budget.max_rounds:
+        return None
+    conditions_met = (
+        state.all_required_hard_gates_pass
+        and state.score_spread is not None
+        and state.score_spread <= threshold
+    )
+    if conditions_met:
+        return None
+    latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0
+    unmet = max(0, REQUIRED_HARD_GATE_COUNT - latest)
+    spread_text = (
+        "分差无法计算"
+        if state.score_spread is None
+        else f"分差 {state.score_spread:g}"
+    )
+    return (
+        f"未达成一致：第 {state.current_round} 轮上限，{spread_text}"
+        f"（阈值 {threshold:g}），未通过硬门槛 {unmet} 项"
+    )
+
+
 async def _step_leader(bench: Any, session_id: str) -> bool:
     record = await _get(bench, session_id)
     round_no = record.current_round
@@ -1137,7 +1192,16 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
             "dissent_items": [],
         }
         spec = spec or "（Leader 未输出可解析的规格）"
-    dissent = list(dict.fromkeys([*verdict["dissent_items"], *review_dissent]))
+    forced_note = await _forced_convergence_note(bench, record)
+    dissent = list(
+        dict.fromkeys(
+            [
+                *verdict["dissent_items"],
+                *review_dissent,
+                *([forced_note] if forced_note else []),
+            ]
+        )
+    )
     if verdict["ok"]:
         return await _leader_submit(bench, session_id, leader_bot_id, spec, dissent, round_no)
     return await _leader_request_revision(

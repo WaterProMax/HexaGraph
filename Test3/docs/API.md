@@ -222,10 +222,15 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 | 顺序 | 条件 | action |
 |---|---|---|
 | 1 | token 或 wallclock 预算耗尽 | budget_exhausted |
-| 2 | 全部硬门槛通过，且方案平均总分差 ≤ `score_gap_threshold` | submit_human |
-| 3 | 当前轮 >= max_rounds | submit_human（强制交人工） |
-| 4 | 最近两轮硬门槛通过项未增加 | no_improvement |
-| 5 | 其他 | revise |
+| 2 | 全部硬门槛通过，且方案平均总分差 ≤ `score_gap_threshold` | submit_human（正常收敛） |
+| 3 | 当前轮 >= max_rounds（仍未达成条件 2） | submit_human（到顶强制交 Leader） |
+| 4 | 其他 | revise |
+
+阈值模式**不返回** `no_improvement`：未到轮次上限时一律再来一轮，只有满足条件 2 或轮次到顶才交 Leader。
+
+- 到顶强制（顺序 3）在消息流里发 system `forced_submit`，文案写明轮次上限、分差 / 阈值、未通过硬门槛数量，不再说“达到收敛条件”。
+- 同时在决策包 `dissent_items` 里写入一条 `未达成一致：第 N 轮上限，分差 x（阈值 y），未通过硬门槛 k 项`，供人工审批时识别。
+- `score_spread is None`（少于 2 个可比较方案）视为不满足条件 2，到顶时文案写“分差无法计算”。
 
 `score_gap_threshold=None` 时保持旧规则（硬门槛 + dissent 覆盖分支）：
 
@@ -238,7 +243,7 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 | 5 | 其他 | revise |
 
 - 方案总分 = 各评审四个维度分数之和；`proposal_totals` 取每个方案的平均总分，`proposal_spread` = 最高均分 − 最低均分，只比较本轮至少有一票的方案。
-- 可比较方案少于 2 个时 spread 未定义，阈值模式的条件 2 不成立，会落到轮次上限 / 无改进 / revise。
+- 可比较方案少于 2 个时 spread 未定义，阈值模式的条件 2 不成立，会落到轮次上限 / revise。
 - 状态映射：budget_exhausted → budget_exhausted；submit_human / no_improvement → converged_pending_human；revise → round_n_revise。
 
 ### DecisionPackage 与人工规格门

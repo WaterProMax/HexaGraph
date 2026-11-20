@@ -90,6 +90,14 @@ def _review(
     }
 
 
+def _uneven_review(score: int) -> dict:
+    review = _review(
+        value=score, feasibility=score, testability=score, clarity=score
+    )
+    review["hard_gate_results"]["evidence_complete"] = False
+    return review
+
+
 def _leader_reply(
     *, ok: bool = True, reason: str = "六个部分齐全。", dissent: list[str] | None = None
 ) -> str:
@@ -302,6 +310,61 @@ async def test_wide_spread_revises_then_converges_in_second_round(app) -> None:
         assert "你的上一版方案" in user
         assert "他人方案" in user
         assert "你收到的评审" in user
+
+
+@pytest.mark.asyncio
+async def test_stalled_threshold_mode_forces_submit_only_at_round_limit(app) -> None:
+    bench = app.state.workbench
+    provider = app.state.provider
+    client, _bots, _project_id, session_id = await _setup(app, ["Leader", "Alice"])
+    try:
+        for index in range(3):
+            provider.push(_proposal(f"{LEADER_BODY} 第 {index + 1} 版"))
+            provider.push(_proposal(f"{ALICE_BODY} 第 {index + 1} 版"))
+            # Work order: Leader reviews Alice (low), Alice reviews Leader (high).
+            provider.push(_uneven_review(2))
+            provider.push(_uneven_review(5))
+        provider.push(_leader_reply())
+
+        await driver.run_session(bench, session_id)
+        await _wait(bench, session_id)
+    finally:
+        await client.aclose()
+
+    record = await _get(bench, session_id)
+    assert record is not None
+    assert record.current_round == 3
+    assert record.status == "converged_pending_human"
+    assert record.decision_package is not None
+    assert record.decision_package.body_md.strip()
+    assert any(
+        "未达成一致" in item for item in record.decision_package.dissent_items
+    )
+
+    messages = await _messages(bench, session_id)
+    round_started = [
+        m["round"]
+        for m in messages
+        if m["kind"] == "system" and m["payload"]["event"] == "round_started"
+    ]
+    assert round_started == [1, 2, 3]
+
+    convergence_events = {
+        m["round"]: m["payload"]["event"]
+        for m in messages
+        if m["kind"] == "system"
+        and m["payload"]["event"] in {"converged", "forced_submit"}
+    }
+    assert 1 not in convergence_events
+    assert 2 not in convergence_events
+    assert convergence_events[3] == "forced_submit"
+
+    forced = [
+        m for m in messages if m["payload"].get("event") == "forced_submit"
+    ]
+    assert len(forced) == 1
+    assert "已达第 3 轮上限" in forced[0]["payload"]["text"]
+    assert "未达成一致" in forced[0]["payload"]["text"]
 
 
 @pytest.mark.asyncio

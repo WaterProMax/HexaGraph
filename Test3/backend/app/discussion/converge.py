@@ -148,7 +148,12 @@ def _spread_text(spread: float | None, threshold: float) -> str:
 def _converge_with_score_gap(
     state: DiscussionRoundState, threshold: float
 ) -> tuple[str, str]:
-    """Threshold mode: unmet conditions get another round instead of dissent override."""
+    """Threshold mode: unmet conditions get another round instead of dissent override.
+
+    Only a fully-passing gate set within the threshold converges; everything
+    else revises until ``max_rounds`` is reached, then submits forcibly.  This
+    mode never returns ``no_improvement``.
+    """
     dissent = list(dict.fromkeys(state.dissent_items))
     dissent_text = f"; dissent: {' | '.join(dissent)}" if dissent else ""
     latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0
@@ -165,13 +170,6 @@ def _converge_with_score_gap(
             "submit_human",
             f"round limit reached at round {state.current_round}; "
             f"unmet hard gates: {unmet}; {spread_text}" + dissent_text,
-        )
-    counts = state.hard_gate_pass_counts
-    if len(counts) >= 2 and counts[-1] <= counts[-2]:
-        return (
-            "no_improvement",
-            f"hard gate pass count did not improve: {counts[-2]} -> {counts[-1]}; "
-            f"{spread_text}" + dissent_text,
         )
     return (
         "revise",

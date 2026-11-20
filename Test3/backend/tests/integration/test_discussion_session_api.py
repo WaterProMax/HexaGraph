@@ -269,7 +269,7 @@ async def test_concurrent_group_leaves_one_complete_list(app) -> None:
     assert stored.status == "grouping"
     assert stored.participant_bot_ids in (first, second)
 
-async def _grouped_session(app):
+async def _grouped_session(app, budget=None):
     bench = app.state.workbench
     p1 = bench.create_project("P1")["id"]
     async with _client(app) as client:
@@ -277,7 +277,8 @@ async def _grouped_session(app):
         await _add_member(client, p1, bots[0], leader=True)
         await _add_member(client, p1, bots[1])
         await _add_member(client, p1, bots[2])
-        created = await _create_session(client, p1, bots[0], bots[1:3])
+        overrides = {"budget": budget} if budget is not None else {}
+        created = await _create_session(client, p1, bots[0], bots[1:3], **overrides)
         grouped = await client.post(
             f"/api/discussion-sessions/{created.json()['session_id']}/group",
             json={"participant_bot_ids": bots[1:3]},
@@ -488,7 +489,10 @@ async def test_converge_concurrent_has_one_winner(app) -> None:
 
 @pytest.mark.asyncio
 async def test_converge_no_improvement_sets_pending_human(app) -> None:
-    _bench, _p1, bots, session_id = await _grouped_session(app)
+    # 显式旧模式：阈值为 None 时才保留 no_improvement。
+    _bench, _p1, bots, session_id = await _grouped_session(
+        app, budget={"max_rounds": 3, "score_gap_threshold": None}
+    )
     leader, alice, bob, _outsider = bots
     partial = {
         "coverage": True,

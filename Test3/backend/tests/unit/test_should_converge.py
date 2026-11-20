@@ -178,7 +178,7 @@ def test_threshold_mode_round_limit_forces_submit_human() -> None:
     assert "score spread 7.5" in reason
 
 
-def test_threshold_mode_no_improvement_still_applies() -> None:
+def test_threshold_mode_ignores_no_improvement() -> None:
     action, reason = should_converge(
         _state(
             counts=[1, 1],
@@ -188,8 +188,89 @@ def test_threshold_mode_no_improvement_still_applies() -> None:
             score_gap_threshold=2.0,
         )
     )
-    assert action == "no_improvement"
-    assert "did not improve" in reason
+    assert action == "revise"
+    assert "convergence conditions not met" in reason
+
+
+def test_threshold_mode_stalled_counts_get_another_round_before_round_limit() -> None:
+    action, reason = should_converge(
+        _state(
+            counts=[1, 1],
+            current_round=2,
+            max_rounds=3,
+            score_spread=7.5,
+            score_gap_threshold=2.0,
+        )
+    )
+    assert action == "revise"
+    assert "score spread 7.5" in reason
+
+
+def test_threshold_mode_stalled_counts_force_submit_at_round_limit() -> None:
+    action, reason = should_converge(
+        _state(
+            counts=[1, 1],
+            current_round=3,
+            max_rounds=3,
+            score_spread=7.5,
+            score_gap_threshold=2.0,
+        )
+    )
+    assert action == "submit_human"
+    assert "round limit" in reason
+    assert "unmet hard gates: 2" in reason
+
+
+def test_threshold_mode_missing_spread_gets_another_round_then_round_limit() -> None:
+    early_action, early_reason = should_converge(
+        _state(
+            counts=[1, 1],
+            current_round=2,
+            max_rounds=3,
+            score_spread=None,
+            score_gap_threshold=2.0,
+        )
+    )
+    late_action, late_reason = should_converge(
+        _state(
+            counts=[1, 1],
+            current_round=3,
+            max_rounds=3,
+            score_spread=None,
+            score_gap_threshold=2.0,
+        )
+    )
+    assert early_action == "revise"
+    assert "unavailable" in early_reason
+    assert late_action == "submit_human"
+    assert "round limit" in late_reason
+    assert "unavailable" in late_reason
+
+
+def test_threshold_mode_all_gates_with_wide_spread_gets_another_round() -> None:
+    action, _reason = should_converge(
+        _state(
+            counts=[3, 3],
+            current_round=2,
+            max_rounds=3,
+            score_spread=7.5,
+            score_gap_threshold=2.0,
+        )
+    )
+    assert action == "revise"
+
+
+def test_threshold_mode_all_gates_within_spread_submits_human() -> None:
+    action, _reason = should_converge(
+        _state(
+            counts=[3, 3],
+            current_round=2,
+            max_rounds=3,
+            score_spread=1.0,
+            score_gap_threshold=2.0,
+        )
+    )
+    assert action == "submit_human"
 
 
 def test_threshold_mode_budget_exhaustion_wins_first() -> None:
