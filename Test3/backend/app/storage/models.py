@@ -364,6 +364,28 @@ class DiscussionReviewRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class ModuleAcceptanceRow(Base):
+    """Human module acceptance (P5, contracts C.6)."""
+
+    __tablename__ = "module_acceptances"
+
+    acceptance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    module_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DefectRow(Base):
+    """Defect flowing back from a module acceptance (P5, contracts C.6)."""
+
+    __tablename__ = "defects"
+
+    defect_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    task_code: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class RunExecutionStateRow(Base):
     """SQLite authority for a run's execution profile and approved hashes.
 

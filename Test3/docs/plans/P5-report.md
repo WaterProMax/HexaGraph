@@ -34,3 +34,17 @@ T05 的完整 SHA 由本文件内容决定，无法在提交前写入自身；�
 - 连续执行：`schedule_once` 原本就在同一把锁的 `while` 循环里按 `grant.task_codes` 连续 `execute_task`；本卡只把锁统一，未新增逐任务审批门，未对每个 task 重新 POST `/execution-grants`。
 - 生成守卫：`app/execution/generation.py` 的 `GenerationGuard`；`pause` / `terminate` 时 `bump`，`_execute_granted_task` 在隔离执行返回后、写证据与状态前检查 `is_current`，过时回包只发 `task.late_result_ignored` 事件并原样返回，不改状态、不写证据。
 - 范围：范围外 `T-99` 仍 `409 scope_mismatch`，无 grant 仍 `403 grant_required`（单测已断言）。
+
+## T03 · 测试证据、缺陷回流、模块人验收
+
+- 时间：2026-11-20 CST
+- 命令：`cd Test3/backend && TEST3_ISOLATION_IMAGE=sha256:af6493938f5d... .venv/bin/python -m pytest -o addopts='' -v tests/integration/test_module_acceptance_and_defects.py tests/unit/test_isolated_execute_task.py`
+- 退出码：0
+- 计数：20 passed（验收/缺陷 11 / 隔离执行 9）
+- 迁移：`alembic/versions/0010_acceptances_defects.py`，`revision="0010"`，`down_revision="0009"`，只建 `module_acceptances` 与 `defects`；`tests/integration/test_alembic.py`、`test_p1_rev05_alembic_handoff.py`、`test_events_and_db.py`、`tests/unit/test_core_tables.py`、`test_p1_rev01_execution_boundary.py`、`test_p1_rev08_production_enable_path.py` 合计 44 passed，退出码 0。
+- 服务：`app/execution/acceptance.py`。`accepted` / `rejected` 必须有非空 `evidence_uris` 且 URI 必须已存在于对应任务的证据；`accepted` 还要求任务处于成功状态。`rejected` 为每个 task_code 建一条 open 缺陷，并把任务经 `defect_found` 转到 `failed`（既有 `failed + retry` 可修复）。
+- 路由：`app/api/routes_acceptance.py`，`create_app()` 以 `prefix="/api"` 挂载；`POST /runs/{run_id}/module-acceptances` 与 `POST /runs/{run_id}/defects`。`X-Bot-Id` 必填；`reviewer` 与 actor 不一致返回 403 forbidden；`model_self_review=true` 一律 400。
+- 状态机：新增 `("done","defect_found")->"failed"`、`("verifying","defect_found")->"failed"`、`("failed","defect_found")->"failed"`；不新增 force-pass 边。任务状态映射沿用契约：`done` 即成功，缺陷回流用 `failed`。
+- 并发：同一 task 两个缺陷同时写入，两行都在，详情不丢失。
+- 既有权衡：未复用、未放宽 `Workbench.accept()`；granted_v1 的 `granted_acceptance_disabled` / `granted_force_pass_disabled` 仍由 `test_p1_rev01_execution_boundary.py` 与 `test_p1_rev08_production_enable_path.py` 覆盖。
+- OpenAPI：`UPDATE_OPENAPI_SNAPSHOT=1 ... tests/integration/test_api_contract.py` → 28 passed；快照 20 insertions / 0 deletions（仅新增 P5 两条路由）。`Test3/docs/API.md` 已补 P5 章节。

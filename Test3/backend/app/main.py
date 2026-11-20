@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.runtime import RoleRegistry
 from app.api.routes import router
+from app.api.routes_acceptance import router as acceptance_router
 from app.api.routes_bots import router as bots_router
 from app.api.routes_discussion import router as discussion_router
 from app.api.routes_memberships import router as memberships_router
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(memberships_router, prefix="/api")
     app.include_router(memory_router, prefix="/api")
     app.include_router(discussion_router, prefix="/api")
+    app.include_router(acceptance_router, prefix="/api")
     return app
 
 

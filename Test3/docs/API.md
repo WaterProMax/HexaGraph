@@ -217,3 +217,26 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - rejected 不写入/不覆盖 DecisionPackage hash。
 - 并发两次 approve 幂等，最终 status=approved，hash 值相同。
 - 扩展：`requirement_snapshot` 同时接受字符串与对象（契约为字符串）；`converge` 返回 `dissent_items`；`resolve` 的 `run_id` 为可选扩展。
+
+## P5 执行 DAG、连续执行与模块人验收
+
+所有新增路由都要求 `X-Bot-Id` 请求头作为调用者身份；缺头或空白返回 400 validation_error。
+
+| 方法 | 路径 | 请求 | 成功 | 失败 |
+|---|---|---|---|---|
+| POST | `/api/runs/{run_id}/module-acceptances` | `{module_id, task_codes, status, evidence_uris, reviewer?, comment?}` | 201 `ModuleAcceptance` | 400 validation_error；403 forbidden；404 run_not_found |
+| POST | `/api/runs/{run_id}/defects` | `{task_code, module_id, related_requirement_id?, evidence_uris, detail}` | 201 `DefectRecord`（status=open） | 400 validation_error；404 run_not_found |
+
+### 调度与 DAG
+
+- `POST /api/runs/{run_id}/schedule` 行为不变；granted_v1 额外要求 grant 已签的 key（含 `DecisionPackage`）与 run 当前 `approved_baseline_hashes` 相等，否则 409 baseline_stale。
+- 显式请求的后继任务若前置未成功（非 `done`），返回 409 dag_blocked 且不进入执行；`task_codes` 省略时仍由 `select_tasks` 按依赖挑选，legacy run 不受影响。
+- 人批一次 grant 后可在 `grant.task_codes` 内连续执行，不逐任务重新 `POST /execution-grants`；超范围仍 409 scope_mismatch，无 grant 仍 403 grant_required。
+- 同一 run 的 schedule / execute / 验收写路径共用一把 per-run 锁；pause / terminate 会 bump generation，过时的工具或模型回包不改状态、不写证据。
+
+### 验收与缺陷
+
+- `accepted` 与 `rejected` 都必须带非空 `evidence_uris`，且 URI 必须已存在于对应任务的证据中；`accepted` 还要求任务处于成功状态。
+- `model_self_review=true` 一律 400，不作为验收证据。
+- `rejected` 自动为每个 task_code 建一条 open 缺陷；缺陷不会自动 resolved。缺陷把任务置为 `failed`（可经既有 `retry` 修复），不打开 force-pass。
+- 本路径与遗留整 run 验收 `POST /api/runs/{run_id}/accept` 完全独立；granted_v1 上的 `granted_acceptance_disabled`、`granted_force_pass_disabled` 保持不变。

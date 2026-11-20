@@ -511,6 +511,16 @@
         "422"
       ]
     },
+    "POST /api/runs/{run_id}/defects": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
     "POST /api/runs/{run_id}/execution-grants": {
       "body": null,
       "params": [
@@ -538,6 +548,16 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/module-acceptances": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },

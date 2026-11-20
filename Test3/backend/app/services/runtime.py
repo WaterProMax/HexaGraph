@@ -42,6 +42,14 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
+from app.execution.acceptance import (
+    DefectCreate,
+    DefectRecord,
+    ModuleAcceptance,
+    ModuleAcceptanceCreate,
+    create_defect,
+    record_acceptance,
+)
 from app.execution.baseline import hash_artifact, write_approved_baseline_hash
 from app.execution.dag import dag_blocked_tasks, edges_from_tasks
 from app.execution.generation import GenerationGuard
@@ -1169,6 +1177,42 @@ class Workbench:
     async def grants_for_run(self, run_id: str) -> list[ExecutionGrant]:
         async with self.db_session() as session:
             return await GrantRepo(session).list_for_run(run_id)
+
+    # --- Module acceptance / defects (P5) ---------------------------------------
+    async def record_module_acceptance(
+        self, run: RunState, payload: dict[str, Any], *, actor: str
+    ) -> ModuleAcceptance:
+        """Persist a human module acceptance; a rejection opens defects.
+
+        This is deliberately a new path: the legacy whole-run ``accept()``,
+        force-pass and takeover stay untouched and unavailable for granted runs.
+        """
+        data = ModuleAcceptanceCreate.model_validate(payload)
+        async with self._run_locks.write_scope(run.id):
+            async with self.db_session() as session:
+                acceptance, defects = await record_acceptance(session, run, data, actor=actor)
+                await session.commit()
+            if acceptance.status == "rejected":
+                for defect in defects:
+                    self._mark_task_defect(run, defect.task_code, actor=actor, reason=defect.detail)
+        return acceptance
+
+    async def record_defect(self, run: RunState, payload: dict[str, Any], *, actor: str) -> DefectRecord:
+        data = DefectCreate.model_validate(payload)
+        async with self._run_locks.write_scope(run.id):
+            async with self.db_session() as session:
+                defect = await create_defect(session, run, data, actor=actor)
+                await session.commit()
+            self._mark_task_defect(run, defect.task_code, actor=actor, reason=defect.detail)
+        return defect
+
+    def _mark_task_defect(self, run: RunState, code: str, *, actor: str, reason: str) -> None:
+        task = run.tasks.get(code)
+        if task is None:
+            return
+        if can_transition(task["state"], "defect_found"):
+            self._set_state(run, task, "defect_found", reason=reason, actor=actor)
+        self._refresh_ready(run)
 
     @staticmethod
     def _is_retired_run(run: RunState) -> bool:
