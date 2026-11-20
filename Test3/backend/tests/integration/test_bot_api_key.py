@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.agents.runtime import RoleRegistry, _bot_endpoint
+from app.agents.runtime import RoleRegistry, bot_endpoint
 from app.llm.bot_secrets import BotSecretStore
 from app.llm.catalog import PROVIDER_ENDPOINTS
 from app.llm.gateway import Gateway
@@ -118,22 +118,22 @@ async def test_bot_without_key_keeps_env_behaviour(tmp_path):
     async with _client(_app(tmp_path)) as client:
         bot = (await client.post("/api/bots", json=_body(provider_ref="dashscope"))).json()
     gateway = SimpleNamespace(data_dir=tmp_path, models=load_models())
-    assert _bot_endpoint(gateway, bot["bot_id"], "dashscope") is None
+    assert bot_endpoint(gateway, bot["bot_id"], "dashscope") is None
 
 
-def test_bot_endpoint_uses_provider_base_url(tmp_path):
+def testbot_endpoint_uses_provider_base_url(tmp_path):
     BotSecretStore(tmp_path).set("b1", SECRET)
     models = load_models()
     gateway = SimpleNamespace(data_dir=tmp_path, models=models)
-    assert _bot_endpoint(gateway, "b1", "moonshot") == {
+    assert bot_endpoint(gateway, "b1", "moonshot") == {
         "base_url": PROVIDER_ENDPOINTS["moonshot"],
         "api_key": SECRET,
     }
-    assert _bot_endpoint(gateway, "b1", "dashscope") == {"base_url": models.base_url, "api_key": SECRET}
+    assert bot_endpoint(gateway, "b1", "dashscope") == {"base_url": models.base_url, "api_key": SECRET}
 
 
 @pytest.mark.asyncio
-async def test_dashscope_provider_routes_to_bot_endpoint_without_workbench_key(monkeypatch):
+async def test_dashscope_provider_routes_tobot_endpoint_without_workbench_key(monkeypatch):
     seen: dict = {}
 
     class _Completions:

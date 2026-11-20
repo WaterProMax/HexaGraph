@@ -14,8 +14,12 @@ from app.bots.registry import (
     BotNotFound,
     BotRegistry,
 )
+from app.bots.chat import ChatRequest, chat_reply
+from app.errors import AgentOutputError
 from app.llm.bot_secrets import BotSecretStore
 from app.llm.catalog import is_known_provider
+from app.memory.injection import build_memory_slot
+from app.memory.organizer import contains_secret
 from app.schemas.bot import BotCreate, BotPatch
 
 router = APIRouter()
@@ -172,3 +176,34 @@ async def archive_bot(bot_id: str, request: Request) -> Any:
     if store is not None:
         store.delete(bot.bot_id)
     return {"bot_id": bot.bot_id, "status": bot.status}
+
+@router.post("/bots/{bot_id}/chat")
+async def chat_with_bot(bot_id: str, request: Request) -> JSONResponse:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ChatRequest.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    if any(contains_secret(item.content) for item in body.messages):
+        return _json_error(400, "secret_in_body", "message contains a secret-like value")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        if bot.status == "archived":
+            return _json_error(409, "bot_archived", "archived bots cannot chat")
+        memory = await build_memory_slot(bot_id, project_id=None, run_id=None, session=session)
+    try:
+        result = await chat_reply(bench.gateway, bot, body.messages, memory)
+    except AgentOutputError as exc:
+        category = exc.category or "model_error"
+        return _json_error(400 if category == "auth" else 502, category, str(exc))
+    except TimeoutError:
+        return _json_error(504, "timeout", "模型响应超时，请稍后重试")
+    if not result["reply"]:
+        return _json_error(502, "empty_reply", "模型没有返回内容，请重试")
+    return JSONResponse(content=result)

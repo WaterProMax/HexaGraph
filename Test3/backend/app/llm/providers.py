@@ -209,7 +209,8 @@ class DashScopeProvider:
         foreign = bool(own_endpoint) and endpoint["base_url"] != self.models.base_url
         # extra_body is tuned for the configured provider; do not leak it to others.
         extra: dict[str, Any] = {"extra_body": cfg.extra_body} if cfg.extra_body and not foreign else {}
-        if cfg.json_mode:
+        # Callers that want free text (bot chat) pass json_mode=False.
+        if kwargs.get("json_mode", cfg.json_mode):
             extra["response_format"] = {"type": "json_object"}
         
         if tools:

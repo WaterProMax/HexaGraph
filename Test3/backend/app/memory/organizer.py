@@ -12,8 +12,7 @@ import asyncio
 import re
 from typing import Any
 
-from app.llm.bot_secrets import BotSecretStore
-from app.llm.catalog import endpoint_for
+from app.agents.runtime import bot_endpoint
 from app.llm.gateway import Gateway
 from app.memory.store import SecretInBody, assert_no_secrets
 from app.schemas.bot import BotInstance
@@ -65,13 +64,9 @@ async def organize_note(gateway: Gateway, bot: BotInstance, raw: str) -> dict[st
         return None
     try:
         kwargs: dict[str, Any] = {"model": bot.model, "provider_ref": bot.provider_ref, "temperature": 0.2}
-        if gateway.data_dir is not None:
-            api_key = BotSecretStore(gateway.data_dir).get(bot.bot_id)
-            if api_key:
-                base_url = endpoint_for(bot.provider_ref, gateway.models.base_url)
-                if base_url is None:
-                    return None
-                kwargs["endpoint"] = {"base_url": base_url, "api_key": api_key}
+        endpoint = bot_endpoint(gateway, bot.bot_id, bot.provider_ref)
+        if endpoint is not None:
+            kwargs["endpoint"] = endpoint
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": raw},

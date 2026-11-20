@@ -170,8 +170,9 @@ test("UI redesign walkthrough", async ({ page }) => {
   await expect(page.getByTestId("sidebar-bot-list")).toBeVisible();
   await expect(page.getByTestId("sidebar-bot-list").getByRole("link", { name: /Leader A/ })).toHaveAttribute(
     "href",
-    "/bots/bot-a",
+    "/bots/bot-a/chat",
   );
+  await expect(page.getByTestId("sidebar-manage-bots")).toHaveAttribute("href", "/bots");
   await expect(page.getByTestId("sidebar-new-bot")).toHaveAttribute("href", "/bots/new");
   await page.screenshot({ path: `${SHOTS}/ui-r01-sidebar-expanded.png`, fullPage: true });
 

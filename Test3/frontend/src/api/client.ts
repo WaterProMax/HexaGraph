@@ -122,6 +122,8 @@ export const api = {
     req("/bots", { method: "POST", body: JSON.stringify(body) }),
   patchBot: (botId: string, body: import("./types").BotPatch) =>
     req(`/bots/${encodeURIComponent(botId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  chatBot: (botId: string, messages: import("./types").ChatMessage[]): Promise<{ reply: string; model: string }> =>
+    req(`/bots/${encodeURIComponent(botId)}/chat`, { method: "POST", body: JSON.stringify({ messages }) }),
   archiveBot: (botId: string) =>
     req(`/bots/${encodeURIComponent(botId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
   skills: () => req("/skills"),

@@ -86,7 +86,7 @@ describe("project section in the shell", () => {
     );
     renderShell();
     const section = await screen.findByTestId("sidebar-project-list");
-    expect(within(section).getByTestId("sidebar-new-project").getAttribute("href")).toBe("/projects");
+    expect(within(section).getByTestId("sidebar-new-project").getAttribute("href")).toBe("/projects/new");
     expect((await within(section).findByRole("link", { name: /Alpha/ })).getAttribute("href")).toBe("/projects/p1");
     expect(screen.queryByText("最近运行")).toBeNull();
   });
@@ -116,9 +116,10 @@ describe("assistant list in the shell", () => {
     renderShell();
     const list = await screen.findByTestId("sidebar-bot-list");
     const row = await screen.findByRole("link", { name: /Leader A/ });
-    expect(row.getAttribute("href")).toBe("/bots/bot-1");
+    expect(row.getAttribute("href")).toBe("/bots/bot-1/chat");
     expect(list.textContent).toContain("leader");
     expect(screen.getByTestId("sidebar-new-bot").getAttribute("href")).toBe("/bots/new");
+    expect(screen.getByTestId("sidebar-manage-bots").getAttribute("href")).toBe("/bots");
   });
 
   it("shows a compact avatar rail when collapsed", async () => {
@@ -127,8 +128,9 @@ describe("assistant list in the shell", () => {
     await screen.findByRole("link", { name: /Leader A/ });
     fireEvent.click(screen.getByRole("button", { name: "收起导航" }));
     const rail = await screen.findByTestId("sidebar-bot-rail");
-    expect(within(rail).getByRole("link", { name: "Leader A · leader" }).getAttribute("href")).toBe("/bots/bot-1");
+    expect(within(rail).getByRole("link", { name: "Leader A · leader" }).getAttribute("href")).toBe("/bots/bot-1/chat");
     expect(within(rail).getByRole("link", { name: "周明 · pm" })).toBeTruthy();
+    expect(within(rail).getByRole("link", { name: "Bot 管理" }).getAttribute("href")).toBe("/bots");
   });
 
   it("refreshes an avatar when the picker writes a preset", async () => {

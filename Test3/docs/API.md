@@ -110,6 +110,7 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 | GET | `/api/bots/{bot_id}` | 200 `BotInstance` | 404 `bot_not_found` |
 | PATCH | `/api/bots/{bot_id}` | 200 更新后的 `BotInstance`，附加只读整数 `pin_revision` | 400 `validation_error`；404 `bot_not_found`；409 `bot_name_conflict` / `bot_archived` |
 | POST | `/api/bots/{bot_id}/archive` | 200 `{"bot_id", "status": "archived"}` | 404 `bot_not_found`；409 `bot_already_archived` |
+| POST | `/api/bots/{bot_id}/chat` | 200 `{"reply", "model"}`（请求体 `{"messages":[{"role":"user\|assistant","content"}]}`，最后一条必须是 user） | 400 `validation_error` / `secret_in_body` / `auth`；404 `bot_not_found`；409 `bot_archived`；502 模型调用失败；504 `timeout` |
 | POST | `/api/projects/{project_id}/memberships` | 201 `ProjectMembership` | 404 `project_not_found` / `bot_not_found`；403 `bot_archived`；409 `membership_exists` / `leader_already_set` |
 | GET | `/api/projects/{project_id}/memberships` | 200 `{"items": [...]}` | 404 `project_not_found` |
 | DELETE | `/api/projects/{project_id}/memberships/{bot_id}` | 204，无响应体 | 404 `membership_not_found` |
@@ -119,6 +120,7 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 - Bot 的 `model` / `provider_ref` / `skill_bindings` 变更会追加 pin revision；同一 `(run_id, bot_id)` 的冻结快照在运行开始时写入 `run_bot_pin_snapshots`，运行中 PATCH Bot 不改变已冻结值。
 - `POST /api/skills/import`：只接受 `https://github.com/` 的公开仓库地址（仓库主页、`/tree/<ref>/<dir>`、`/blob/<ref>/<dir>/SKILL.md`），只访问 `api.github.com` 与 `raw.githubusercontent.com`，不跟随重定向，`SKILL.md` 上限 64KB。`skill_id` 为 `<owner>-<name>`，`version` 为提交 sha 前 7 位（同一提交重复导入幂等返回 200），`allowed_tool_refs` 恒为空。Bot 通过 `skill_bindings` 绑定。
 - Bot 的 `api_key`（`POST` / `PATCH` 请求体可选，只写）：服务端校验 `provider_ref` 在目录内（`dashscope`、`deepseek`、`moonshot`、`zhipu`、`volcengine`、`minimax`、`siliconflow`、`hunyuan`、`qianfan`、`stepfun`，未知值 400 `validation_error`），加密存入 `<data_dir>/secrets/`，不写 `bots.payload`、pin、事件，也不出现在任何响应；Bot 的响应只附带只读布尔 `has_api_key`（是否已存 Key，不含 Key 本身）。`PATCH` 传空字符串删除；归档时删除。`call_agent` 在冻结 pin 后按 `provider_ref` 的 base URL 与该 Key 调用；未设置 Key 的 Bot 仍走环境变量里的百炼密钥。该 Key 仅用于 `call_agent` 路径，`run_tool_agent` 仍用工作台默认。
+- `POST /api/bots/{bot_id}/chat`：无状态对话，历史由客户端携带（最多 40 条、每条 ≤ 8000 字）；使用该 Bot 自己的模型与加密保存的 API Key，并把该 Bot 的 private 记忆写入 system prompt；含 `sk-` 类密钥的消息直接 400，不发往模型。
 - `PATCH /api/bots/{bot_id}` 的 200 响应增加只读 `pin_revision` 是 P2 的契约扩展；请求体不接受 `bot_id` / `status` / `role_template`。
 - Skill 的 `description_md` 只是说明文本，不扩展工具权限；`allowed_tool_refs` 为空表示该层无授权，不是通配符。实际权限取平台 ∩ Bot.tool_policy ∩ Grant.allowed_tool_refs（再 ∩ 冻结 skill 版本）。
 

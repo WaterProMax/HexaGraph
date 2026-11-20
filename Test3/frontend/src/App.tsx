@@ -1,4 +1,12 @@
-import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+} from "react-router-dom";
 import { AppShell, DEFAULT_NAV_ITEMS } from "./components/AppShell";
 import Overview from "./pages/Overview";
 import Projects from "./pages/Projects";
@@ -12,6 +20,7 @@ import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 import RetiredFeature from "./pages/RetiredFeature";
 import BotListPage from "./pages/bots/BotListPage";
+import BotChatPage from "./pages/bots/BotChatPage";
 import ProjectWorkstationPage from "./pages/project/ProjectWorkstationPage";
 
 /** Route table, exported so tests can assert the contract without guessing DOM. */
@@ -22,9 +31,11 @@ export const APP_ROUTE_PATHS = [
   "/workstation/:id?",
   "/deepseek/:id?",
   "/projects",
+  "/projects/new",
   "/projects/:projectId",
   "/bots",
   "/bots/new",
+  "/bots/:id/chat",
   "/bots/:id",
   "/runs/:id/*",
 ] as const;
@@ -37,13 +48,24 @@ export default function App() {
     <AppShell navItems={DEFAULT_NAV_ITEMS} currentPath={loc.pathname}>
       <Routes>
         <Route path="/" element={<Navigate to="/bots" replace />} />
-        <Route path="/workstation/static-classroom" element={<RetiredFeature feature="static-classroom" />} />
-        <Route path="/deepseek/:id?" element={<RetiredFeature feature="deepseek" />} />
+        <Route
+          path="/workstation/static-classroom"
+          element={<RetiredFeature feature="static-classroom" />}
+        />
+        <Route
+          path="/deepseek/:id?"
+          element={<RetiredFeature feature="deepseek" />}
+        />
         <Route path="/workstation/:id?" element={<Workstation />} />
         <Route path="/projects" element={<Projects />} />
-        <Route path="/projects/:projectId" element={<ProjectWorkstationRoute />} />
+        <Route path="/projects/new" element={<Projects />} />
+        <Route
+          path="/projects/:projectId"
+          element={<ProjectWorkstationRoute />}
+        />
         <Route path="/bots" element={<BotListPage />} />
         <Route path="/bots/new" element={<BotListPage mode="create" />} />
+        <Route path="/bots/:id/chat" element={<BotChatPage />} />
         <Route path="/bots/:id" element={<BotListPage mode="edit" />} />
         <Route path="/runs/:id/*" element={<RunShell />} />
         <Route path="*" element={<Navigate to="/bots" replace />} />
@@ -80,7 +102,12 @@ function RunShell() {
           ← 工作台视图
         </Link>
         {tabs.map((t) => (
-          <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `chip ${isActive ? "active" : ""}`}>
+          <NavLink
+            key={t.to}
+            to={t.to}
+            end={t.end}
+            className={({ isActive }) => `chip ${isActive ? "active" : ""}`}
+          >
             {t.label}
           </NavLink>
         ))}

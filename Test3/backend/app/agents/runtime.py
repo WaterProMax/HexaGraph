@@ -97,7 +97,7 @@ def _render_memory_slot(items: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-def _bot_endpoint(gateway: Gateway, bot_id: str, provider_ref: str) -> dict[str, str] | None:
+def bot_endpoint(gateway: Gateway, bot_id: str, provider_ref: str) -> dict[str, str] | None:
     """The bot's own base_url + API key, or None to use the workbench default.
 
     The key is read at call time from the encrypted BotSecretStore; the frozen pin
@@ -136,7 +136,7 @@ async def call_agent(
         db_path = gateway.data_dir / "test3.db" if gateway.data_dir is not None else None
         pin = await get_frozen_pin(run_id, bot_id, db_path=db_path)
         pin_kwargs = {"model": pin["model"], "provider_ref": pin["provider_ref"]}
-        endpoint = _bot_endpoint(gateway, bot_id, pin["provider_ref"])
+        endpoint = bot_endpoint(gateway, bot_id, pin["provider_ref"])
         if endpoint is not None:
             pin_kwargs["endpoint"] = endpoint
         if memory_slot is None:

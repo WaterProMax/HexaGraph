@@ -98,7 +98,7 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
   return (
     <div className="page bot-page">
       <div className="page-head bot-page-head">
-        <h1>Bot</h1>
+        <h1>Bot 管理</h1>
       </div>
 
       {loadState === "loading" && (

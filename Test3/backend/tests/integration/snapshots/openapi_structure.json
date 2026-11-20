@@ -369,6 +369,16 @@
         "422"
       ]
     },
+    "POST /api/bots/{bot_id}/chat": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/config/models/test": {
       "body": null,
       "params": [],

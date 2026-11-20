@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type { BotInstance, BotPatch, MemoryRecord, SkillDefinition } from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
@@ -147,6 +148,9 @@ export function BotWorkspace({ bot, providerOptions, onImportSkill, loadState, o
           </p>
         </div>
         <span className={`chip status-${bot.status}`}>{bot.status}</span>
+        <Link to={`/bots/${bot.bot_id}/chat`} className="chip" data-testid="bot-open-chat">
+          对话
+        </Link>
         <button type="button" className="chip" data-testid="bot-avatar-change" onClick={() => setPickerOpen((open) => !open)}>
           更换头像
         </button>

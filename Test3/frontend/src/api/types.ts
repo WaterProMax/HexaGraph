@@ -196,3 +196,6 @@ export type MembershipCreate = {
   role_in_project: string;
   is_leader?: boolean;
 };
+
+/** One turn of a bot chat; the history lives in the browser. */
+export type ChatMessage = { role: "user" | "assistant"; content: string };

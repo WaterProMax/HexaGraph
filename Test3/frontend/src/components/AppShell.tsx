@@ -6,6 +6,7 @@ import {
   MenuUnfoldOutlined,
   PlusOutlined,
   RobotOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -46,8 +47,15 @@ function BrandMark() {
           <stop offset="1" stopColor="#0066fa" />
         </linearGradient>
       </defs>
-      <path d="M12 1.5 21.1 6.75v10.5L12 22.5 2.9 17.25V6.75z" fill="url(#hg)" />
-      <path d="M12 7.2 16.2 9.6v4.8L12 16.8l-4.2-2.4V9.6z" fill="#fff" opacity=".9" />
+      <path
+        d="M12 1.5 21.1 6.75v10.5L12 22.5 2.9 17.25V6.75z"
+        fill="url(#hg)"
+      />
+      <path
+        d="M12 7.2 16.2 9.6v4.8L12 16.8l-4.2-2.4V9.6z"
+        fill="#fff"
+        opacity=".9"
+      />
     </svg>
   );
 }
@@ -56,6 +64,14 @@ function iconFor(key: string) {
   if (key === "bots") return <RobotOutlined />;
   if (key === "projects") return <FolderOpenOutlined />;
   return <AppstoreOutlined />;
+}
+
+/** Bot 管理 covers the list and each bot's config page, but not chat or the create dialog. */
+function isManagingBots(path: string): boolean {
+  if (path === "/bots") return true;
+  return (
+    path.startsWith("/bots/") && path !== "/bots/new" && !path.endsWith("/chat")
+  );
 }
 
 function isActive(currentPath: string, to: string): boolean {
@@ -75,15 +91,24 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
     () => typeof window !== "undefined" && window.innerWidth < COMPACT_VIEWPORT,
   );
   const [, setAvatarVersion] = useState(0);
-  const { data: projectList } = useQuery({ queryKey: ["projects"], queryFn: api.projects });
-  const projects: Array<{ id: string; name: string }> = Array.isArray(projectList) ? projectList : [];
+  const { data: projectList } = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.projects,
+  });
+  const projects: Array<{ id: string; name: string }> = Array.isArray(
+    projectList,
+  )
+    ? projectList
+    : [];
   const {
     data: botList,
     isLoading: botsLoading,
     isError: botsError,
     refetch: refetchBots,
   } = useQuery({ queryKey: ["bots"], queryFn: () => api.bots() });
-  const bots: BotInstance[] = Array.isArray(botList?.items) ? botList.items : [];
+  const bots: BotInstance[] = Array.isArray(botList?.items)
+    ? botList.items
+    : [];
 
   useEffect(() => {
     const onAvatarChange = () => setAvatarVersion((value) => value + 1);
@@ -92,7 +117,11 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    )
+      return;
     const query = window.matchMedia(`(max-width: ${COMPACT_VIEWPORT - 1}px)`);
     const onChange = (event: MediaQueryListEvent) => {
       if (event.matches) setCollapsed(true);
@@ -103,7 +132,10 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
 
   return (
     <div className={`shell ${collapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className={`sidebar ${collapsed ? "collapsed" : ""}`} aria-label="应用导航">
+      <aside
+        className={`sidebar ${collapsed ? "collapsed" : ""}`}
+        aria-label="应用导航"
+      >
         <div className="sidebar-top">
           <Link
             to="/bots"
@@ -128,28 +160,36 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
         </div>
         <div className="sidebar-scroll">
           {navItems.length > 0 && (
-          <nav className="nav-group" aria-label="浏览" id="sidebar-navigation">
-            <h2 className="nav-label">浏览</h2>
-            {navItems.map((n) => {
-              const active = isActive(currentPath, n.to);
-              return (
-                <Link
-                  key={n.key}
-                  to={n.to}
-                  className={`nav-item ${active ? "active" : ""}`}
-                  aria-current={active ? "page" : undefined}
-                  aria-label={n.label}
-                  title={collapsed ? n.label : undefined}
-                >
-                  {iconFor(n.key)}
-                  <span className="nav-text">{n.label}</span>
-                </Link>
-              );
-            })}
-          </nav>
+            <nav
+              className="nav-group"
+              aria-label="浏览"
+              id="sidebar-navigation"
+            >
+              <h2 className="nav-label">浏览</h2>
+              {navItems.map((n) => {
+                const active = isActive(currentPath, n.to);
+                return (
+                  <Link
+                    key={n.key}
+                    to={n.to}
+                    className={`nav-item ${active ? "active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={n.label}
+                    title={collapsed ? n.label : undefined}
+                  >
+                    {iconFor(n.key)}
+                    <span className="nav-text">{n.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
           )}
           {collapsed ? (
-            <section className="nav-group assistant-rail" aria-labelledby="assistant-rail-heading" data-testid="sidebar-bot-rail">
+            <section
+              className="nav-group assistant-rail"
+              aria-labelledby="assistant-rail-heading"
+              data-testid="sidebar-bot-rail"
+            >
               <h2 className="nav-label" id="assistant-rail-heading">
                 Bot
               </h2>
@@ -162,12 +202,21 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               >
                 <PlusOutlined />
               </Link>
+              <Link
+                to="/bots"
+                className="rail-new"
+                data-testid="sidebar-manage-bots"
+                aria-label="Bot 管理"
+                title="Bot 管理"
+              >
+                <SettingOutlined />
+              </Link>
               {bots.map((bot) => {
                 const label = `${bot.display_name} · ${bot.role_template}`;
                 return (
                   <Link
                     key={bot.bot_id}
-                    to={`/bots/${bot.bot_id}`}
+                    to={`/bots/${bot.bot_id}/chat`}
                     className="rail-avatar"
                     aria-label={label}
                     title={label}
@@ -178,7 +227,11 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               })}
             </section>
           ) : (
-            <section className="nav-group assistant-group" aria-labelledby="assistant-heading" data-testid="sidebar-bot-list">
+            <section
+              className="nav-group assistant-group"
+              aria-labelledby="assistant-heading"
+              data-testid="sidebar-bot-list"
+            >
               <h2 className="nav-label" id="assistant-heading">
                 <span>Bot</span>
                 <span className="mono">{bots.length}</span>
@@ -192,44 +245,69 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
                 <PlusOutlined />
                 <span className="nav-text">新建 Bot</span>
               </Link>
+              <Link
+                to="/bots"
+                className={`nav-item ${isManagingBots(currentPath) ? "active" : ""}`}
+                data-testid="sidebar-manage-bots"
+                aria-label="Bot 管理"
+                aria-current={isManagingBots(currentPath) ? "page" : undefined}
+              >
+                <SettingOutlined />
+                <span className="nav-text">Bot 管理</span>
+              </Link>
               {botsLoading && <div className="nav-item muted">加载助手…</div>}
               {botsError && (
-                <button type="button" className="nav-item muted assistant-retry" onClick={() => void refetchBots()}>
+                <button
+                  type="button"
+                  className="nav-item muted assistant-retry"
+                  onClick={() => void refetchBots()}
+                >
                   助手加载失败 · 重试
                 </button>
               )}
               {!botsLoading && !botsError && bots.length === 0 && (
-                <div className="nav-item muted" data-testid="sidebar-bots-empty">
+                <div
+                  className="nav-item muted"
+                  data-testid="sidebar-bots-empty"
+                >
                   还没有 Bot
                 </div>
               )}
               {bots.map((bot) => {
-                const active = currentPath === `/bots/${bot.bot_id}`;
+                const active = currentPath === `/bots/${bot.bot_id}/chat`;
                 return (
                   <Link
                     key={bot.bot_id}
-                    to={`/bots/${bot.bot_id}`}
+                    to={`/bots/${bot.bot_id}/chat`}
                     className={`nav-item assistant-row ${active ? "active" : ""}`}
                     aria-current={active ? "page" : undefined}
                   >
                     <BotAvatar bot={bot} size={30} />
                     <span className="assistant-text">
                       <span className="assistant-name">{bot.display_name}</span>
-                      <span className="assistant-role">{bot.role_template}</span>
+                      <span className="assistant-role">
+                        {bot.role_template}
+                      </span>
                     </span>
-                    <span className={`assistant-status status-${bot.status}`}>{bot.status}</span>
+                    <span className={`assistant-status status-${bot.status}`}>
+                      {bot.status}
+                    </span>
                   </Link>
                 );
               })}
             </section>
           )}
-          <section className="nav-group project-group" aria-labelledby="project-heading" data-testid="sidebar-project-list">
+          <section
+            className="nav-group project-group"
+            aria-labelledby="project-heading"
+            data-testid="sidebar-project-list"
+          >
             <h2 className="nav-label" id="project-heading">
               <span>项目</span>
               <span className="mono">{projects.length}</span>
             </h2>
             <Link
-              to="/projects"
+              to="/projects/new"
               className="nav-item assistant-new"
               data-testid="sidebar-new-project"
               aria-label="创建项目"

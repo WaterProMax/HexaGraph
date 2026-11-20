@@ -115,12 +115,12 @@ test("P6 UI-A1 walkthrough", async ({ page }) => {
   await expect(nav).toHaveCount(0);
   await expect(page.getByTestId("sidebar-new-bot")).toHaveAttribute("href", "/bots/new");
   const projects = page.getByTestId("sidebar-project-list");
-  await expect(projects.getByTestId("sidebar-new-project")).toHaveAttribute("href", "/projects");
+  await expect(projects.getByTestId("sidebar-new-project")).toHaveAttribute("href", "/projects/new");
   await expect(nav.getByRole("link", { name: "模型槽位" })).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/p6-t01-sidebar.png`, fullPage: true });
 
   await projects.getByTestId("sidebar-new-project").click();
-  await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "创建项目" })).toBeVisible();
 
   // 2. No top-level Model/Skill/Market/Cron navigation.
   await expect(nav.getByRole("link", { name: "Model" })).toHaveCount(0);
