@@ -151,20 +151,75 @@ export const api = {
     }),
 
   // Discussion (C.5.6) requires X-Bot-Id as the actor.
-  discussionSessions: (projectId: string, botId: string) =>
+  discussionSessions: (projectId: string, botId: string): Promise<{ items: import("./types").DiscussionSession[] }> =>
     req(`/projects/${projectId}/discussion-sessions`, { headers: botHeader(botId) }),
-  discussionSession: (sessionId: string, botId: string) =>
+  discussionSession: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}`, { headers: botHeader(botId) }),
-  discussionProposals: (sessionId: string, botId: string) =>
+  discussionProposals: (sessionId: string, botId: string): Promise<{ items: import("./types").DiscussionProposal[] }> =>
     req(`/discussion-sessions/${sessionId}/proposals`, { headers: botHeader(botId) }),
-  discussionReviews: (sessionId: string, botId: string) =>
+  discussionReviews: (sessionId: string, botId: string): Promise<{ items: import("./types").ReviewBallot[] }> =>
     req(`/discussion-sessions/${sessionId}/reviews`, { headers: botHeader(botId) }),
-  resolveDiscussion: (sessionId: string, body: { decision: "approved" | "rejected"; comment?: string; run_id?: string }, botId: string) =>
+  resolveDiscussion: (
+    sessionId: string,
+    body: { decision: "approved" | "rejected"; comment?: string; run_id?: string },
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}/resolve`, {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify(body),
     }),
+  createDiscussionSession: (
+    projectId: string,
+    body: import("./types").DiscussionSessionCreate,
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/projects/${projectId}/discussion-sessions`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
+  runDiscussion: (
+    sessionId: string,
+    botId: string,
+  ): Promise<{ running: boolean; session: import("./types").DiscussionSession }> =>
+    req(`/discussion-sessions/${sessionId}/run`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({}),
+    }),
+  discussionMessages: (
+    sessionId: string,
+    after: number,
+    botId: string,
+  ): Promise<{ items: import("./types").DiscussionMessage[] }> =>
+    req(`/discussion-sessions/${sessionId}/messages?after=${Math.max(0, Math.floor(after))}`, {
+      headers: botHeader(botId),
+    }),
+  pauseDiscussion: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/pause`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({}),
+    }),
+  resumeDiscussion: (
+    sessionId: string,
+    body: { skip_bot_ids?: string[] },
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/resume`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body.skip_bot_ids?.length ? { skip_bot_ids: body.skip_bot_ids } : {}),
+    }),
+  terminateDiscussion: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/terminate`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({ confirm: true }),
+    }),
+  discussionEventsUrl: (sessionId: string, botId: string): string =>
+    `/api/discussion-sessions/${sessionId}/events?bot_id=${encodeURIComponent(botId)}`,
 
   // Memory (C.5.5): every route requires an explicit X-Bot-Id actor.
   memories: (

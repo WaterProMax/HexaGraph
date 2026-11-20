@@ -105,16 +105,75 @@ export type DecisionPackage = {
   sha256: string;
 };
 
+export type DiscussionSessionStatus =
+  | "draft"
+  | "grouping"
+  | "round1_independent"
+  | "cross_review"
+  | "round_n_revise"
+  | "converged_pending_human"
+  | "approved"
+  | "rejected"
+  | "budget_exhausted"
+  | "terminated";
+
+export type DiscussionBudget = {
+  max_rounds: number;
+  max_tokens: number | null;
+  max_wallclock_seconds: number | null;
+  /** `null` keeps the legacy hard-gates-only convergence rule. */
+  score_gap_threshold: number | null;
+};
+
 export type DiscussionSession = {
   session_id: string;
   project_id: string;
   leader_bot_id: string;
   participant_bot_ids: string[];
-  status: string;
+  status: DiscussionSessionStatus;
   current_round: number;
-  budget: { max_rounds: number; max_tokens: number | null; max_wallclock_seconds: number | null };
+  budget: DiscussionBudget;
   requirement_snapshot_hash: string;
   decision_package: DecisionPackage | null;
+  requirement_text: string;
+  previous_session_id: string | null;
+  resolution_comment: string | null;
+  paused: boolean;
+  created_at: string;
+};
+
+export type DiscussionSessionCreate = {
+  leader_bot_id: string;
+  participant_bot_ids: string[];
+  requirement_snapshot: string;
+  budget?: Partial<DiscussionBudget>;
+  previous_session_id?: string;
+};
+
+export type DiscussionMessageKind = "system" | "proposal" | "review" | "leader";
+
+/** One append-only timeline entry. Proposal bodies never appear here. */
+export type DiscussionMessage = {
+  session_id: string;
+  seq: number;
+  kind: DiscussionMessageKind;
+  bot_id: string | null;
+  round: number;
+  payload: Record<string, any>;
+  created_at: string;
+};
+
+export type DiscussionTimelineItem =
+  | { type: "message"; message: DiscussionMessage }
+  | { type: "divider"; key: string; text: string };
+
+/** One proposal as returned by `GET /discussion-sessions/{sid}/proposals`. */
+export type DiscussionProposal = {
+  proposal_id: string;
+  author_bot_id: string;
+  round: number;
+  sealed: boolean;
+  body_md: string | null;
 };
 
 export type ModuleAcceptance = {
