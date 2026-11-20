@@ -66,3 +66,38 @@
 - 密封期、非作者：`{"proposal_id", "author_bot_id", "round", "sealed": true, "body_md": null}`。
 - 密封期、作者本人：`"sealed": true` 但 `body_md` 为正文。
 - 解封后所有 participant：`"sealed": false` 且 `body_md` 为正文。
+
+## T03 · 交叉评审：禁止自评，结构分数不是真理
+
+- 时间：2026-11-20 11:23 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_cross_review.py tests/unit/test_round1_blind.py -v`
+- 退出码：0
+- 计数：18 passed（交叉评审 9 / 盲首轮回归 9）
+- 回归：`tests/unit/test_discussion_rules.py tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 40 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+- P4 四文件合跑：**37 passed**，退出码 0
+
+### 触及文件
+
+- `app/discussion/cross_review.py`（NEW）
+- `tests/unit/test_cross_review.py`（NEW）
+- `app/api/routes_discussion.py`（MODIFY：POST reviews）
+- `Test3/docs/plans/P4-report.md`（MODIFY）
+
+### 实现要点
+
+- `ReviewBallot` 在 `app/discussion/models.py` 校验：scores 非空、justification key 与 scores 完全一致、hard_gate_results 至少含 coverage / conflicts_closed_or_recorded / evidence_complete；非法体 HTTP 400 validation_error。
+- `submit_review` 仅允许 `cross_review`；reviewer 必须是 participant；proposal 必须属于本 session；reviewer == proposal.author 返回 409 self_review_forbidden 且不落行；同一 reviewer/proposal 重复返回 409 duplicate_review。
+- 会话状态在 `round1_independent` 且未 `open_cross_review` 时提交评审返回 409 invalid_status。
+- 并发两个评审者评同一提案：两行都落库（写锁串行）。
+- `score_spread` 只做统计（各 ballot 总分 max-min），`submit_review` 源码中不引用它；测试用 `inspect.getsource` 断言。
+- `cross_review.open_cross_review` 复用 `proposals.open_cross_review`，不重复实现。
+- 契约说明：列出的模块函数没有 session 参数，实际实现增加 keyword-only `session` 注入（HTTP 与单测显式传当前 AsyncSession），其余签名与行为不变。
+
+### HTTP 错误映射
+
+- `X-Bot-Id` 缺失/空白 → 400 validation_error。
+- `reviewer_bot_id` 与 `X-Bot-Id` 不一致 → 403 forbidden。
+- 会话不存在 → 404 session_not_found；提案不存在/跨会话 → 404 proposal_not_found。
+- 非 participant → 403 not_participant；状态不对 → 409 invalid_status。
+- 自评 → 409 self_review_forbidden；重复票 → 409 duplicate_review；成功 → 201 票。

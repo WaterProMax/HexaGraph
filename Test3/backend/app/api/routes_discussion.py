@@ -7,7 +7,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from app.discussion.models import DiscussionBudget
+from app.discussion.cross_review import (
+    DuplicateReview,
+    ProposalNotFound,
+    SelfReviewForbidden,
+    submit_review,
+)
+from app.discussion.models import DiscussionBudget, ReviewBallot
 from app.discussion.proposals import (
     BudgetExhausted,
     DuplicateProposal,
@@ -248,3 +254,43 @@ async def get_proposals(session_id: str, request: Request) -> Any:
         except InvalidStatus as exc:
             return _json_error(409, "invalid_status", str(exc))
     return {"items": items}
+
+
+@router.post("/discussion-sessions/{session_id}/reviews", status_code=201)
+async def create_review(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        ballot = ReviewBallot.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    if ballot.reviewer_bot_id != actor:
+        return _json_error(403, "forbidden", "reviewer_bot_id must match X-Bot-Id")
+    async with bench.db_session() as session:
+        try:
+            result = await submit_review(session_id, ballot, session=session)
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+        except NotParticipant as exc:
+            await session.rollback()
+            return _json_error(403, "not_participant", str(exc))
+        except ProposalNotFound as exc:
+            await session.rollback()
+            return _json_error(404, "proposal_not_found", str(exc))
+        except SelfReviewForbidden as exc:
+            await session.rollback()
+            return _json_error(409, "self_review_forbidden", str(exc))
+        except DuplicateReview as exc:
+            await session.rollback()
+            return _json_error(409, "duplicate_review", str(exc))
+    return JSONResponse(status_code=201, content=result)
