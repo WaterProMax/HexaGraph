@@ -1065,3 +1065,19 @@ body {
 .task-tree-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-progress { grid-column: 1 / -1; font-size: 11px; color: var(--glass-muted); }
 .task-graph-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+
+/* P6 Grant / 互评 / 缺陷 */
+.grant-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; padding: 12px 14px; margin-bottom: 14px; border-radius: 12px; border: 1px solid #cfe3f2; background: #ffffffc2; }
+.grant-error { border-color: #ffc9b8; background: #fff6f2; color: #8a2c14; }
+.grant-warn { border-color: #ffe1a8; background: #fffaf0; color: #6b4a05; }
+.grant-ok { border-color: #bfe6c8; background: #f4fff7; color: #1c5a2b; }
+.review-ballot { border-top: 1px solid #dbe9f4; padding: 10px 0; }
+.review-gates { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.review-gates li { display: inline-flex; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #ffffffc2; border: 1px solid #dbe9f4; font-size: 12px; }
+.review-gates .gate-pass { border-color: #bfe6c8; }
+.review-gates .gate-fail { border-color: #ffc9b8; color: #8a2c14; }
+.review-justification { margin: 4px 0; padding-left: 18px; font-size: 12px; color: var(--glass-secondary); }
+.review-dissent { margin-top: 4px; font-size: 12px; color: #8a2c14; }
+.dissent-list { margin: 0; padding-left: 18px; }
+.defect-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.defect-item { display: inline-flex; gap: 8px; align-items: center; width: 100%; justify-content: flex-start; height: auto; padding: 8px 10px; }

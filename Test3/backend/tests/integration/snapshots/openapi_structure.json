@@ -38,7 +38,27 @@
         "200"
       ]
     },
+    "GET /api/discussion-sessions/{session_id}": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/discussion-sessions/{session_id}/proposals": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/reviews": {
       "body": null,
       "params": [
         "path:session_id*"
@@ -83,6 +103,16 @@
       "params": [],
       "responses": [
         "200"
+      ]
+    },
+    "GET /api/projects/{project_id}/discussion-sessions": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
       ]
     },
     "GET /api/projects/{project_id}/memberships": {
@@ -133,6 +163,16 @@
       ]
     },
     "GET /api/runs/{run_id}/crs": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/defects": {
       "body": null,
       "params": [
         "path:run_id*"
@@ -195,6 +235,16 @@
       ]
     },
     "GET /api/runs/{run_id}/feedback": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/module-acceptances": {
       "body": null,
       "params": [
         "path:run_id*"

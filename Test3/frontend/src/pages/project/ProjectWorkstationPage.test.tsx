@@ -139,3 +139,45 @@ describe("ProjectWorkstationPage container", () => {
     expect(calls).not.toContain("/api/runs/run-0/tasks");
   });
 });
+describe("P6-T04 grant, review and defect wiring", () => {
+  const defect = {
+    defect_id: "d-1",
+    run_id: "run-1",
+    task_code: "T-02",
+    module_id: "M1",
+    related_requirement_id: null,
+    evidence_uris: ["file://logs/t02.log"],
+    status: "open" as const,
+    detail: "缺边界用例",
+  };
+  const ballot = {
+    reviewer_bot_id: "bot-2",
+    proposal_id: "p-1",
+    scores: { coverage: 3 },
+    score_justification: { coverage: "覆盖主路径" },
+    hard_gate_results: { coverage: true, conflicts_closed_or_recorded: true, evidence_complete: false },
+    dissent_items: ["缺边界用例"],
+  };
+
+  it("shows the baseline_stale banner", () => {
+    renderWorkstation({ grantErrorCategory: "baseline_stale" });
+    expect(screen.getByTestId("grant-banner").textContent).toMatch(/基线/);
+    expect(screen.getByTestId("grant-banner").textContent).not.toMatch(/请逐行确认/);
+  });
+
+  it("renders review ballots and dissent in the monitor tab", () => {
+    renderWorkstation({ ballots: [ballot], dissentItems: ["风险 X"] });
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    const panel = screen.getByTestId("discussion-review-panel");
+    expect(panel.textContent).toContain("覆盖");
+    expect(panel.textContent).toContain("风险 X");
+  });
+
+  it("locates the task behind a defect", () => {
+    renderWorkstation({ defects: [defect] });
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    fireEvent.click(screen.getByTestId("defect-T-02"));
+    expect(screen.getByTestId("panel-details")).toBeTruthy();
+    expect(screen.getByTestId("detail-task-code").textContent).toBe("T-02");
+  });
+});

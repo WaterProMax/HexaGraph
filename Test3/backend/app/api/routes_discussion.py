@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select
 
 from app.discussion.converge import build_round_state, should_converge
 from app.discussion.cross_review import (
@@ -42,6 +43,7 @@ from app.leader.steward import (
     LeaderNotInProject,
     ProjectNotFound,
 )
+from app.storage.models import DiscussionReviewRow
 
 router = APIRouter()
 
@@ -460,3 +462,57 @@ async def resolve_session_decision(session_id: str, request: Request) -> Any:
             await session.rollback()
             return _json_error(404, "run_not_found", str(exc))
     return record.model_dump()
+
+
+@router.get("/projects/{project_id}/discussion-sessions")
+async def list_project_sessions(project_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    if project_id not in bench.projects:
+        return _json_error(404, "project_not_found", f"project not found: {project_id}")
+    async with bench.db_session() as session:
+        records = await DiscussionSessionStore(session).list_for_project(project_id)
+    return {"items": [record.model_dump() for record in records]}
+
+
+@router.get("/discussion-sessions/{session_id}")
+async def get_discussion_session(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    async with bench.db_session() as session:
+        try:
+            record = await DiscussionSessionStore(session).get(session_id)
+        except SessionNotFound:
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+    if actor not in record.participant_bot_ids and actor != record.leader_bot_id:
+        return _json_error(403, "not_participant", "actor is not a participant of this session")
+    return record.model_dump()
+
+
+@router.get("/discussion-sessions/{session_id}/reviews")
+async def list_session_reviews(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    async with bench.db_session() as session:
+        try:
+            record = await DiscussionSessionStore(session).get(session_id)
+        except SessionNotFound:
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        if actor not in record.participant_bot_ids and actor != record.leader_bot_id:
+            return _json_error(403, "not_participant", "actor is not a participant of this session")
+        rows = (
+            (
+                await session.execute(
+                    select(DiscussionReviewRow).where(DiscussionReviewRow.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return {"items": [row.payload for row in rows]}

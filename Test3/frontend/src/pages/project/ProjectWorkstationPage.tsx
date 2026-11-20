@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
-import type { RunTask } from "../../api/types";
+import type { DefectRecord, GrantStatus, ReviewBallot, RunTask } from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
 import { LEFT_PANEL_ID, WorkstationSplitter } from "../../components/WorkstationSplitter";
 import { useWorkstationLayout } from "../../workstationLayout";
+import { DefectList } from "./DefectList";
+import { DiscussionReviewPanel } from "./DiscussionReviewPanel";
+import { GrantStatusBanner } from "./GrantStatusBanner";
 
 export type WorkstationTab = "details" | "monitor" | "activity" | "graph";
 
@@ -18,6 +21,11 @@ export type ProjectWorkstationProps = {
   initialTab?: WorkstationTab;
   errorText?: string;
   runId?: string;
+  grantErrorCategory?: string | null;
+  grantStatus?: GrantStatus;
+  ballots?: ReviewBallot[];
+  dissentItems?: string[];
+  defects?: DefectRecord[];
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
@@ -50,6 +58,11 @@ export function ProjectWorkstation({
   initialTab = "details",
   errorText = "",
   runId,
+  grantErrorCategory = null,
+  grantStatus,
+  ballots = [],
+  dissentItems = [],
+  defects = [],
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
   const [tab, setTab] = useState<WorkstationTab>(initialTab);
@@ -96,6 +109,7 @@ export function ProjectWorkstation({
         <h1>项目工作台</h1>
         <p className="mono">{projectId}</p>
       </div>
+      <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
       {loadState === "empty" || tasks.length === 0 ? (
         <div className="well muted" data-testid="ws-empty" style={{ padding: "14px 16px" }}>
           这个项目还没有可展示的任务。先在项目里创建一次运行。
@@ -205,6 +219,18 @@ export function ProjectWorkstation({
                   </div>
                 ))}
               </div>
+              <div style={{ marginTop: 16 }}>
+                <DiscussionReviewPanel ballots={ballots} dissentItems={dissentItems} />
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <DefectList
+                  defects={defects}
+                  onLocateTask={(code) => {
+                    setSelected(code);
+                    setTab("details");
+                  }}
+                />
+              </div>
             </section>
           )}
 
@@ -250,7 +276,9 @@ export function ProjectWorkstation({
   );
 }
 
-export default function ProjectWorkstationPage({ projectId }: { projectId: string }) {
+export type ProjectWorkstationPageProps = { projectId?: string; actorBotId?: string; grantErrorCategory?: string | null };
+
+export default function ProjectWorkstationPage({ projectId = "", actorBotId, grantErrorCategory = null }: ProjectWorkstationPageProps) {
   const params = useParams();
   const id = projectId || params.projectId || "";
   const dirtyRef = useMemo(() => ({ current: false }), []);
@@ -258,6 +286,10 @@ export default function ProjectWorkstationPage({ projectId }: { projectId: strin
   const [errorText, setErrorText] = useState("");
   const [tasks, setTasks] = useState<WorkstationTask[]>([]);
   const [runId, setRunId] = useState<string>("");
+  const [grantStatus, setGrantStatus] = useState<GrantStatus | undefined>();
+  const [defects, setDefects] = useState<DefectRecord[]>([]);
+  const [ballots, setBallots] = useState<ReviewBallot[]>([]);
+  const [dissentItems, setDissentItems] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoadState("loading");
@@ -274,6 +306,39 @@ export default function ProjectWorkstationPage({ projectId }: { projectId: strin
       const raw = await api.tasks(String(latest.id));
       const mapped = mapTasks(raw);
       setTasks(mapped);
+
+      // Read-only P6 panels. Failures here must never blank the workstation.
+      try {
+        const grants = await api.executionGrants(String(latest.id));
+        const items = Array.isArray(grants?.items) ? grants.items : [];
+        const active = items[items.length - 1];
+        if (active?.status) setGrantStatus(active.status as GrantStatus);
+      } catch {
+        setGrantStatus(undefined);
+      }
+      if (actorBotId) {
+        try {
+          const listed = await api.defects(String(latest.id), actorBotId);
+          setDefects(Array.isArray(listed?.items) ? listed.items : []);
+        } catch {
+          setDefects([]);
+        }
+        try {
+          const sessions = await api.discussionSessions(String(id), actorBotId);
+          const session = (Array.isArray(sessions?.items) ? sessions.items : [])[0];
+          if (session?.session_id) {
+            const reviews = await api.discussionReviews(String(session.session_id), actorBotId);
+            const items = Array.isArray(reviews?.items) ? reviews.items : [];
+            setBallots(items);
+            setDissentItems(
+              items.flatMap((ballot: ReviewBallot) => (Array.isArray(ballot.dissent_items) ? ballot.dissent_items : [])),
+            );
+          }
+        } catch {
+          setBallots([]);
+          setDissentItems([]);
+        }
+      }
       setLoadState(mapped.length === 0 ? "empty" : "ready");
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 403) setLoadState("forbidden");
@@ -296,6 +361,11 @@ export default function ProjectWorkstationPage({ projectId }: { projectId: strin
       dirtyRef={dirtyRef}
       errorText={errorText}
       runId={runId}
+      grantErrorCategory={grantErrorCategory}
+      grantStatus={grantStatus}
+      ballots={ballots}
+      dissentItems={dissentItems}
+      defects={defects}
     />
   );
 }

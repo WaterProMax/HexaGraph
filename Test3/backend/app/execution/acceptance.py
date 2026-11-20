@@ -22,6 +22,7 @@ import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution.dag import SUCCESS_STATES
@@ -216,6 +217,22 @@ async def _insert_defect(
     return defect
 
 
+async def list_acceptances(session: AsyncSession, run_id: str) -> list[ModuleAcceptance]:
+    rows = (
+        (await session.execute(select(ModuleAcceptanceRow).where(ModuleAcceptanceRow.run_id == run_id)))
+        .scalars()
+        .all()
+    )
+    return [ModuleAcceptance.model_validate(row.payload) for row in rows]
+
+
+async def list_defects(session: AsyncSession, run_id: str) -> list[DefectRecord]:
+    rows = (
+        (await session.execute(select(DefectRow).where(DefectRow.run_id == run_id))).scalars().all()
+    )
+    return [DefectRecord.model_validate(row.payload) for row in rows]
+
+
 __all__ = [
     "AcceptanceForbidden",
     "AcceptanceValidation",
@@ -226,5 +243,7 @@ __all__ = [
     "ModuleAcceptanceCreate",
     "ModuleAcceptanceStatus",
     "create_defect",
+    "list_acceptances",
+    "list_defects",
     "record_acceptance",
 ]

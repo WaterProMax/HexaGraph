@@ -240,3 +240,20 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - `model_self_review=true` 一律 400，不作为验收证据。
 - `rejected` 自动为每个 task_code 建一条 open 缺陷；缺陷不会自动 resolved。缺陷把任务置为 `failed`（可经既有 `retry` 修复），不打开 force-pass。
 - 本路径与遗留整 run 验收 `POST /api/runs/{run_id}/accept` 完全独立；granted_v1 上的 `granted_acceptance_disabled`、`granted_force_pass_disabled` 保持不变。
+
+## P6 前端使用的只读查询
+
+P6 前端工作台需要读取验收、缺陷与讨论会话；P6 只新增以下只读 GET，全部要求 `X-Bot-Id`：
+
+| 方法 | 路径 | 成功 | 失败 |
+|---|---|---|---|
+| GET | `/api/runs/{run_id}/defects` | 200 `{items: DefectRecord[]}` | 400 validation_error；404 run_not_found |
+| GET | `/api/runs/{run_id}/module-acceptances` | 200 `{items: ModuleAcceptance[]}` | 400 validation_error；404 run_not_found |
+| GET | `/api/projects/{project_id}/discussion-sessions` | 200 `{items: DiscussionSession[]}` | 400 validation_error；404 project_not_found |
+| GET | `/api/discussion-sessions/{session_id}` | 200 `DiscussionSession` | 400；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{session_id}/reviews` | 200 `{items: ReviewBallot[]}` | 400；403 not_participant；404 session_not_found |
+
+- 讨论三个 GET 只对 leader 或 participant 返回会话内容；非参与者 403 not_participant。
+- `reviews` 只返回投票 payload（分数、逐项依据、硬门槛、异议），不包含任何提案正文，盲首轮不会经此泄漏他人草案。
+- 未新增写接口、未改任何既有 POST 语义、未新增 Alembic 迁移（head 仍为 0010）。
+

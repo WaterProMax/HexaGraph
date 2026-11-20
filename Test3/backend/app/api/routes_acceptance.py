@@ -9,7 +9,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from app.execution.acceptance import AcceptanceValidation, DefectCreate
+from app.execution.acceptance import (
+    AcceptanceValidation,
+    DefectCreate,
+    list_acceptances,
+    list_defects,
+)
 
 router = APIRouter()
 
@@ -118,3 +123,28 @@ async def create_defect(run_id: str, request: Request) -> Any:
 
 
 __all__ = ["router"]
+
+@router.get("/runs/{run_id}/defects")
+async def get_defects(run_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    if run_id not in bench.runs:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    async with bench.db_session() as session:
+        items = await list_defects(session, run_id)
+    return {"items": [item.model_dump() for item in items]}
+
+
+@router.get("/runs/{run_id}/module-acceptances")
+async def get_module_acceptances(run_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    if run_id not in bench.runs:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    async with bench.db_session() as session:
+        items = await list_acceptances(session, run_id)
+    return {"items": [item.model_dump() for item in items]}

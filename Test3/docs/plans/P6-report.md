@@ -47,3 +47,20 @@
 - 复用：`WorkstationSplitter` 与 `useWorkstationLayout`，断言 `data-testid="ws-splitter"` 与 `role=separator` 仍在；备注编辑把共享 `dirtyRef.current` 置 true（与 `DesignSpecInput` 同一模式）。
 - 四态：`ws-loading / ws-empty / ws-error / ws-forbidden`；空任务列表显示 `ws-empty` 且不崩溃。
 - 项目入口：`pages/Projects.tsx` 的项目卡片新增「打开工作台」链接到 `/projects/:projectId`，原「创建并开始」跳到 `/workstation/${run.id}` 的行为保持不变。
+
+## T04 · Grant 提示、讨论互评、缺陷回到任务 + 后端只读 GET
+
+- 前端命令：`cd Test3/frontend && npm test -- src/pages/project/GrantStatusBanner.test.tsx src/pages/project/DiscussionReviewPanel.test.tsx src/pages/project/DefectList.test.tsx src/pages/project/ProjectWorkstationPage.test.tsx` → 4 files / 22 passed，退出码 0；全量 `npm test` 27 files / 209 passed，`npx tsc --noEmit` 通过。
+- 后端命令：`cd Test3/backend && TEST3_ISOLATION_IMAGE=sha256:af6493938f5d… .venv/bin/python -m pytest -o addopts='' -q tests/integration/test_p6_readonly_get.py tests/integration/test_api_contract.py tests/integration/test_module_acceptance_and_defects.py tests/integration/test_discussion_session_api.py tests/unit/test_p1_rev01_execution_boundary.py tests/integration/test_schedule_grant_http.py` → 88 passed，退出码 0。
+- 组件：`GrantStatusBanner.tsx`（`baseline_stale` → 含「基线」「重新审批」，不出现「请逐行确认」；`grant_required` → 含「执行授权」；`stale/revoked/consumed` 回退；无信号不渲染）、`DiscussionReviewPanel.tsx`（逐票硬门槛、逐项依据、异议；文案只把结论归于硬门槛/异议/轮次，出现「分数仅作记录」，不出现「分差…自动通过」）、`DefectList.tsx`（点击缺陷回调 `onLocateTask(task_code)`；不自动 resolved）。
+- 组装：`ProjectWorkstationPage` 新增可选 `grantErrorCategory / grantStatus / ballots / dissentItems / defects`；缺陷点击把左侧选中任务切到该 `task_code` 并回到详情 Tab。容器在 `actorBotId` 存在时读取缺陷与讨论票；只读面板失败不影响工作台主体。
+- 只读 GET（本卡唯一后端改动，均为新增）：
+  - `GET /api/runs/{run_id}/defects`
+  - `GET /api/runs/{run_id}/module-acceptances`
+  - `GET /api/projects/{project_id}/discussion-sessions`
+  - `GET /api/discussion-sessions/{session_id}`
+  - `GET /api/discussion-sessions/{session_id}/reviews`
+- 头与错误：全部要求 `X-Bot-Id`（缺头 400 validation_error）；讨论三个 GET 仅 leader / participant，非参与者 403 not_participant；run/project/session 不存在分别 404 run_not_found / project_not_found / session_not_found；错误体沿用 `_json_error`。
+- 盲轮安全：`reviews` 只返回投票 payload，不含任何提案正文，盲首轮不会经此泄漏他人草案（测试断言无 `body_md`）。
+- OpenAPI：`UPDATE_OPENAPI_SNAPSHOT=1 … tests/integration/test_api_contract.py` → 28 passed；路径 65 → 70（+5，删除 0），既有 65 条路径（含 `GET /api/runs/{run_id}/discussion`、`POST /api/runs/{run_id}/accept`）全部保留。`Test3/docs/API.md` 已新增 P6 只读查询章节（标题前空行）。未新增写接口、未新增 Alembic（head 仍 0010）。
+- 契约：规格批准按钮未新增；前端不提供开闸控件，`execution_safety_ready` 只展示。
