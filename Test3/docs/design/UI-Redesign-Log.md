@@ -202,3 +202,58 @@ node scripts/verify-flow-edges.cjs
 - 20 个任务的 DAG 在 1440px 下按 0.6 可读下限左对齐，右侧列需要平移查看；这是有意取舍，避免节点过小。
 - 旧的 `scripts/verify-flow-edges.cjs` 针对旧阶段布局，未更新，可能不再通过。
 
+## v1.5 · 多 Bot 讨论与需求规格审批的 Ice Glass 样式
+
+日期：2026-11-20（北京时间）。只改前端样式与设计文档，未改后端、讨论状态机、评分/收敛规则、审批条件或任何 `.tsx` / `.ts` 组件逻辑。
+
+### 修改范围
+
+- `frontend/src/workstation-glass.css`：文件末尾新增 `Multi-bot discussion and spec approval (disc-*)` 分区，覆盖流程条、想法输入、两栏布局、群聊气泡、评分面板、审批弹框、审批横幅、规格查看弹层、已批准摘要卡与任务区容器。
+- `docs/design/UI-Design-System.md`：升到 v1.5，新增「多 Bot 讨论与需求规格审批（v1.5）」组件小节，补充断点、焦点、作用域与检查清单。
+- 本文件：记录本轮范围与验证边界。
+- 未新增 token。所有颜色、圆角、阴影、间距复用 `.shell` 上的 `--glass-ink/secondary/muted/accent/surface/field/radius-*/space/shadow/focus`；未覆盖全局 Ant Design token。
+
+### 作用域决定
+
+讨论视图挂在项目工作台页（`.page.ws-page`）里，而 `.ws` 只存在于运行工作台（`pages/Workstation.tsx`）。若只写 `.ws .disc-*`，规则在实际承载该视图的页面上一条也不会生效。因此所有选择器统一写成 `:is(.ws, .ws-page) .disc-*`：既保留 `.ws` 入口，又把改动限制在这两个工作台根之下，不进入其它路由、不修改全局弹层。`disc-*` 前缀仅属于本功能。
+
+### 关键视觉规则
+
+- 流程条：六步等分、连接细线、当前项实心品牌蓝、已完成打勾弱化；`is-terminated` 转暖中性色并追加“讨论已终止”；900px 以下改为可换行胶囊，不横向溢出。
+- 想法输入：glass panel，textarea 聚焦用 `--glass-focus`，禁用改灰底，字数等宽右对齐，错误浅红底深红字，主按钮 `var(--glass-accent)` 且 hover / active / focus-visible / disabled 齐全。
+- 两栏：`minmax(0,1fr) 360px`、gap 16px；`<1100px` 单列并把 `.disc-side` 排到时间线之后。
+- 群聊：气泡 16px 圆角，方案 / 评分 / Leader 卡三种底色区分，头像与首行对齐，系统提示居中淡色胶囊，分隔线为居中细线；时间线 `max-height: 60vh`，方案正文 `pre` 自动换行、`max-height: 360px` 独立滚动。
+- 评分：11px 紧凑表格 + 等宽数字，达标深绿 `#1a6b45`、超标深红 `#a3232f`（不用浅灰），缺票显示 `—` 用辅助文字色，平均分加重；终止二次确认复用 `.disc-dialog`。
+- 审批弹框：遮罩 `rgba(18,45,66,.32)` + 6px 模糊；`min(880px, calc(100vw - 32px))`、`max-height: 85vh`、24px 圆角；正文区独立滚动（`max-height: 52vh`），折叠区之间 1px 分隔线；底部左右分布，主按钮用 `var(--glass-accent)`。
+- 横幅与摘要卡：审批横幅用暖杏色（与 `.gate-card` 同语义：需要人工关注，不是错误）；已批准摘要卡为 glass panel + “等待任务拆解”暖色胶囊。
+- 可访问性：所有可交互元素保留可见 `:focus-visible`；文字保持标题 / 正文 / 副文三级深蓝灰；`prefers-reduced-motion` 下关闭过渡；`prefers-reduced-transparency` 下改用实体底色并去掉遮罩模糊。
+
+### 验证
+
+构建与单元测试（在 `frontend` 目录执行）：
+
+```bash
+npx tsc --noEmit      # 通过
+npx vitest run        # 47 个文件 / 382 条测试全部通过
+npm run build         # tsc -b + vite build 通过；仅有既有的 >500kB chunk 提示
+```
+
+隔离静态样式检查（本轮新增，临时脚本在 `/tmp`，未入库）：用构建产物 CSS + 按组件 JSX 结构手写的代表性 DOM，在 headless Chromium 下按 1280 / 1000 / 820px 三个视口断言计算样式，35/35 通过：
+
+- 流程条六列等分、当前项 `rgb(0,102,250)`、已完成浅绿；
+- 1280px 两栏且右栏 360px、1000px 单列且评分面板位于时间线下方、820px 流程条换行；
+- 气泡 16px 圆角、系统提示居中、方案 `pre` `pre-wrap` + 360px 限高滚动、时间线 540px（60vh）限高滚动；
+- 分差超标 `rgb(163,35,47)`、门槛达标 `rgb(26,107,69)`；
+- 弹框 880px（820px 下 788px）、24px 圆角、正文独立滚动、主按钮品牌蓝、遮罩色与 `blur(6px)`；
+- 想法输入聚焦环 `rgba(0,102,250,.25) 0 0 0 3px`、禁用态 `cursor: not-allowed`、panel 圆角 24px；
+- 三个视口均无页面横向滚动。
+
+这是**模拟浏览器回归**：静态页面 + 构建产物 CSS，不含 React 渲染、不含应用路由、不连后端。
+
+### 未验证 / 已知限制
+
+- **未做真实后端验证**：未用临时数据目录启动 FastAPI、未跑 scripted 提供者的完整“想法 → 群聊 → 审批 → 打回 → 再通过”流程，也未截图真实页面。上面 35 条断言全部来自静态隔离页面，不能当作端到端结论。
+- 未做 Playwright 应用级 e2e（讨论视图的用例由另一小组负责）；未在真实组件里核对 AntD `Button` / `Alert` 的局部覆写外观，只确认了构建通过。
+- 缺票单元格的内容是文本 `—`，纯 CSS 无法只弱化占位符而不影响真实分数，因此整列采用辅助文字色、平均分列加重来表达主次。
+- 未做全量对比度审计；只在 `--glass-muted #405c71` 于浅冰蓝底上做粗算（≥6:1），不代表所有半透明叠加组合。
+- 评分表在极窄容器内横向滚动而不是压缩字号；这是有意取舍。

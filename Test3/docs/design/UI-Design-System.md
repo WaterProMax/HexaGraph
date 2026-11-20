@@ -1,8 +1,8 @@
-# HexaGraph UI 设计规范 · Ice Glass v1.4
+# HexaGraph UI 设计规范 · Ice Glass v1.5
 
-版本：1.4 · 2026-11-18（北京时间）
-适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条），以及任务依赖图的共享边样式。
-实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`frontend/src/flowLayout.ts`、`frontend/src/workstationLayout.ts`、`frontend/src/workstationGraph.ts`、`App.tsx`、`pages/Workstation.tsx`。
+版本：1.5 · 2026-11-20（北京时间）
+适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条），项目工作台页上的多 Bot 讨论与需求规格审批视图，以及任务依赖图的共享边样式。
+实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`frontend/src/flowLayout.ts`、`frontend/src/workstationLayout.ts`、`frontend/src/workstationGraph.ts`、`App.tsx`、`pages/Workstation.tsx`、`pages/project/discussion/*`。
 过程与验证：[UI-Redesign-Log.md](UI-Redesign-Log.md)。
 
 ## 1. 设计目标与边界
@@ -11,7 +11,7 @@
 
 老师参考图只用于校准“流程图优先、细边框、清晰连线、颜色区分状态”的克制层级，不复制其产品结构或文案。保留 HexaGraph 的工作流信息与全部现有功能。
 
-v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加强共享边线；v1.3 做视觉减法：左栏改为单行进度列表，阶段用细分隔，节点与顶栏控件减重。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。项目、模型设置及独立运行详情路由不做全面重设计。
+v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加强共享边线；v1.3 做视觉减法：左栏改为单行进度列表，阶段用细分隔，节点与顶栏控件减重。v1.4 增加可拖分栏与分层流程图。v1.5 为项目工作台页的「多 Bot 讨论 → 需求规格审批」增加控件样式，只改视觉，不改讨论状态机、评分规则与审批条件。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。项目、模型设置及独立运行详情路由不做全面重设计。
 
 业务规则仍以仓库 Design / Architecture / ImplementationPlan 为准，本文件不定义状态机、API、审批或并发规则。
 
@@ -114,6 +114,29 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - 视口只在结构变化或点击“重置视口”时适应；缩放不低于可读下限 0.6（左对齐），拖分栏、选中和悬停不触发重新适应；节点不可拖动、Handle 不可连线。
 
 
+### 多 Bot 讨论与需求规格审批（v1.5）
+
+讨论视图挂在项目工作台页（`ProjectWorkstationPage`，根节点 `.page.ws-page`）的 `.ws-discussion` 容器里，仅在项目没有任何运行记录时出现；已有运行记录的项目仍是原来的任务区。样式全部写在 `workstation-glass.css` 末尾的 `disc-*` 分区，作用于 `:is(.ws, .ws-page)` 两个根之下：`.ws` 是运行工作台，`.ws-page` 是实际承载讨论视图的项目页。除此之外不选其它路由，也不覆盖 Ant Design token；`disc-*` 类名前缀只属于本功能。
+
+`.ws-discussion` 是任务区容器：`display: grid`、间距 `--glass-space`、底部 32px 留白，与 `.ws-left` 的 12–16px 节奏一致；`.disc-view` 负责纵向排序各区块。
+
+- **流程条** `.disc-stage-bar` / `.disc-stage-list`：一行六步等分（`repeat(6, minmax(0,1fr))`）。`.is-done` 打勾、浅绿底、副文色标签；`.is-current` 实心品牌蓝圆标 + 主文字加粗；`.is-pending` 虚线空标；相邻步骤之间用 2px 细连接线（首项不画）。`.is-terminated` 整条改暖中性底和棕橙描边，并追加居中的“讨论已终止”胶囊。窄屏（<900px）改成可换行的胶囊行，隐藏连接线，不横向溢出。
+- **想法输入** `.disc-composer`：glass panel（`--glass-surface` + `--glass-shadow` + 24px 圆角）。`textarea.disc-composer-input` 用 `--glass-field`，`:hover` 提亮、`:focus-visible` 使用 `--glass-focus`、`:disabled` 改灰底并保留可读文字；字数 `.disc-composer-count` 等宽数字右对齐；错误用浅红底、深红字的提示块（AntD Alert 局部覆写，不改全局）；成员不足时 `.disc-composer-blocked` 为暖色提示 + “去邀请”。主按钮 `.ant-btn-primary` 为 `var(--glass-accent)`，圆角 999px，覆盖 hover / active / focus-visible / disabled / loading。
+- **群聊** `.disc-chat`：时间线容器 `max-height: 60vh`、`overflow-y: auto`、`scrollbar-gutter: stable`，自身可聚焦（`:focus-visible` 蓝框）。四种气泡：
+  - 系统提示 `.disc-system`：居中、淡蓝底胶囊、辅助文字色，事件徽标用 `.disc-tag`（失败为红、普通为灰蓝）。
+  - 方案提交 `.disc-bubble-proposal`：浅白蓝底，正文封存期只显示 `.disc-bubble-note`；解封后按钮展开 `pre.disc-proposal-body`（等宽、自动换行、`max-height: 360px; overflow: auto`）。截断徽标 `.disc-badge.is-warn` 为暖黄。
+  - 评分卡 `.disc-bubble-review`：略深冰蓝底，四项维度用 `.disc-score-dims` 小格，总分成蓝色加重。
+  - Leader 发言 `.disc-bubble-leader`：冰蓝底 + 左侧 3px 品牌蓝内阴影，动作徽标 `.disc-tag.is-accent`。
+  - 所有气泡圆角 16px，`.disc-avatar` 与正文首行对齐（`margin-top: 2px`），长内容 `overflow-wrap: anywhere`。会话切换分隔线 `.disc-divider`（`role="separator"`）为居中细线 + 中间文字。
+- **评分面板** `.disc-score-panel`（右栏，360px）：轮次胶囊 `.disc-round`；`.disc-score-table` 紧凑 11px 表格、头行 10px、`font-variant-numeric: tabular-nums`、数字单元格等宽字体、缺票显示 `—` 并用辅助文字色弱化、平均分列用主文字加粗；`.disc-gap` 达标 `is-ok` 深绿、超标 `is-over` 深红（`#a3232f`，非浅灰）；硬门槛 `.disc-gate.is-ok/.is-over` 的勾叉与状态文字同色；`.disc-failure` 为失败重试/跳过区；`.disc-actions` 按钮组 `gap: 8px` 且等宽伸展；终止二次确认复用 `.disc-dialog`（`.disc-dialog-backdrop` 内收窄到 440px）。
+- **审批弹框** `.disc-dialog-mask` + `.disc-dialog.disc-approval-dialog`：遮罩 `rgba(18,45,66,.32)` 且 `backdrop-filter: blur(6px)`；弹框宽 `min(880px, calc(100vw - 32px))`、`max-height: 85vh`、24px 圆角、白底 + 柔和外阴影。标题行右侧为 32px 圆形关闭按钮。摘要标签 `.disc-summary-chip` 为胶囊（轮次 / 分差 / 硬门槛 / 分歧数）。`.disc-dialog-body` 独立滚动（`max-height: 52vh`），Markdown 标题、列表、表格、`pre`、引用都按三级文字和等宽代码排版。折叠区 `.disc-dialog-fold` 之间用 1px 分隔线，展开后各自限高滚动。底部 `.disc-dialog-actions` 左右分布：左“打回重新讨论”（次按钮），右“通过，进入任务拆解”（`var(--glass-accent)` 主按钮）；打回意见区 `.disc-reject` 用浅红底强调必填。
+- **审批横幅** `.disc-approval-banner`：暖杏色渐变 + 1px 暖描边（与 `.gate-card` 一样表示“需要人工关注”，不是错误色），左侧标题与轮次胶囊，右侧主按钮“查看并审批”。
+- **规格查看** `.disc-spec-dialog`：与审批弹框同壳，`.disc-spec-meta` 显示版本 / 摘要前 8 位 / 状态胶囊，`.disc-spec-body` 独立滚动，底部 `.disc-spec-history` 为可换行的胶囊列表，选中项蓝色描边，`--rejected` 状态用深红。
+- **已批准摘要卡** `.disc-spec-summary`：glass panel + 标题行（右侧等宽 sha 提示）+ 正文预览 + “等待任务拆解”暖色胶囊与“查看需求规格”次按钮。
+- **状态与焦点**：错误 `.disc-view-error` 浅红底深红字；连接降级提示 `.disc-connection-hint` 暖黄；`.disc-view-status` 为中性玻璃条。所有按钮、链接、输入、可展开项、弹框关闭按钮都有可见 `:focus-visible` 轮廓（2px `--glass-accent`，offset 2–3px），文字始终是深蓝灰三级，不用 opacity 压灰。
+- **断点**：`<1100px` 时 `.disc-layout` 从 `minmax(0,1fr) 360px` 切为单列 `1fr`，`.disc-side` 排在时间线之后（`order: 2`），评分维度改两列；`<900px` 流程条换行、弹框内边距收窄、底部按钮等宽伸展。页面不产生横向滚动，表格在自身容器内横向滚动。
+
+
 ### 顶栏、右侧与浮动操作
 
 - 顶栏为浅蓝玻璃带；历史运行 Select、状态与预算为胶囊。下拉浮层使用 `.glass-select-popup`，和触发器保持一致。
@@ -149,6 +172,7 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 ## 6. 响应式与可访问性
 
 - 运行栏宽度由分栏条决定（默认 320px，280–560px）；应用栏在窗口小于 1100px 时自动收起。
+- 讨论视图在 1100px 以下从两栏变单栏（时间线在上、评分面板在下），900px 以下流程条换行、审批弹框按钮等宽伸展。
 - 画布保持 ≥ 480px；不足时信息栏折叠，小于 1100px 用抽屉。页面无横向滚动。不是完整移动端重构；不要声称支持手机原生布局。
 - 两列分别纵向滚动，保持 `min-height: 0` 与稳定滚动槽；禁止为了“全屏展示所有卡片”无限压缩字号。
 - 标题和长 code 可以换行；副文可省略；按钮可换行，不能遮挡点击区域。
@@ -177,7 +201,7 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 }
 ```
 
-作用域以 `.ws-left` / `.sidebar` 或工作台内的 `.ws` 开头。共享 token 已提升至 `.shell`；不要在具体组件重复声明近似色值。Select 浮层通过专用 class 定位，不能污染其它页面弹层。推广其它路由仍需确认范围，不顺手覆盖全局 Ant Design token。
+作用域以 `.ws-left` / `.sidebar` 或工作台内的 `.ws` 开头；讨论视图另外使用 `.ws-page`（项目工作台页），写成 `:is(.ws, .ws-page)`。共享 token 已提升至 `.shell`；不要在具体组件重复声明近似色值。Select 浮层通过专用 class 定位，不能污染其它页面弹层。推广其它路由仍需确认范围，不顺手覆盖全局 Ant Design token。
 
 ## 8. 每次修改的检查清单
 
@@ -188,6 +212,7 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - [ ] 默认、悬停、选中、聚焦、禁用、加载状态均明确。
 - [ ] 1600 / 1280 / 1024 / 768px 检查，没有面板内部横向溢出。
 - [ ] 输入、启动、关卡批准/驳回、阶段选择、最近运行跳转正常。
+- [ ] 讨论视图：流程条当前/已完成/终止、想法输入禁用与字数、气泡封存与展开、评分表达标/超标色、审批弹框滚动与关闭、规格历史切换正常；1100px 与 900px 无内部横向溢出。
 - [ ] 顶栏暂停/恢复、历史选择、开关、四标签、缩放/适应画布、底部操作正常；工具栏无内部溢出。
 - [ ] 不改 API、审批条件、状态机、运行计算和右侧图布局。
 - [ ] TypeScript、生产构建、Vitest、浏览器回归通过。

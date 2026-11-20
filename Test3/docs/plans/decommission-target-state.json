@@ -1,0 +1,150 @@
+{
+  "source": "p0_index_not_implemented",
+  "recorded_at": "2026-11-19T14:17:29.551821+08:00",
+  "app_tsx_classroom_route": {
+    "status": "Active",
+    "file": "Test3/frontend/src/App.tsx",
+    "line": 141,
+    "activity_kind": "retired_landing_route",
+    "context": "path=\"/workstation/static-classroom\" 当前挂载 RetiredFeature feature=\"static-classroom\"；不是 StaticClassroomDemo 继续运行。",
+    "outbound_active": false
+  },
+  "app_tsx_deepseek_route": {
+    "status": "Active",
+    "file": "Test3/frontend/src/App.tsx",
+    "line": 142,
+    "activity_kind": "retired_landing_route",
+    "context": "path=\"/deepseek/:id?\" 当前挂载 RetiredFeature feature=\"deepseek\"；不是专用创建或恢复外呼。",
+    "outbound_active": false
+  },
+  "decommission_index": [
+    {
+      "item": "StaticClassroomDemo 原始实现",
+      "status": "History",
+      "file": "Test3/docs/StaticClassroomDemo.md",
+      "line": 3,
+      "context": "文档明确标记“已下线（只读历史）”；当前 frontend/src 未搜到 StaticClassroomDemo 符号。Test3/README.md:72 也只有历史文档链接。",
+      "outbound_active": false
+    },
+    {
+      "item": "DeepSeek 专用原始外呼叙事/夹具",
+      "status": "History",
+      "file": "Test3/README.md",
+      "line": 72,
+      "context": "历史说明称专用入口已下线；frontend/src/App.retired.test.tsx:17 的 DeepSeekProvider 仅为历史 provenance 测试夹具，不是当前 provider 实现。未读取旧提交，旧实现原始落点不作推断。",
+      "outbound_active": false
+    },
+    {
+      "item": "DeepSeekRetired 受控拒绝",
+      "status": "Active",
+      "file": "Test3/backend/app/errors.py",
+      "line": 60,
+      "context": "当前源码异常类；api/routes.py:58-67 映射为 HTTP 410 deepseek_retired。Active 指守卫代码存在，不指专用外呼仍可用。",
+      "outbound_active": false
+    },
+    {
+      "item": "provenance.mode=deepseek 历史快照只读兼容",
+      "status": "Active",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 554,
+      "context": "_is_retired_run 只读 artifacts.provenance；api/routes.py:417-437 原样返回 provenance 并设置 read_only；frontend/src/App.tsx:104-110 将历史运行链接到只读工作台。",
+      "outbound_active": false
+    }
+  ],
+  "dedicated_outbound_entries": [
+    {
+      "entry": "专用创建（设计导入 provider=deepseek）",
+      "status": "Active",
+      "activity_kind": "retirement_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 709,
+      "http_evidence": "Test3/backend/app/api/routes.py:100-109；schema 兼容字段在 app/schemas/design_input.py:29-33。",
+      "context": "create_design_run 在校验输入、读设置、写盘或网络之前对 provider==\"deepseek\" 抛 DeepSeekRetired；通用 existing 创建路径不在下线范围。",
+      "outbound_active": false
+    },
+    {
+      "entry": "任务重试/恢复/接管等可重入外呼",
+      "status": "Active",
+      "activity_kind": "retirement_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 1987,
+      "http_evidence": "Test3/backend/app/api/routes.py:186-197",
+      "context": "control_task 对 retry/resume/skip/force-pass/takeover/submit-takeover 先 _reject_retired；retry 正常 legacy 分支仍在 runtime.py:1999-2004，未在本阶段修改。",
+      "outbound_active": false
+    },
+    {
+      "entry": "run 恢复",
+      "status": "Active",
+      "activity_kind": "retirement_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 2046,
+      "http_evidence": "Test3/backend/app/api/routes.py:210-215",
+      "context": "set_run_control 的 resume 对退休 run 先拒绝；pause/terminate 的通用能力保留。",
+      "outbound_active": false
+    },
+    {
+      "entry": "继续生成 PLAN",
+      "status": "Active",
+      "activity_kind": "retirement_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 1454,
+      "context": "run_plan 在创建 gateway、timeout task 或 event 前拒绝退休 run。",
+      "outbound_active": false
+    },
+    {
+      "entry": "调度/自动循环继续外呼",
+      "status": "Active",
+      "activity_kind": "retirement_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 1545,
+      "http_evidence": "Test3/backend/app/api/routes.py:388-394；自动循环跳过退休 run 在 runtime.py:197-214。",
+      "context": "schedule_once 直接 API 与自动循环均有退休分支；legacy 非退休 run 的原调度实现保留。",
+      "outbound_active": false
+    },
+    {
+      "entry": "进程重启后的恢复/对账",
+      "status": "Active",
+      "activity_kind": "read_only_recovery_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 362,
+      "context": "恢复 snapshot 后，退休 run 的中断 model_stage 被标记只读错误；自动循环 runtime.py:208-211 不再调度。P0 未做杀进程或运行数据验证。",
+      "outbound_active": false
+    },
+    {
+      "entry": "统一模型网关与旧 provider 配置",
+      "status": "Active",
+      "activity_kind": "outbound_guard",
+      "file": "Test3/backend/app/services/runtime.py",
+      "line": 593,
+      "context": "_gateway_for 在返回 gateway 前拒绝退休 run；llm/gateway.py:140-155 对未知 provider kind（含 deepseek）显式 ConfigError，不回退 DashScope/scripted。",
+      "outbound_active": false
+    }
+  ],
+  "overlap_with_p1_paths": [
+    {
+      "file": "Test3/backend/app/services/runtime.py",
+      "status": "Active",
+      "lines": [554, 593, 709, 1063, 1454, 1545, 1987, 2048],
+      "coordination": "P1 只改 granted_v1 分支，不搭车下线；保留退休只读分支与 legacy 行为。"
+    },
+    {
+      "file": "Test3/backend/app/api/routes.py",
+      "status": "Active",
+      "lines": [58, 108, 156, 164, 186, 196, 210, 214, 388, 392],
+      "coordination": "P1 schedule/gates 扩展与退休异常映射真实重叠；先协调另一下线任务，不改 App.tsx 或新增守卫。"
+    }
+  ],
+  "blocks_all_p1": false,
+  "retained_capabilities": [
+    "通用 OpenAI-compatible 模型槽位/base_url 能力不在下线列表；当前 DashScopeProvider 使用 openai.AsyncOpenAI（app/llm/providers.py:149-156），base_url 配置证据见 providers.py:166；禁止品牌黑名单。",
+    "DashScope 保留：app/llm/gateway.py:153-154；app/llm/providers.py:149。",
+    "scripted 保留：app/llm/gateway.py:147-148；app/llm/providers.py:56。",
+    "replay 保留：app/llm/gateway.py:149-152；app/llm/providers.py:112。"
+  ],
+  "target_acceptance_for_other_task": [
+    "用户另任务的下线目标：专用外呼应受控 4xx 且零网络；历史 provenance.mode=deepseek 只读且不改写。",
+    "本文件仅 P0 索引草稿，不是实施或验收证明；当前源码虽有退休守卫，仍未在本阶段运行其测试，也未据此宣称下线完成。"
+  ],
+  "test_execution": "未运行（P0 只读）",
+  "notes": "本任务书不实施下线、不复活守卫。blocks_all_p1=false；字符串命中不阻塞 P1，但 runtime.py/routes.py 的真实重叠需要文件级协调。source=p0_index_not_implemented 防止 P5 将本草稿误判为已下线。"
+}

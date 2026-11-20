@@ -1,0 +1,25 @@
+{
+  "status": "PR_OPEN",
+  "reason": null,
+  "mv_04": "completed",
+  "authorization_present": true,
+  "push_attempted": true,
+  "pr_attempted": true,
+  "github_pr_url": "https://github.com/WaterProMax/HexaGraph/pull/34",
+  "feature_branch": "feat/test3-agent-team-v1",
+  "base_branch": "teamwork-001",
+  "merged": false,
+  "deployed": false,
+  "closeout_checked_at": "2026-11-20T04:54:34.028393+00:00",
+  "closeout_detail": "After independent acceptance of P1-P7 (42/42 tasks) and explicit user authorization (t86s416), pushed feat/test3-agent-team-v1 and created real open PR #34 targeting teamwork-001 without merging or deploying.",
+  "recorded_at": "2026-11-19T07:02:08.489036+00:00",
+  "detail": "Real pull request opened on WaterProMax/HexaGraph (#34) from feat/test3-agent-team-v1 into teamwork-001 (merged=false, deployed=false, execution_safety_ready=false).",
+  "local_evidence": [
+    "Test3/backend/tests/unit/test_live_git_idempotent.py",
+    "Test3/backend/app/execution/github_auth.py",
+    "Test3/backend/app/tools/live_git.py",
+    "Test3/docs/plans/P1-report.md",
+    "Test3/docs/plans/P7-report.md"
+  ],
+  "pr_number": 34
+}

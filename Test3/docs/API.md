@@ -88,3 +88,270 @@
 ## 控制动作可用状态
 
 后端 `require_control` 与前端 `controlEnabled` 对齐 Design.md 16.3 的子集：`retry`/`force-pass` 仅 `needs_human|failed`；`skip`/`pause` 覆盖未完成态。缺理由的 `force-pass` 被拒绝。
+
+## P2 新增路由（Skills / Bots / Memberships）
+
+P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请求体校验失败返回 **400**（不是 FastAPI 默认 422），错误体统一为：
+
+```json
+{"error_category": "validation_error", "detail": "..."}
+```
+
+可选 `extras` 字段保留给后续扩展。
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/skills` | 201 `SkillDefinition` | 400 `validation_error`；409 `skill_version_exists` |
+| POST | `/api/skills/import` | 201 新建 / 200 已存在 `SkillDefinition`（请求体 `{"url"}`） | 400 `validation_error` / `skill_too_large`；404 `skill_source_not_found`；502 `github_unavailable` |
+| GET | `/api/skills` | 200 `{"items": [...]}` | — |
+| GET | `/api/skills/{skill_id}/versions` | 200 `{"items": [...]}` | 404 `skill_not_found` |
+| POST | `/api/bots` | 201 `BotInstance`（服务器生成 `bot_id`） | 400 `validation_error`；409 `bot_name_conflict` |
+| GET | `/api/bots?status=active\|archived` | 200 `{"items": [...]}` | 400 `validation_error`（非法 status） |
+| GET | `/api/bots/{bot_id}` | 200 `BotInstance` | 404 `bot_not_found` |
+| PATCH | `/api/bots/{bot_id}` | 200 更新后的 `BotInstance`，附加只读整数 `pin_revision` | 400 `validation_error`；404 `bot_not_found`；409 `bot_name_conflict` / `bot_archived` |
+| POST | `/api/bots/{bot_id}/archive` | 200 `{"bot_id", "status": "archived"}` | 404 `bot_not_found`；409 `bot_already_archived` |
+| POST | `/api/bots/{bot_id}/chat` | 200 `{"reply", "model"}`，资料文件放不下时多一个 `files_omitted`（请求体 `{"messages":[{"role":"user\|assistant","content"}]}`，最后一条必须是 user） | 400 `validation_error` / `secret_in_body` / `auth`；404 `bot_not_found`；409 `bot_archived`；502 模型调用失败；504 `timeout` |
+| GET | `/api/bots/{bot_id}/files` | 200 `{"items":[{"file_id","filename","chars","created_at"}], "used_chars", "budget_chars"}` | 404 `bot_not_found` |
+| POST | `/api/bots/{bot_id}/files` | 201 `{"file", "items", "used_chars", "budget_chars"}`（请求体 `{"filename","content"}`，同名文件替换） | 400 `validation_error` / `secret_in_body`；404 `bot_not_found`；409 `bot_archived` / `file_budget_exceeded`；415 `unsupported_file_type` |
+| DELETE | `/api/bots/{bot_id}/files/{file_id}` | 204 | 404 `bot_not_found` / `file_not_found` |
+| POST | `/api/projects/{project_id}/memberships` | 201 `ProjectMembership` | 404 `project_not_found` / `bot_not_found`；403 `bot_archived`；409 `membership_exists` / `leader_already_set` |
+| GET | `/api/projects/{project_id}/memberships` | 200 `{"items": [...]}` | 404 `project_not_found` |
+| DELETE | `/api/projects/{project_id}/memberships/{bot_id}` | 204，无响应体 | 404 `membership_not_found` |
+
+- 未注册 `POST /api/projects/{project_id}/bots`；该路径自然 404，且不写 `bots` 表。
+- 同一项目至多一个 `is_leader=true`；同一 Bot 可加入多个项目。移出项目只解除成员关系，不删除 Bot 或其 pin 历史。
+- Bot 的 `model` / `provider_ref` / `skill_bindings` 变更会追加 pin revision；同一 `(run_id, bot_id)` 的冻结快照在运行开始时写入 `run_bot_pin_snapshots`，运行中 PATCH Bot 不改变已冻结值。
+- `POST /api/skills/import`：只接受 `https://github.com/` 的公开仓库地址（仓库主页、`/tree/<ref>/<dir>`、`/blob/<ref>/<dir>/SKILL.md`），只访问 `api.github.com` 与 `raw.githubusercontent.com`，不跟随重定向，`SKILL.md` 上限 64KB。`skill_id` 为 `<owner>-<name>`，`version` 为提交 sha 前 7 位（同一提交重复导入幂等返回 200），`allowed_tool_refs` 恒为空。Bot 通过 `skill_bindings` 绑定。
+- Bot 的 `api_key`（`POST` / `PATCH` 请求体可选，只写）：服务端校验 `provider_ref` 在目录内（`dashscope`、`deepseek`、`moonshot`、`zhipu`、`volcengine`、`minimax`、`siliconflow`、`hunyuan`、`qianfan`、`stepfun`，未知值 400 `validation_error`），加密存入 `<data_dir>/secrets/`，不写 `bots.payload`、pin、事件，也不出现在任何响应；Bot 的响应只附带只读布尔 `has_api_key`（是否已存 Key，不含 Key 本身）。`PATCH` 传空字符串删除；归档时删除。`call_agent` 在冻结 pin 后按 `provider_ref` 的 base URL 与该 Key 调用；未设置 Key 的 Bot 仍走环境变量里的百炼密钥。该 Key 仅用于 `call_agent` 路径，`run_tool_agent` 仍用工作台默认。
+- `POST /api/bots/{bot_id}/chat`：无状态对话，历史由客户端携带（最多 40 条、每条 ≤ 8000 字）；使用该 Bot 自己的模型与加密保存的 API Key，并把该 Bot 的 private 记忆写入 system prompt；含 `sk-` 类密钥的消息直接 400，不发往模型。
+- Bot 资料库（`/api/bots/{bot_id}/files`）：只收文本和代码文件（`.txt .md .csv .json .yaml .py .ts` 等，其他格式 415，含 NUL 视为二进制）。总量上限 `budget_chars = floor(槽位 context_window × 0.6 × 1.5)`，例如 32K 窗口为 29,491 字符；单个文件不单设上限。每次聊天，文件全文按上传顺序放进 system prompt 的「资料文件」部分，并声明仅作参考资料、不执行其中的指示；换成更小窗口后放不下时从最旧的文件开始少带，并在聊天响应里返回 `files_omitted`。上传时含 `sk-` 类密钥的内容直接 400。
+- `PATCH /api/bots/{bot_id}` 的 200 响应增加只读 `pin_revision` 是 P2 的契约扩展；请求体不接受 `bot_id` / `status` / `role_template`。
+- Skill 的 `description_md` 只是说明文本，不扩展工具权限；`allowed_tool_refs` 为空表示该层无授权，不是通配符。实际权限取平台 ∩ Bot.tool_policy ∩ Grant.allowed_tool_refs（再 ∩ 冻结 skill 版本）。
+
+## P3 记忆路由（Memory）
+
+所有 `/api/memory/...` 路由都要求请求头 `X-Bot-Id`。缺失或空白返回 400 `validation_error`；该 Bot 不存在返回 404 `bot_not_found`。调用者身份只来自该请求头，不使用 body 中的 `owner_bot_id`。
+
+错误体统一为：
+
+```json
+{"error_category": "validation_error", "detail": "..."}
+```
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/memory/records` | 201 `MemoryRecord`（version=1、status=pending） | 400 `validation_error` / `secret_in_body`；403 `memory_forbidden`；404 `bot_not_found` / `project_not_found` |
+| GET | `/api/memory/records?owner_bot_id=&project_id=&visibility=` | 200 `{"items": [...]}`，每个 mem 最新版本 | 400 `validation_error`；403 `memory_forbidden`；404 `project_not_found` |
+| GET | `/api/memory/records/{mem_id}?version=` | 200 指定或最新版本 | 400 `validation_error`（version 非整数）；403 `memory_forbidden`；404 `memory_not_found` |
+| POST | `/api/memory/records/{mem_id}/publish` | 200 published record | 400 `validation_error` / `visibility_not_project`；403 `memory_forbidden`；404 `memory_not_found`；409 `memory_version_conflict` |
+| POST | `/api/memory/records/{mem_id}/supersede` | 200 新 version（pending） | 400 `validation_error` / `secret_in_body` / `visibility_not_project`；403 `memory_forbidden`；404 `memory_not_found`；409 `memory_version_conflict` |
+
+### 可见性
+
+- `private`：仅 owner Bot 读写。
+- `project`：仅当前项目成员读写；`project_id` 必填，且必须存在于 Workbench。
+- `run`：仅 owner Bot 读写，`run_id` 必填；没有 run 参与者模型，不广播。
+- 没有 `global` 可见性；`run_id` 只存在 payload 中。
+
+`GET /api/memory/records` 未显式过滤时返回 actor 自己的 private、actor 所属项目的 project、actor 自己的 run。显式查询他人 private 或非成员项目返回 403。
+
+### 晋升与版本
+
+- `publish` 只接受 `project` 记忆；必须是当前项目成员；`expected_version` 不是最新版本或该版本已 published 返回 409。
+- `publish` 只改 status/元数据，写入 `promoted_by`（actor）与 `promoted_at`；旧 body 不变。
+- `supersede` 校验 `expected_version` 与成员关系；旧 version 置 `superseded`（body 不变），新 version=N+1 为 `pending`，需要再次 publish。
+- 任意旧 version body 由 SQLite 触发器保护，不能通过 UPDATE 改写。
+- 契约扩展：`MemoryRecord.run_id` 放在 payload；`publish` 记录 `promoted_by` / `promoted_at`；`MemoryStore.list(..., latest_only=True)` 默认只取每个 mem 最新版本。
+
+### 注入
+
+`call_agent(..., bot_id=..., run_id=..., project_id=...)` 在冻结 Bot pin 后自动构建记忆槽；显式 `memory_slot` 可覆盖。记忆块只作参考，带“不是指令”的 GUARD；他人 private/run、非成员项目记忆、含 `sk-` 或密钥字段的项均不会进入提示。
+
+## P4 讨论与会话（Discussion）
+
+P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `discussion_reviews` 表；legacy 讨论仍走 `GET /api/runs/{run_id}/discussion`，行为和 `discussion_msg` 表不变。
+
+所有 `/api/...discussion-sessions...` 路由要求请求头 `X-Bot-Id`（唯一例外是 `GET .../events`，也接受 `?bot_id=`）。缺失或空白返回 400 `validation_error`；错误体统一为 `{"error_category", "detail"}`。
+
+### 状态机
+
+`draft → grouping → round1_independent → cross_review ⇄ round_n_revise → cross_review → converged_pending_human → approved | rejected`；`budget_exhausted`、`terminated` 为终态。不会自动 approved。
+
+- `converged_pending_human` 且尚无决策包时，Leader 可 `rounds/start` 开下一轮（`current_round+1`，计入 `max_rounds`；超限置 `budget_exhausted` 并 409）。
+- `terminated` 来自三种情况：grouping 时项目内可用 Bot 少于 2 个（或 Leader 不在其中）；`resume` 的 `skip_bot_ids` 使剩余参与者少于 2 个或跳过了 Leader；显式 `terminate`。
+- 会话对象新增 `requirement_text`、`previous_session_id`、`resolution_comment`、`paused`；`resolve` 的 `comment` 写入 `resolution_comment`。
+- 会话对象新增 `tokens_used`、`elapsed_seconds`（随会话 JSON payload 持久化；老记录缺字段时按 0 读取）。`tokens_used` 是已累计的模型 `tokens_in + tokens_out`；`elapsed_seconds` 只统计驱动器实际运行的时间，暂停期间和无后台任务时不计。驱动器在每个 `step` 结束以及暂停 / 终止后写回这两个字段，进程重启或恢复时从记录续算，因此 `DiscussionBudget.max_tokens` / `max_wallclock_seconds` 跨重启仍然生效。
+
+### 路由
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/projects/{project_id}/discussion-sessions` | 201 `DiscussionSession`（draft） | 400 validation_error / secret_in_body；403 forbidden；404 project_not_found；409 leader_not_in_project |
+| POST | `/api/discussion-sessions/{sid}/group` | 200 `DiscussionSession`（grouping） | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/rounds/start` | 200 `DiscussionSession` | 403 forbidden；409 invalid_status / budget_exhausted |
+| POST | `/api/discussion-sessions/{sid}/proposals` | 201 `{proposal_id, sealed}` | 403 forbidden / not_participant；409 invalid_status / duplicate_proposal |
+| GET | `/api/discussion-sessions/{sid}/proposals` | 200 `{"items": [...]}` | 403 not_participant；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/reviews` | 201 票 | 400 validation_error；403 forbidden / not_participant；404 proposal_not_found；409 invalid_status / self_review_forbidden / duplicate_review |
+| POST | `/api/discussion-sessions/{sid}/converge` | 200 `{action, reason, session, dissent_items}` | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/submit-decision` | 201 `DecisionPackage` | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/resolve` | 200 `DiscussionSession` | 400 validation_error；403 forbidden；404 session_not_found / run_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/run` | 200 `{running, session}`（幂等） | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/pause` | 200 `DiscussionSession` | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/resume` | 200 `DiscussionSession`（可选 `{skip_bot_ids}`） | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/terminate` | 200 `DiscussionSession`（必须 `{"confirm": true}`） | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
+| GET | `/api/discussion-sessions/{sid}/messages?after=<seq>` | 200 `{"items": [...]}` | 400 validation_error；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{sid}/events` | SSE（允许 `?bot_id=`） | 400 validation_error；403 not_participant；404 session_not_found |
+
+### 盲首轮与密封形状
+
+- `rounds/start`：仅 Leader。grouping → round1_independent；cross_review / round_n_revise 进入下一轮 round_n_revise；`converged_pending_human` 且尚无决策包时也可开下一轮（`current_round+1`，计入 `max_rounds`）。超过 `budget.max_rounds` 返回 409 budget_exhausted。
+- 全员本轮交齐后自动把本轮 proposal 置 `sealed=0` 并 open cross_review；最后一票返回 `sealed=false`。
+- `GET proposals` 密封期对非作者返回 `{"sealed": true, "body_md": null}`；作者本人可见正文；解封后所有 participant 可见正文。
+- 同一 (session, author, round) 重复提交返回 409 duplicate_proposal。
+
+### 交叉评审
+
+- reviewer 必须是 participant；proposal 必须属于本 session。
+- 自评返回 409 self_review_forbidden，且不落票；重复票 409 duplicate_review。
+- 硬门槛只统计 `coverage` / `conflicts_closed_or_recorded` / `evidence_complete` 布尔值；分数按方案汇总（`proposal_totals` / `proposal_spread`），只在 `score_gap_threshold` 模式下参与收敛判断，不用于挑选优胜方案。
+- `converge` 可选 body（扩展）：`{tokens_used?, elapsed_seconds?, dissent_items?}`；返回的 `dissent_items` 原样保留。
+
+### 收敛决策表
+
+`score_gap_threshold` 有值（新建会话默认 2.0）时，按方案分数差收敛：
+
+| 顺序 | 条件 | action |
+|---|---|---|
+| 1 | token 或 wallclock 预算耗尽 | budget_exhausted |
+| 2 | 全部硬门槛通过，且方案平均总分差 ≤ `score_gap_threshold` | submit_human（正常收敛） |
+| 3 | 当前轮 >= max_rounds（仍未达成条件 2） | submit_human（到顶强制交 Leader） |
+| 4 | 其他 | revise |
+
+阈值模式**不返回** `no_improvement`：未到轮次上限时一律再来一轮，只有满足条件 2 或轮次到顶才交 Leader。
+
+- 到顶强制（顺序 3）在消息流里发 system `forced_submit`，文案写明轮次上限、分差 / 阈值、未通过硬门槛数量，不再说“达到收敛条件”。
+- 同时在决策包 `dissent_items` 里写入一条 `未达成一致：第 N 轮上限，分差 x（阈值 y），未通过硬门槛 k 项`，供人工审批时识别。
+- `score_spread is None`（少于 2 个可比较方案）视为不满足条件 2，到顶时文案写“分差无法计算”。
+
+`score_gap_threshold=None` 时保持旧规则（硬门槛 + dissent 覆盖分支）：
+
+| 顺序 | 条件 | action |
+|---|---|---|
+| 1 | token 或 wallclock 预算耗尽 | budget_exhausted |
+| 2 | 全部硬门槛通过；或未通过项已记录进 dissent | submit_human |
+| 3 | 当前轮 >= max_rounds | submit_human |
+| 4 | 最近两轮通过项未增加 | no_improvement |
+| 5 | 其他 | revise |
+
+- 方案总分 = 各评审四个维度分数之和；`proposal_totals` 取每个方案的平均总分，`proposal_spread` = 最高均分 − 最低均分，只比较本轮至少有一票的方案。
+- 可比较方案少于 2 个时 spread 未定义，阈值模式的条件 2 不成立，会落到轮次上限 / revise。
+- 状态映射：budget_exhausted → budget_exhausted；submit_human / no_improvement → converged_pending_human；revise → round_n_revise。
+
+### DecisionPackage 与人工规格门
+
+- `submit-decision` 仅 leader 可提交；status 必须 converged_pending_human，且尚无 package。
+- `decision_package_digest` 只取 `session_id` / `requirement_snapshot_hash` / `proposal_ids` / `dissent_items` / `hard_gate_summary` / `body_md`，对规范化对象做一次 sha256，不对 sha256 再 hash。
+- `resolve` 接受 `decision=approved|rejected`，可选 `comment`、`run_id`；`comment` 保存到会话的 `resolution_comment`，供打回后的新会话复用。
+- `resolve` 仅会话 Leader（`leader_bot_id`）可批准或打回；非 Leader 参与者返回 403 forbidden。检查顺序：404 session_not_found → 403 forbidden → 409 invalid_status（重复 approve 的幂等返回也在 Leader 校验之后）。
+- approved 且提供 `run_id`：确认 run 存在后，把 `"DecisionPackage"` 写入基线。已有 `run_execution_state` 行时合并并保持原 profile / plan_hash / allowed_tool_refs；无行时只更新 run 的内存基线。绝不调用 schedule / execute_task，绝不把 execution_safety_ready 置 True。
+- rejected 不写入/不覆盖 DecisionPackage hash。
+- 并发两次 approve 幂等，最终 status=approved，hash 值相同。
+- 扩展：`requirement_snapshot` 同时接受字符串与对象（契约为字符串）；`converge` 返回 `dissent_items`；`resolve` 的 `run_id` 为可选扩展。
+
+### 创建会话的补充约定
+
+- 请求体：`{leader_bot_id, participant_bot_ids, requirement_snapshot, budget?, previous_session_id?}`；`leader_bot_id` 必须等于 `X-Bot-Id`。
+- `requirement_snapshot` 为字符串或对象都接受；对象会 JSON 序列化后写入 `requirement_text`，原始值仍参与 `requirement_snapshot_hash`。
+- `budget` 缺省为 `{max_rounds: 3, score_gap_threshold: 2.0}`；显式传 `score_gap_threshold: null` 走旧收敛规则。
+- `participant_bot_ids` 去重后少于 2 个返回 400 validation_error；`requirement_text` 含 `sk-` 类密钥返回 400 secret_in_body。
+
+### 多 Bot 群聊（消息流与驱动器）
+
+`run` / `pause` / `resume` / `terminate` 全部要求 `X-Bot-Id`，且只有会话 Leader 可写（其他 Bot 403 forbidden）：
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/discussion-sessions/{sid}/run` | 200 `{running, session}` | 400；403 forbidden；404 session_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/pause` | 200 `DiscussionSession` | 同上 |
+| POST | `/api/discussion-sessions/{sid}/resume` | 200 `DiscussionSession` | 同上 + 400（body 非对象） |
+| POST | `/api/discussion-sessions/{sid}/terminate` | 200 `DiscussionSession` | 400（缺 `confirm: true`）；403；404；409 |
+
+- `run` 幂等：同一会话已有后台任务时直接返回当前状态；终态、或已生成决策包的 `converged_pending_human` 返回 409 invalid_status；对暂停中的会话调用等价于 `resume`。
+- `pause` 置 `paused=true` 并取消后台任务，可重复调用；`resume` 清 `paused` 并重启驱动器；`terminate` 置 `terminated` 并取消任务，对 `approved` / `rejected` 返回 409。
+- `resume` 可选 `{skip_bot_ids}`：只过滤本会话参与者；剩余参与者少于 2 个（或跳过 Leader）时直接置 `terminated`，不重启驱动器。
+- 服务启动时会把进行中的讨论置为 `paused`（系统消息 `event=paused`、`reason=server_restart`），不会自动续跑；用户点继续（`POST /resume`）后从数据库状态接着推进。
+
+消息流（两个只读 GET）：
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| GET | `/api/discussion-sessions/{sid}/messages?after=<seq>` | 200 `{"items": [...]}` | 400 validation_error；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{sid}/events` | SSE | 同上 |
+
+- 身份：`messages` 只认 `X-Bot-Id`；`events` 认 `X-Bot-Id`，也接受 `?bot_id=`（讨论路由中唯一放宽查询参数的）。Leader 或参与者可读，其他 Bot 403 not_participant；会话不存在 404 session_not_found。
+- `messages` 的 `after` 默认 0，按 `seq` 升序；非数字或负数按 0 处理。
+- SSE 帧：`id: <seq>\nevent: message\ndata: <消息 JSON>\n\n`；连接建立先发一次 `: ping`，空闲 15 秒再发；`Last-Event-ID` 为 seq，只补发更大的 seq（非数字或负数按 0）。
+- 消息 JSON：`{session_id, seq, kind, bot_id, round, payload, created_at}`，`kind ∈ system | proposal | review | leader`。
+- payload 只带元数据，**消息不含方案正文**：
+  - `system`：`{event, text, ...}`，event 如 `session_started` / `round_started` / `proposals_unsealed` / `converged` / `budget_exhausted` / `paused` / `resumed` / `terminated` / `bot_failed` / `bot_skipped` / `review_abstained` / `forced_submit` / `restarted_after_rejection`。
+  - `proposal`：`{proposal_id, chars, truncated, round}`。
+  - `review`：`{proposal_id, reviewer_bot_id, total, scores, hard_gate_results, summary}`。
+  - `leader`：`{action: "submit" | "request_revision", text}`。
+- 看方案或规格正文仍走 `GET /proposals`（密封期规则不变）与会话对象里的 `decision_package.body_md`。
+
+驱动器流程与失败处理：
+
+- `run` 起一个后台任务，每次只按 SQLite 状态推进一步：`draft` / `grouping` → 自动把项目内 active Bot（Leader 在前）编组并开第 1 轮；`round1_independent` / `round_n_revise` → 每个参与者各写一份方案（上限 6000 字符，超长先让模型压缩，仍超长则截断并标 `truncated`），交齐后解封转 `cross_review`；`cross_review` → 每个参与者评他人方案，随后调 `should_converge`；`converged_pending_human` 且无决策包 → Leader 综合写规格并自查。
+- 模型调用失败（重试一次仍失败）：置 `paused=true`，写 system `bot_failed`（带 `bot_id`、`category`），不丢已有进度；Leader 用 `resume` 重试或 `skip_bot_ids` 跳过该 Bot。
+- 评分 JSON 两次都不合法：该票弃权（不落票），写 system `review_abstained`，继续其余评审。
+- Leader 自查 `ok=false`（自查 JSON 不可解析也算未通过）：起下一轮（计入 `budget.max_rounds`）；轮次到顶则把当前规格强制提交为决策包，写 system `forced_submit`。
+- 讨论会话没有 run，驱动器不使用冻结 pin；每次调用读取 Bot 当前的模型 / Key、私有记忆与资料文件。
+
+打回后用 `previous_session_id`：
+
+- 上一会话被 `rejected` 后，可用 `previous_session_id` 新建会话继续讨论。
+- 驱动器把上一会话的 `decision_package.body_md` 作为「上一版规格」、把 `resolution_comment`（本会话优先，否则取上一会话）作为「用户意见」注入方案提示，并写 system `restarted_after_rejection`。
+- 新会话有独立的 `requirement_text`、预算与参与者；上一会话的状态和决策包不变。
+
+## P5 执行 DAG、连续执行与模块人验收
+
+所有新增路由都要求 `X-Bot-Id` 请求头作为调用者身份；缺头或空白返回 400 validation_error。
+
+| 方法 | 路径 | 请求 | 成功 | 失败 |
+|---|---|---|---|---|
+| POST | `/api/runs/{run_id}/module-acceptances` | `{module_id, task_codes, status, evidence_uris, reviewer?, comment?}` | 201 `ModuleAcceptance` | 400 validation_error；403 forbidden；404 run_not_found |
+| POST | `/api/runs/{run_id}/defects` | `{task_code, module_id, related_requirement_id?, evidence_uris, detail}` | 201 `DefectRecord`（status=open） | 400 validation_error；404 run_not_found |
+
+### 调度与 DAG
+
+- `POST /api/runs/{run_id}/schedule` 行为不变；granted_v1 额外要求 grant 已签的 key（含 `DecisionPackage`）与 run 当前 `approved_baseline_hashes` 相等，否则 409 baseline_stale。
+- 显式请求的后继任务若前置未成功（非 `done`），返回 409 dag_blocked 且不进入执行；`task_codes` 省略时仍由 `select_tasks` 按依赖挑选，legacy run 不受影响。
+- 人批一次 grant 后可在 `grant.task_codes` 内连续执行，不逐任务重新 `POST /execution-grants`；超范围仍 409 scope_mismatch，无 grant 仍 403 grant_required。
+- 同一 run 的 schedule / execute / 验收写路径共用一把 per-run 锁；pause / terminate 会 bump generation，过时的工具或模型回包不改状态、不写证据。
+
+### 验收与缺陷
+
+- `accepted` 与 `rejected` 都必须带非空 `evidence_uris`，且 URI 必须已存在于对应任务的证据中；`accepted` 还要求任务处于成功状态。
+- `model_self_review=true` 一律 400，不作为验收证据。
+- `rejected` 自动为每个 task_code 建一条 open 缺陷；缺陷不会自动 resolved。缺陷把任务置为 `failed`（可经既有 `retry` 修复），不打开 force-pass。
+- 本路径与遗留整 run 验收 `POST /api/runs/{run_id}/accept` 完全独立；granted_v1 上的 `granted_acceptance_disabled`、`granted_force_pass_disabled` 保持不变。
+
+## P6 前端使用的只读查询
+
+P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 新增的只读 GET 如下，除 `events` 可用 `?bot_id=` 外全部要求 `X-Bot-Id`：
+
+| 方法 | 路径 | 成功 | 失败 |
+|---|---|---|---|
+| GET | `/api/runs/{run_id}/defects` | 200 `{items: DefectRecord[]}` | 400 validation_error；404 run_not_found |
+| GET | `/api/runs/{run_id}/module-acceptances` | 200 `{items: ModuleAcceptance[]}` | 400 validation_error；404 run_not_found |
+| GET | `/api/projects/{project_id}/discussion-sessions` | 200 `{items: DiscussionSession[]}` | 400 validation_error；404 project_not_found |
+| GET | `/api/discussion-sessions/{session_id}` | 200 `DiscussionSession` | 400；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{session_id}/reviews` | 200 `{items: ReviewBallot[]}` | 400；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{session_id}/messages?after=` | 200 `{items: DiscussionMessage[]}` | 400；403 not_participant；404 session_not_found |
+| GET | `/api/discussion-sessions/{session_id}/events` | SSE `text/event-stream` | 400；403 not_participant；404 session_not_found |
+
+- 讨论的只读 GET（含 `messages` / `events`）只对 leader 或 participant 返回内容；非参与者 403 not_participant。`messages` 只认 `X-Bot-Id`，`events` 也接受 `?bot_id=`。
+- `reviews` 只返回投票 payload（分数、逐项依据、硬门槛、异议），不包含任何提案正文，盲首轮不会经此泄漏他人草案。
+- `messages` / `events` 同样只带消息元数据，不含方案或规格正文；SSE 帧格式与 `Last-Event-ID` 续传见 P4「多 Bot 群聊（消息流与驱动器）」。
+- 未新增写接口、未改任何既有 POST 语义。Alembic head 现为 `0012`：本轮只新增 `discussion_messages` 表（迁移 `0012_discussion_messages`），其余表结构未变。
+

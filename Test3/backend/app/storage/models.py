@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -225,3 +225,211 @@ class EventRow(Base):
     kind: Mapped[str] = mapped_column(String)
     subject: Mapped[str] = mapped_column(String, default="")
     payload_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class ExecutionGrantRow(Base):
+    """SQLite authority for the P1 grant domain (contracts.md C.6)."""
+
+    __tablename__ = "execution_grants"
+    __table_args__ = (Index("ix_execution_grants_run", "run_id"),)
+
+    grant_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="active")
+    payload: Mapped[str] = mapped_column(Text)
+
+
+class SkillDefinitionRow(Base):
+    """Immutable versioned skill definition keyed by (skill_id, version)."""
+
+    __tablename__ = "skill_definitions"
+
+    skill_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BotRow(Base):
+    """Current bot payload; history lives in ``bot_pin_revisions``."""
+
+    __tablename__ = "bots"
+
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+Index("uq_bots_display_name_ci", func.lower(BotRow.display_name), unique=True)
+
+
+class BotPinRevisionRow(Base):
+    __tablename__ = "bot_pin_revisions"
+
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    provider_ref: Mapped[str] = mapped_column(String, nullable=False)
+    skill_bindings: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class ProjectMembershipRow(Base):
+    __tablename__ = "project_memberships"
+    __table_args__ = (
+        Index(
+            "uq_project_one_leader",
+            "project_id",
+            unique=True,
+            sqlite_where=text("is_leader = 1"),
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(ForeignKey("bots.bot_id"), primary_key=True)
+    role_in_project: Mapped[str] = mapped_column(String, nullable=False)
+    is_leader: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class RunBotPinSnapshotRow(Base):
+    """Run-scoped frozen bot pin; immutable once written."""
+
+    __tablename__ = "run_bot_pin_snapshots"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class MemoryRecordRow(Base):
+    """Versioned memory payload; old bodies are protected by a SQLite trigger."""
+
+    __tablename__ = "memory_records"
+    __table_args__ = (Index("ix_memory_owner", "owner_bot_id", "visibility"),)
+
+    mem_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    visibility: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BotFileRow(Base):
+    """Text file kept in a bot's library; the full text is injected into its chat prompt."""
+
+    __tablename__ = "bot_files"
+    __table_args__ = (Index("ix_bot_files_bot", "bot_id"),)
+
+    file_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(ForeignKey("bots.bot_id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    chars: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class DiscussionSessionRow(Base):
+    __tablename__ = "discussion_sessions"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DiscussionProposalRow(Base):
+    __tablename__ = "discussion_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "author_bot_id",
+            "round",
+            name="uq_discussion_proposals_author_round",
+        ),
+    )
+
+    proposal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    author_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    sealed: Mapped[int] = mapped_column(Integer, nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class DiscussionReviewRow(Base):
+    __tablename__ = "discussion_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "reviewer_bot_id",
+            "proposal_id",
+            name="uq_discussion_reviews_reviewer_proposal",
+        ),
+    )
+
+    review_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, nullable=False)
+    reviewer_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DiscussionMessageRow(Base):
+    """Append-only chat timeline of one discussion session; payload never holds a proposal body."""
+
+    __tablename__ = "discussion_messages"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    bot_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+Index("ix_discussion_messages_session", DiscussionMessageRow.session_id)
+
+
+class ModuleAcceptanceRow(Base):
+    """Human module acceptance (P5, contracts C.6)."""
+
+    __tablename__ = "module_acceptances"
+
+    acceptance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    module_id: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class DefectRow(Base):
+    """Defect flowing back from a module acceptance (P5, contracts C.6)."""
+
+    __tablename__ = "defects"
+
+    defect_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False)
+    task_code: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class RunExecutionStateRow(Base):
+    """SQLite authority for a run's execution profile and approved hashes.
+
+    Runs are still restored from JSON snapshots for legacy compatibility, but the
+    execution profile / baseline hashes for granted runs must come from this
+    table.  A missing row is *unspecified*, never an implicit legacy downgrade.
+    """
+
+    __tablename__ = "run_execution_state"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    execution_profile: Mapped[str] = mapped_column(String, nullable=False)
+    approved_baseline_hashes: Mapped[str] = mapped_column(Text, default="{}")
+    approved_plan_hash: Mapped[str] = mapped_column(String, default="")
+    allowed_tool_refs: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

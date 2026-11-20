@@ -1,10 +1,117 @@
 {
   "paths": {
+    "DELETE /api/bots/{bot_id}/files/{file_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*",
+        "path:file_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "DELETE /api/projects/{project_id}/memberships/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*",
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/bots": {
+      "body": null,
+      "params": [
+        "query:status"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/bots/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/bots/{bot_id}/files": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/config/models": {
       "body": null,
       "params": [],
       "responses": [
         "200"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/events": {
+      "body": null,
+      "params": [
+        "header:Last-Event-ID",
+        "header:X-Bot-Id",
+        "path:session_id*",
+        "query:bot_id"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/messages": {
+      "body": null,
+      "params": [
+        "header:X-Bot-Id",
+        "path:session_id*",
+        "query:after"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/proposals": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/reviews": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
       ]
     },
     "GET /api/health": {
@@ -14,11 +121,54 @@
         "200"
       ]
     },
+    "GET /api/memory/records": {
+      "body": null,
+      "params": [
+        "query:owner_bot_id",
+        "query:project_id",
+        "query:visibility"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/memory/records/{mem_id}": {
+      "body": null,
+      "params": [
+        "path:mem_id*",
+        "query:version"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/projects": {
       "body": null,
       "params": [],
       "responses": [
         "200"
+      ]
+    },
+    "GET /api/projects/{project_id}/discussion-sessions": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/projects/{project_id}/memberships": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
       ]
     },
     "GET /api/runs": {
@@ -68,6 +218,16 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/defects": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/discussion": {
       "body": null,
       "params": [
@@ -100,7 +260,37 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/execution-grants": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/execution-profile": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/feedback": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/runs/{run_id}/module-acceptances": {
       "body": null,
       "params": [
         "path:run_id*"
@@ -161,10 +351,37 @@
         "422"
       ]
     },
+    "GET /api/skills": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
+    "GET /api/skills/{skill_id}/versions": {
+      "body": null,
+      "params": [
+        "path:skill_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/tasks/{task_id}": {
       "body": null,
       "params": [
         "path:task_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PATCH /api/bots/{bot_id}": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
       ],
       "responses": [
         "200",
@@ -178,6 +395,43 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/bots": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
+      ]
+    },
+    "POST /api/bots/{bot_id}/archive": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/bots/{bot_id}/chat": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/bots/{bot_id}/files": {
+      "body": null,
+      "params": [
+        "path:bot_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },
@@ -198,10 +452,147 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/converge": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/group": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/pause": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/proposals": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/resolve": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/resume": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/reviews": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/rounds/start": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/run": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/submit-decision": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/terminate": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/gates/{gate_id}/resolve": {
       "body": "GateResolve",
       "params": [
         "path:gate_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/memory/records": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
+      ]
+    },
+    "POST /api/memory/records/{mem_id}/publish": {
+      "body": null,
+      "params": [
+        "path:mem_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/memory/records/{mem_id}/supersede": {
+      "body": null,
+      "params": [
+        "path:mem_id*"
       ],
       "responses": [
         "200",
@@ -223,6 +614,26 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/discussion-sessions": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/memberships": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },
@@ -256,6 +667,36 @@
         "422"
       ]
     },
+    "POST /api/runs/{run_id}/defects": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/execution-grants": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/execution-profile": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/runs/{run_id}/feedback/import": {
       "body": "object",
       "params": [
@@ -263,6 +704,16 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/runs/{run_id}/module-acceptances": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },
@@ -304,6 +755,20 @@
       "responses": [
         "200",
         "422"
+      ]
+    },
+    "POST /api/skills": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
+      ]
+    },
+    "POST /api/skills/import": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
       ]
     },
     "POST /api/tasks/{task_id}/{action}": {
@@ -392,6 +857,12 @@
     "HTTPValidationError": {
       "properties": {
         "detail": "array"
+      },
+      "required": []
+    },
+    "ScheduleRequest": {
+      "properties": {
+        "task_codes": "anyOf"
       },
       "required": []
     },

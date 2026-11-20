@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import os
 import shutil
 import time
 import traceback
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,8 +31,10 @@ from app.errors import (
     AgentOutputError,
     CommandDenied,
     DeepSeekRetired,
+    GrantRejected,
     IllegalTransition,
     ImportInProgress,
+    IsolationUnavailable,
     RevisionConflict,
     ValidationFailed,
     classify_llm_error,
@@ -41,6 +42,41 @@ from app.errors import (
     user_message_for_error,
 )
 from app.events.bus import BUS, rebuild_task_states
+from app.execution.acceptance import (
+    DefectCreate,
+    DefectRecord,
+    ModuleAcceptance,
+    ModuleAcceptanceCreate,
+    create_defect,
+    record_acceptance,
+)
+from app.execution.baseline import hash_artifact, write_approved_baseline_hash
+from app.execution.dag import dag_blocked_tasks, edges_from_tasks
+from app.execution.generation import GenerationGuard
+from app.execution.grant_policy import grant_stale_reason
+from app.execution.grant_refresh import refresh_grant_status
+from app.execution.grant_repo import GrantRepo, read_grants_for_run
+from app.execution.isolated import WriteSpec, execute_task_granted
+from app.execution.isolation import preflight_isolation
+from app.execution.run_lock import RunLockRegistry
+from app.execution.run_profile import (
+    PROFILE_CONFLICT,
+    PROFILE_GRANTED,
+    PROFILE_LEGACY,
+    PROFILE_UNSPECIFIED,
+    run_approved_baseline_hashes,
+    run_execution_profile,
+    set_approved_baseline_hashes,
+)
+from app.execution.run_profile import (
+    set_run_execution_profile as _apply_run_execution_profile,
+)
+from app.execution.run_state_store import (
+    RunExecutionState,
+    RunExecutionStateRepo,
+    read_run_execution_state,
+)
+from app.execution.tool_policy import authorize_granted_command
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
 from app.listening.distill import validate_distill
@@ -71,9 +107,12 @@ from app.schemas.docs import (
     TaskCard,
     TaskGraph,
 )
+from app.schemas.execution_grant import ExecutionGrant, ExecutionProfile
 from app.services import design_input as design_input_service
 from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
+from app.storage.db import make_engine, session_factory, sqlite_url
+from app.storage.migrate import upgrade_database
 from app.storage.models import EventRow
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
@@ -116,6 +155,9 @@ class RunState:
     # Unknown top-level snapshot keys are kept verbatim so a read-only restore does
     # not silently drop fields written by an older build.
     extra: dict[str, Any] = field(default_factory=dict)
+    # SQLite is the authority for these two; artifacts is only a compatibility copy.
+    execution_profile: str = ""
+    approved_baseline_hashes: dict[str, str] = field(default_factory=dict)
 
 
 _SNAPSHOT_KINDS = {
@@ -123,6 +165,8 @@ _SNAPSHOT_KINDS = {
     "gate.created",
     "gate.resolved",
     "baseline.frozen",
+    "baseline.hash",
+    "execution_profile.changed",
     "stage.started",
     "stage.changed",
     "budget.exceeded",
@@ -136,6 +180,7 @@ _SNAPSHOT_KINDS = {
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
+_GRANT_COMPLETED_STATES = {"done", "skipped", "cancelled"}
 UNEXPECTED_IMPORT_FAILURE = "设计规格整理失败（本地异常，详见运行目录 import-error.txt）"
 
 
@@ -166,11 +211,23 @@ class Workbench:
         self.schedule_interval = 5.0
         self._merge_locks: dict[str, asyncio.Lock] = {}
         self._gate_locks: dict[str, asyncio.Lock] = {}
-        self._schedule_locks: dict[str, asyncio.Lock] = {}
+        self._run_locks = RunLockRegistry()
+        self._generations = GenerationGuard()
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
         self.schedule_mode = "manual"
+        self.db_path = self.data_dir / "test3.db"
+        self._db_engine = None
+        self._db_factory = None
+        self._db_ready = False
+        self._db_lock: asyncio.Lock | None = None
+        self._grant_write_lock: asyncio.Lock | None = None
+        self._grant_cache: dict[str, list[ExecutionGrant]] = {}
+        # Server-owned readiness flag.  It stays false until the isolation
+        # backend (F-06) and the unified grant boundary (F-05) are in place; no
+        # client input may set it.
+        self.execution_safety_ready = False
         self.restore_runs()
 
     def start_loop(self) -> None:
@@ -271,6 +328,8 @@ class Workbench:
             "trace": run.trace.links,
             "limits": run.limits,
             "skip_continue": sorted(run.skip_continue),
+            "execution_profile": run.execution_profile,
+            "approved_baseline_hashes": run.approved_baseline_hashes,
         }
         payload.update(run.extra)
         return payload
@@ -297,6 +356,8 @@ class Workbench:
             "trace",
             "limits",
             "skip_continue",
+            "execution_profile",
+            "approved_baseline_hashes",
         }
         run = RunState(
             id=data["id"],
@@ -317,6 +378,13 @@ class Workbench:
             limits=data.get("limits") or copy.deepcopy(self.limits),
             skip_continue=set(data.get("skip_continue") or []),
             extra={key: value for key, value in data.items() if key not in known},
+            execution_profile=str(data.get("execution_profile") or ""),
+            approved_baseline_hashes={
+                str(key): str(value)
+                for key, value in (data.get("approved_baseline_hashes") or {}).items()
+            }
+            if isinstance(data.get("approved_baseline_hashes"), dict)
+            else {},
         )
         engine = data.get("engine") or {}
         run.engine.current = engine.get("current") or "0"
@@ -326,6 +394,14 @@ class Workbench:
         run.engine.history = list(engine.get("history") or [])
         run.ids = IdAllocator(data.get("ids") or {})
         run.trace.links = list(data.get("trace") or [])
+        if not run.execution_profile:
+            raw_profile = run.artifacts.get("execution_profile")
+            if raw_profile in (PROFILE_LEGACY, PROFILE_GRANTED):
+                run.execution_profile = str(raw_profile)
+        if not run.approved_baseline_hashes:
+            raw_hashes = run.artifacts.get("approved_baseline_hashes")
+            if isinstance(raw_hashes, dict):
+                run.approved_baseline_hashes = {str(key): str(value) for key, value in raw_hashes.items()}
         return run
 
     def restore_runs(self) -> None:
@@ -350,12 +426,16 @@ class Workbench:
             run = self._deserialize_run(data)
             if events:
                 run.events = events
+            self._restore_execution_profile(run, data)
             self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
             repo = run_dir / "repo"
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
+            # SQLite is the authority for grants: a fresh process must not keep
+            # an empty cache and later re-bind specs with an empty grant_id.
+            self._grant_cache[run.id] = read_grants_for_run(self.db_path, run.id)
             self._interrupt_stale_import(run)
             if (run.artifacts.get("model_stage") or {}).get("status") == "running":
                 message = "服务重启中断了模型任务分解，未自动生成或执行计划；请人工重试"
@@ -365,6 +445,53 @@ class Workbench:
                 run.artifacts["model_stage"]["error"] = message
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
+
+    def _restore_execution_profile(self, run: RunState, data: dict[str, Any]) -> None:
+        """Apply SQLite authority after a snapshot/events restore.
+
+        A corrupt or missing snapshot must never downgrade a granted run to
+        legacy.  A missing profile is ``unspecified``; contradictory evidence is
+        ``conflict``; both fail closed in scheduling and execution.
+        """
+        db_state = read_run_execution_state(self.db_path, run.id)
+        artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+        snapshot_profile = str(data.get("execution_profile") or artifacts.get("execution_profile") or "")
+        snapshot_hashes = data.get("approved_baseline_hashes") or artifacts.get("approved_baseline_hashes") or {}
+        if db_state is not None:
+            profile = db_state.execution_profile
+            hashes = dict(db_state.approved_baseline_hashes)
+            if profile == PROFILE_CONFLICT or snapshot_profile == PROFILE_CONFLICT:
+                resolved = PROFILE_CONFLICT
+            elif snapshot_profile in (PROFILE_LEGACY, PROFILE_GRANTED) and snapshot_profile != profile:
+                resolved = PROFILE_CONFLICT
+            elif (
+                profile == PROFILE_GRANTED
+                and isinstance(snapshot_hashes, dict)
+                and snapshot_hashes
+                and {str(k): str(v) for k, v in snapshot_hashes.items()} != hashes
+            ):
+                resolved = PROFILE_CONFLICT
+            else:
+                resolved = profile
+        elif snapshot_profile == PROFILE_GRANTED:
+            # Residual JSON cannot make a run granted without the SQLite authority.
+            resolved = PROFILE_CONFLICT
+            hashes = {}
+        elif snapshot_profile == PROFILE_LEGACY:
+            resolved = PROFILE_LEGACY
+            hashes = {}
+        else:
+            resolved = PROFILE_UNSPECIFIED
+            hashes = {}
+        run.execution_profile = resolved
+        run.approved_baseline_hashes = hashes if resolved == PROFILE_GRANTED else {}
+        if resolved in (PROFILE_LEGACY, PROFILE_GRANTED):
+            run.artifacts["execution_profile"] = resolved
+            if resolved == PROFILE_GRANTED:
+                run.artifacts["approved_baseline_hashes"] = dict(hashes)
+        else:
+            run.artifacts.pop("execution_profile", None)
+            run.artifacts.pop("approved_baseline_hashes", None)
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -506,11 +633,8 @@ class Workbench:
         return lock
 
     def _schedule_lock_for(self, run: RunState) -> asyncio.Lock:
-        lock = self._schedule_locks.get(run.id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._schedule_locks[run.id] = lock
-        return lock
+        # P5: scheduling and task writes share one per-run lock.
+        return self._run_locks.lock_for(run.id)
 
     @contextmanager
     def _usage_scope(self, run: RunState, task: dict[str, Any] | None = None):
@@ -534,16 +658,577 @@ class Workbench:
     def create_project(self, name: str, profile: str = "python-pytest") -> dict[str, Any]:
         pid = str(uuid.uuid4())
         self.projects[pid] = {"id": pid, "name": name, "profile": profile}
+        # Projects without runs (e.g. discussion-only) never reach a run snapshot,
+        # so persist the registry here or they vanish on restart.
+        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
         return self.projects[pid]
 
     def create_run(self, project_id: str, idea: str) -> RunState:
         self._prepare_scripted()
         rid = str(uuid.uuid4())
         run = RunState(id=rid, project_id=project_id, idea=idea, limits=copy.deepcopy(self.limits))
+        # New runs are explicitly legacy server-side.  A missing profile is not a
+        # legacy default: restored runs without any evidence resolve unspecified.
+        run.execution_profile = PROFILE_LEGACY
         self.runs[rid] = run
         run.artifacts["idea_raw"] = idea
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
+
+    # --- ExecutionGrant domain (P1) ---------------------------------------------
+    async def _ensure_db(self) -> None:
+        if self._db_ready:
+            return
+        if self._db_lock is None:
+            self._db_lock = asyncio.Lock()
+        async with self._db_lock:
+            if self._db_ready:
+                return
+            # Alembic is the single schema authority.  ``create_all`` is no longer
+            # allowed on the production path: it desynchronises alembic_version.
+            url = sqlite_url(self.db_path)
+            await asyncio.to_thread(upgrade_database, self.db_path)
+            engine = make_engine(url)
+            self._db_engine = engine
+            self._db_factory = session_factory(engine)
+            self._db_ready = True
+            # Same authority rule for runs restored before the engine existed:
+            # re-read every run's grants from SQLite rather than trusting the
+            # process-local cache.
+            if self.runs:
+                async with self._db_factory() as session:
+                    repo = GrantRepo(session)
+                    for run_id in self.runs:
+                        self._grant_cache[run_id] = await repo.list_for_run(run_id)
+
+    @asynccontextmanager
+    async def db_session(self):
+        await self._ensure_db()
+        assert self._db_factory is not None
+        async with self._db_factory() as session:
+            yield session
+
+    async def close(self) -> None:
+        if self._db_engine is not None:
+            await self._db_engine.dispose()
+            self._db_engine = None
+            self._db_factory = None
+            self._db_ready = False
+
+    def set_run_execution_profile(self, run_id: str, profile: ExecutionProfile) -> None:
+        """Internal/test fixture only; no HTTP route exposes this setter."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        _apply_run_execution_profile(run, profile)
+
+    def set_run_approved_baseline_hashes(self, run_id: str, hashes: dict[str, str]) -> None:
+        """Internal/test fixture: mirror a human-approved artifact baseline."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        set_approved_baseline_hashes(run, hashes)
+
+    async def persist_run_execution_state(
+        self,
+        run_id: str,
+        profile: str,
+        approved_baseline_hashes: dict[str, str],
+        *,
+        approved_plan_hash: str = "",
+        allowed_tool_refs: list[str] | None = None,
+    ) -> None:
+        """Persist the authoritative profile/hashes; server-side callers only."""
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        if profile not in (PROFILE_LEGACY, PROFILE_GRANTED):
+            raise ValidationFailed(f"unknown execution profile: {profile}")
+        state = RunExecutionState(
+            run_id=run_id,
+            execution_profile=profile,
+            approved_baseline_hashes={str(key): str(value) for key, value in approved_baseline_hashes.items()},
+            approved_plan_hash=str(approved_plan_hash or ""),
+            allowed_tool_refs=tuple(str(item) for item in (allowed_tool_refs or [])),
+        )
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                await RunExecutionStateRepo(session).upsert(state)
+                await session.commit()
+        run.execution_profile = profile
+        set_approved_baseline_hashes(run, state.approved_baseline_hashes)
+        run.artifacts["execution_profile"] = profile
+        self.emit(
+            run,
+            "execution_profile.changed",
+            run_id,
+            {"profile": profile, "hashes": state.approved_baseline_hashes, "plan_hash": state.approved_plan_hash},
+        )
+        self._attach_granted_specs(run)
+
+    @staticmethod
+    def _plan_fingerprint(run: RunState) -> str:
+        """Same digest the PLAN gate records as the human-approved baseline.
+
+        Reusing ``hash_artifact`` keeps ``approved_plan_hash`` comparable with
+        ``approved_baseline_hashes["PLAN"]``; a separately formatted digest
+        would never match.
+        """
+        plan = run.artifacts.get("plan")
+        if not isinstance(plan, dict):
+            return ""
+        return hash_artifact(plan)
+
+    def _active_grant_for(self, run: RunState, code: str) -> ExecutionGrant | None:
+        for grant in reversed(self._grant_cache.get(run.id, [])):
+            if grant.status == "active" and code in grant.task_codes:
+                return grant
+        return None
+
+    async def _authoritative_execution_state(self, run_id: str) -> RunExecutionState | None:
+        async with self.db_session() as session:
+            return await RunExecutionStateRepo(session).get(run_id)
+
+    def _validated_granted_spec(
+        self,
+        run: RunState,
+        code: str,
+        task: dict[str, Any],
+        grant: ExecutionGrant,
+    ) -> dict[str, Any]:
+        """The server-produced spec must belong to this run/task/grant.
+
+        A missing or corrupt spec is an explicit rejection: granted_v1 never
+        falls back to the legacy agent, commit or merge path.
+        """
+        spec = task.get("granted_execution")
+        if spec is None:
+            raise GrantRejected(
+                "granted_spec_missing",
+                f"granted_v1 task {code} has no server execution spec",
+                status_code=409,
+            )
+        if not isinstance(spec, dict) or not spec:
+            raise GrantRejected(
+                "granted_spec_invalid",
+                f"granted_v1 task {code} has an invalid execution spec",
+                status_code=409,
+            )
+        if str(spec.get("execution_profile") or "") != PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_spec_invalid",
+                f"granted_v1 task {code} has an invalid execution spec",
+                status_code=409,
+            )
+        if str(spec.get("task_code") or "") != code:
+            raise GrantRejected(
+                "grant_binding_mismatch",
+                f"execution spec is bound to another task, not {code}",
+                status_code=409,
+            )
+        spec_codes = spec.get("task_codes")
+        if not isinstance(spec_codes, list) or code not in {str(item) for item in spec_codes}:
+            raise GrantRejected(
+                "grant_binding_mismatch",
+                f"execution spec does not include task {code}",
+                status_code=409,
+            )
+        if str(spec.get("grant_id") or "") not in {"", grant.grant_id} or grant.run_id != run.id:
+            raise GrantRejected(
+                "grant_binding_mismatch",
+                f"execution spec is not bound to the active grant for {code}",
+                status_code=409,
+            )
+        return spec
+
+    async def _assert_plan_authority(self, run: RunState, spec: dict[str, Any]) -> None:
+        """PLAN artifact, approved baselines, spec and SQLite must all agree."""
+        plan = run.artifacts.get("plan")
+        if not isinstance(plan, dict) or not plan:
+            raise GrantRejected(
+                "baseline_stale",
+                "granted_v1 run has no PLAN artifact",
+                status_code=409,
+            )
+        current = hash_artifact(plan)
+        approved = run_approved_baseline_hashes(run)
+        if str(approved.get("PLAN") or "") != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "PLAN artifact no longer matches the approved baseline",
+                status_code=409,
+            )
+        materialized = str(run.artifacts.get("plan_materialized") or "")
+        if materialized and materialized != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "materialized plan does not match the current PLAN artifact",
+                status_code=409,
+            )
+        if str(spec.get("approved_plan_hash") or "") != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "materialized task spec has a different approved_plan_hash",
+                status_code=409,
+            )
+        spec_hashes = spec.get("approved_baseline_hashes")
+        if not isinstance(spec_hashes, dict) or str(spec_hashes.get("PLAN") or "") != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "materialized task spec has a stale PLAN baseline",
+                status_code=409,
+            )
+        state = await self._authoritative_execution_state(run.id)
+        if state is None or state.execution_profile != PROFILE_GRANTED:
+            raise GrantRejected(
+                "profile_unspecified",
+                "run has no authoritative granted execution state",
+                status_code=409,
+            )
+        if str(state.approved_plan_hash or "") != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "persisted approved_plan_hash does not match the current PLAN",
+                status_code=409,
+            )
+        if str(state.approved_baseline_hashes.get("PLAN") or "") != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "persisted PLAN baseline does not match the current PLAN",
+                status_code=409,
+            )
+
+    def _block_unless_isolated(self, run: RunState, task: dict[str, Any], code: str) -> dict[str, Any] | None:
+        """F-06: granted execution needs a preflighted isolation backend.
+
+        Returns a BLOCKED result (no state change, no worktree, no process) when
+        the probe failed.  Production never reaches this while the safety flag
+        is false; tests flip the flag in-process only.
+        """
+        preflight = preflight_isolation()
+        if preflight.available:
+            return None
+        task["last_error"] = "isolation_preflight_failed"
+        self.emit(
+            run,
+            "task.isolation_blocked",
+            code,
+            {"reason": preflight.reason, "backend": preflight.backend, "details": preflight.details},
+        )
+        return {
+            "state": task["state"],
+            "kind": "BLOCKED",
+            "isolation_backend": preflight.backend,
+            "reason": preflight.reason,
+        }
+
+    async def _authorize_granted_execution(
+        self, run: RunState, code: str
+    ) -> tuple[ExecutionGrant, dict[str, Any]]:
+        """The single gate every real granted execution entry must pass.
+
+        It runs before revision bumps, state transitions, worktrees and
+        commands.  There is no fallback to "the latest grant regardless of
+        status": revoked/consumed/stale grants and out-of-scope tasks fail
+        closed.
+        """
+        profile = run_execution_profile(run)
+        if profile != PROFILE_GRANTED:
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
+        task = run.tasks.get(code)
+        if task is None:
+            raise GrantRejected(
+                "grant_binding_mismatch",
+                f"task {code} does not belong to run {run.id}",
+                status_code=409,
+            )
+        grants = await self.grants_for_run(run.id)
+        if not grants:
+            raise GrantRejected(
+                "grant_required",
+                "granted_v1 run has no execution grant",
+                status_code=403,
+            )
+        active = [
+            grant
+            for grant in grants
+            if grant.status == "active" and grant.run_id == run.id and code in grant.task_codes
+        ]
+        if not active:
+            covering = [
+                grant for grant in grants if grant.run_id == run.id and code in grant.task_codes
+            ]
+            if not covering:
+                raise GrantRejected(
+                    "scope_mismatch",
+                    f"task {code} is outside the approved grant scope",
+                    status_code=409,
+                )
+            latest = covering[-1]
+            if latest.status == "stale":
+                raise GrantRejected("baseline_stale", "execution grant is stale", status_code=409)
+            if latest.status in {"revoked", "consumed"}:
+                raise GrantRejected(
+                    f"grant_{latest.status}",
+                    f"execution grant is {latest.status}",
+                    status_code=409,
+                )
+            raise GrantRejected(
+                "grant_not_active",
+                f"execution grant is not active (status={latest.status})",
+                status_code=409,
+            )
+        grant = active[-1]
+        reason = grant_stale_reason(
+            grant,
+            approved_baseline_hashes=run_approved_baseline_hashes(run),
+            requested_task_codes={code},
+        )
+        if reason is not None:
+            category = "baseline_stale" if reason.startswith("baseline_changed:") else reason
+            status_code = 403 if reason == "grant_required" else 409
+            raise GrantRejected(category, reason, status_code=status_code)
+        spec = self._validated_granted_spec(run, code, task, grant)
+        await self._assert_plan_authority(run, spec)
+        return grant, spec
+
+    def _granted_spec_for(self, run: RunState, task: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+        card = TaskCard.model_validate(task["card"])
+        grant = self._active_grant_for(run, str(task["code"]))
+        command: list[str] = []
+        for check in card.acceptance:
+            command = [str(part) for part in check.cmd]
+            break
+        if not command:
+            command = [str(part) for part in (self.profile.get("test_command") or ["python", "-m", "pytest", "-q"])]
+        existing = task.get("granted_execution")
+        spec: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        spec.update(
+            {
+                "execution_profile": PROFILE_GRANTED,
+                "approved_plan_hash": fingerprint,
+                "approved_baseline_hashes": run_approved_baseline_hashes(run),
+                "grant_id": grant.grant_id if grant is not None else "",
+                "task_codes": list(grant.task_codes) if grant is not None else [str(task["code"])],
+                "task_code": str(task["code"]),
+                "write_set": list(card.write_set),
+                "command": command,
+                "tool_refs": list(grant.allowed_tool_refs) if grant is not None else [],
+                "feature_branch": grant.feature_branch if grant is not None else "",
+                "source": "server_materialize_tasks",
+            }
+        )
+        spec.setdefault("writes", [])
+        return spec
+
+    def _attach_granted_specs(self, run: RunState) -> None:
+        """Give every materialized task a server-produced execution spec.
+
+        Legacy / unspecified runs never get one.  Existing writes/commands are
+        preserved only as a compatibility detail; hash, scope and tool refs are
+        always rebound from the current authoritative state.
+        """
+        if run_execution_profile(run) != PROFILE_GRANTED:
+            for task in run.tasks.values():
+                task.pop("granted_execution", None)
+            return
+        fingerprint = self._plan_fingerprint(run)
+        for task in run.tasks.values():
+            task["granted_execution"] = self._granted_spec_for(run, task, fingerprint)
+
+    def _bind_grant_to_tasks(self, run: RunState, grant: ExecutionGrant) -> None:
+        if run_execution_profile(run) != PROFILE_GRANTED:
+            return
+        fingerprint = self._plan_fingerprint(run)
+        for code in grant.task_codes:
+            task = run.tasks.get(code)
+            if task is None:
+                continue
+            spec = self._granted_spec_for(run, task, fingerprint)
+            spec.update(
+                {
+                    "grant_id": grant.grant_id,
+                    "task_codes": list(grant.task_codes),
+                    "tool_refs": list(grant.allowed_tool_refs),
+                    "feature_branch": grant.feature_branch,
+                    "approved_baseline_hashes": dict(grant.approved_baseline_hashes),
+                }
+            )
+            task["granted_execution"] = spec
+
+    async def enable_granted_execution(
+        self,
+        run_id: str,
+        approved_baseline_hashes: dict[str, str],
+        *,
+        approved_plan_hash: str = "",
+        allowed_tool_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Server-side enable path used by the HTTP endpoint only.
+
+        A client cannot set ``legacy`` here; the route schema is
+        ``Literal["granted_v1"]``.  Enabling does not make execution ready: the
+        safety flag remains server-owned and false until F-05/F-06 land.
+
+        The baseline must already exist as a human-approved record: this path
+        never lets a caller invent hashes for a run that has none, and the plan
+        hash always resolves to the recorded PLAN digest.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValidationFailed("run not found")
+        hashes = {str(key): str(value) for key, value in (approved_baseline_hashes or {}).items()}
+        if not hashes:
+            raise ValidationFailed("approved_baseline_hashes is required")
+        current = run_approved_baseline_hashes(run)
+        if not current:
+            raise GrantRejected(
+                "baseline_stale",
+                "run has no human-approved baseline hashes yet",
+                status_code=409,
+            )
+        if hashes != current:
+            raise GrantRejected(
+                "baseline_stale",
+                "approved_baseline_hashes do not match the run baseline",
+                status_code=409,
+            )
+        approved_plan = str(current.get("PLAN") or "")
+        if not approved_plan:
+            raise GrantRejected(
+                "baseline_stale",
+                "run has no human-approved PLAN baseline",
+                status_code=409,
+            )
+        if approved_plan_hash and approved_plan_hash != approved_plan:
+            raise ValidationFailed("approved_plan_hash does not match the approved plan")
+        resolved_plan_hash = approved_plan
+        await self.persist_run_execution_state(
+            run_id,
+            PROFILE_GRANTED,
+            hashes,
+            approved_plan_hash=resolved_plan_hash,
+            allowed_tool_refs=allowed_tool_refs,
+        )
+        self._attach_granted_specs(run)
+        return {
+            "run_id": run_id,
+            "execution_profile": PROFILE_GRANTED,
+            "approved_baseline_hashes": hashes,
+            "approved_plan_hash": resolved_plan_hash,
+            "execution_safety_ready": self.execution_safety_ready,
+        }
+
+    def _require_execution_safety(self, run: RunState, code: str = "") -> None:
+        profile = run_execution_profile(run)
+        if profile in (PROFILE_UNSPECIFIED, PROFILE_CONFLICT):
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
+        if profile == PROFILE_GRANTED and not self.execution_safety_ready:
+            # F-04 stops here on purpose: the legacy worker/auto-merge chain is
+            # never reachable until F-05/F-06 install the real boundary.
+            raise GrantRejected(
+                "execution_safety_not_ready",
+                "granted execution isolation and authorization are not ready",
+                status_code=409,
+            )
+
+    def _grant_lock(self) -> asyncio.Lock:
+        if self._grant_write_lock is None:
+            self._grant_write_lock = asyncio.Lock()
+        return self._grant_write_lock
+
+    async def add_grant(self, grant: ExecutionGrant) -> None:
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                await GrantRepo(session).add(grant)
+                await session.commit()
+        self._grant_cache.setdefault(grant.run_id, []).append(grant)
+        run = self.runs.get(grant.run_id)
+        if run is not None:
+            self._bind_grant_to_tasks(run, grant)
+
+    def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
+        digest = write_approved_baseline_hash(run, key, value)
+        self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
+        return digest
+
+    async def _refresh_grant_statuses(self, run: RunState) -> None:
+        """Mark only active grants whose baseline hashes actually changed."""
+        if run_execution_profile(run) != "granted_v1":
+            return
+        hashes = run_approved_baseline_hashes(run)
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                repo = GrantRepo(session)
+                changed = False
+                for grant in await repo.list_for_run(run.id):
+                    if grant.status != "active":
+                        continue
+                    updated = refresh_grant_status(grant, approved_baseline_hashes=hashes)
+                    if updated.status != grant.status:
+                        await repo.update_status(grant.grant_id, updated.status)
+                        changed = True
+                # Keep SQLite hashes current: a later restart must not see a false
+                # SQLite/snapshot conflict after a human-approved baseline update.
+                state_repo = RunExecutionStateRepo(session)
+                state = await state_repo.get(run.id)
+                if state is not None and state.execution_profile == PROFILE_GRANTED and state.approved_baseline_hashes != hashes:
+                    await state_repo.upsert(
+                        RunExecutionState(
+                            run_id=run.id,
+                            execution_profile=PROFILE_GRANTED,
+                            approved_baseline_hashes=hashes,
+                            approved_plan_hash=state.approved_plan_hash,
+                            allowed_tool_refs=state.allowed_tool_refs,
+                        )
+                    )
+                    changed = True
+                if changed:
+                    await session.commit()
+        # A status refresh must keep the in-memory cache identical to SQLite.
+        self._grant_cache[run.id] = await self.grants_for_run(run.id)
+
+    async def grants_for_run(self, run_id: str) -> list[ExecutionGrant]:
+        async with self.db_session() as session:
+            return await GrantRepo(session).list_for_run(run_id)
+
+    # --- Module acceptance / defects (P5) ---------------------------------------
+    async def record_module_acceptance(
+        self, run: RunState, payload: dict[str, Any], *, actor: str
+    ) -> ModuleAcceptance:
+        """Persist a human module acceptance; a rejection opens defects.
+
+        This is deliberately a new path: the legacy whole-run ``accept()``,
+        force-pass and takeover stay untouched and unavailable for granted runs.
+        """
+        data = ModuleAcceptanceCreate.model_validate(payload)
+        async with self._run_locks.write_scope(run.id):
+            async with self.db_session() as session:
+                acceptance, defects = await record_acceptance(session, run, data, actor=actor)
+                await session.commit()
+            if acceptance.status == "rejected":
+                for defect in defects:
+                    self._mark_task_defect(run, defect.task_code, actor=actor, reason=defect.detail)
+        return acceptance
+
+    async def record_defect(self, run: RunState, payload: dict[str, Any], *, actor: str) -> DefectRecord:
+        data = DefectCreate.model_validate(payload)
+        async with self._run_locks.write_scope(run.id):
+            async with self.db_session() as session:
+                defect = await create_defect(session, run, data, actor=actor)
+                await session.commit()
+            self._mark_task_defect(run, defect.task_code, actor=actor, reason=defect.detail)
+        return defect
+
+    def _mark_task_defect(self, run: RunState, code: str, *, actor: str, reason: str) -> None:
+        task = run.tasks.get(code)
+        if task is None:
+            return
+        if can_transition(task["state"], "defect_found"):
+            self._set_state(run, task, "defect_found", reason=reason, actor=actor)
+        self._refresh_ready(run)
 
     @staticmethod
     def _is_retired_run(run: RunState) -> bool:
@@ -723,6 +1408,8 @@ class Workbench:
             idea=title or source.name or "设计规格导入",
             limits=copy.deepcopy(self.limits),
         )
+        # Design-spec runs are ordinary legacy runs until a server-side enable.
+        run.execution_profile = PROFILE_LEGACY
         self.runs[rid] = run
         # 整理期间只标记当前阶段；SPEC 的历史推进必须等导入和检查成功。
         run.engine.current = "5"
@@ -1094,6 +1781,10 @@ class Workbench:
         if kind == "初步做法确认":
             if decision != "approve":
                 return await self.start_idea(run)
+            self._record_approved_baseline(
+                run, "REQUIREMENT", {"idea": run.idea, "idea_card": run.artifacts.get("idea_card") or {}}
+            )
+            await self._refresh_grant_statuses(run)
             run.engine.apply("idea_confirmed")
             return await self.run_discussion_step(run)
         if kind == "争议清单查看与裁决":
@@ -1116,6 +1807,8 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["spec_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_spec(run)
+            self._record_approved_baseline(run, "SPEC", run.artifacts.get("spec") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "SPEC")
             run.engine.apply("spec_confirmed")
             return await self.run_design(run)
@@ -1132,6 +1825,8 @@ class Workbench:
                     }
                 run.artifacts["design_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_design(run)
+            self._record_approved_baseline(run, "DESIGN", run.artifacts.get("design") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "DESIGN")
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "design_confirmed"
@@ -1141,6 +1836,8 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
+            self._record_approved_baseline(run, "PLAN", run.artifacts.get("plan") or {})
+            await self._refresh_grant_statuses(run)
             self._freeze(run, "PLAN")
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "plan_confirmed"
@@ -1477,11 +2174,10 @@ class Workbench:
 
     def _materialize_tasks(self, run: RunState) -> None:
         graph = TaskGraph.model_validate(run.artifacts["plan"])
-        fingerprint = hashlib.sha256(
-            json.dumps(graph.model_dump(), sort_keys=True, ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
+        fingerprint = hash_artifact(graph.model_dump())
         if run.artifacts.get("plan_materialized") == fingerprint and run.tasks:
             # 同一版本计划重复确认时只刷新就绪状态，不重建任务、不重置进度。
+            self._attach_granted_specs(run)
             self._refresh_ready(run)
             return
         run.artifacts["plan_materialized"] = fingerprint
@@ -1507,6 +2203,7 @@ class Workbench:
             for src in task.sources:
                 run.trace.link(src, task.code, "spec_item → task")
         self._sync_task_ids(run)
+        self._attach_granted_specs(run)
         self._refresh_ready(run)
 
     def _refresh_ready(self, run: RunState) -> None:
@@ -1540,14 +2237,94 @@ class Workbench:
         limit = tokens_budget(int(card.points), int((run.limits.get("orchestrator") or {}).get("tokens_per_point") or 1_500_000))
         return int(task.get("tokens_used") or 0) >= limit
 
-    async def schedule_once(self, run: RunState) -> list[str]:
+    async def _granted_scope(self, run: RunState, task_codes: set[str] | None) -> set[str] | None:
+        """Validate the active grant before a granted_v1 run may execute.
+
+        ``legacy`` returns ``None`` immediately: legacy schedule behavior must
+        stay byte-for-byte compatible and must never ask for a grant.
+        """
+        profile = run_execution_profile(run)
+        if profile == PROFILE_LEGACY:
+            return None
+        if profile != PROFILE_GRANTED:
+            category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
+            raise GrantRejected(category, "run execution profile is not usable", status_code=409)
+        grants = await self.grants_for_run(run.id)
+        if not grants:
+            raise GrantRejected("grant_required", "granted_v1 run has no execution grant", status_code=403)
+        active = [
+            grant for grant in grants if grant.status == "active" and grant.run_id == run.id
+        ]
+        if not active:
+            relevant = [grant for grant in grants if grant.run_id == run.id] or grants
+            latest = relevant[-1]
+            if latest.status == "stale":
+                raise GrantRejected("baseline_stale", "execution grant is stale", status_code=409)
+            if latest.status in {"revoked", "consumed"}:
+                raise GrantRejected(
+                    f"grant_{latest.status}",
+                    f"execution grant is {latest.status}",
+                    status_code=409,
+                )
+            raise GrantRejected(
+                "grant_not_active",
+                f"execution grant is not active (status={latest.status})",
+                status_code=409,
+            )
+        if task_codes is None:
+            grant = active[-1]
+            requested = {
+                code
+                for code in grant.task_codes
+                if (run.tasks.get(code) or {}).get("state") not in _GRANT_COMPLETED_STATES
+            }
+        else:
+            requested = set(task_codes)
+            covering = [grant for grant in active if requested.issubset(set(grant.task_codes))]
+            if not covering:
+                raise GrantRejected(
+                    "scope_mismatch",
+                    "requested tasks are outside the approved grant scope",
+                    status_code=409,
+                )
+            grant = covering[-1]
+        reason = grant_stale_reason(
+            grant,
+            approved_baseline_hashes=run_approved_baseline_hashes(run),
+            requested_task_codes=requested,
+        )
+        if reason is None:
+            return requested
+        if reason.startswith("baseline_changed:"):
+            raise GrantRejected("baseline_stale", reason, status_code=409)
+        status_code = 403 if reason == "grant_required" else 409
+        raise GrantRejected(reason, reason, status_code=status_code)
+
+    async def schedule_once(self, run: RunState, *, task_codes: set[str] | None = None) -> list[str]:
         # Direct API callers get the same controlled rejection as the auto loop.
         self._reject_retired(run)
+        allowed = await self._granted_scope(run, task_codes)
+        if task_codes is not None and run_execution_profile(run) == PROFILE_GRANTED:
+            # P5: a successor may not start before its predecessors succeeded.
+            # Only explicit requests are rejected; the auto loop keeps selecting
+            # ready tasks by dependency and legacy behaviour is untouched.
+            blocked = dag_blocked_tasks(
+                edges_from_tasks(run.tasks),
+                {code: task["state"] for code, task in run.tasks.items()},
+                task_codes,
+            )
+            if blocked:
+                raise GrantRejected(
+                    "dag_blocked",
+                    f"predecessors are not done: {', '.join(blocked)}",
+                    status_code=409,
+                )
         # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
-        async with self._schedule_lock_for(run):
-            return await self._schedule_once_locked(run)
+        # P5: 调度与任务写路径共用同一把 per-run 锁。
+        async with self._run_locks.write_scope(run.id):
+            return await self._schedule_once_locked(run, allowed=allowed)
 
-    async def _schedule_once_locked(self, run: RunState) -> list[str]:
+    async def _schedule_once_locked(self, run: RunState, *, allowed: set[str] | None = None) -> list[str]:
         if run.paused:
             return []
         if run.status in {"done", "terminated"}:
@@ -1565,6 +2342,7 @@ class Workbench:
                 and not t["paused"]
                 and not t["locked_by"]
                 and t["code"] not in started
+                and (allowed is None or t["code"] in allowed)
             ]
             if conflict_ready:
                 await asyncio.gather(*(self.execute_task(run, card.code) for card in conflict_ready))
@@ -1587,7 +2365,7 @@ class Workbench:
                     budget_exhausted={c for c, t in run.tasks.items() if self._task_over_budget(run, t)},
                     skip_continue=run.skip_continue,
                 )
-                if card.code not in started
+                if card.code not in started and (allowed is None or card.code in allowed)
             ]
             if not picked:
                 break
@@ -1598,6 +2376,13 @@ class Workbench:
         return started
 
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
+        # P5: all real task writes for a run go through one lock.  Nested calls
+        # from the schedule loop re-enter instead of deadlocking.
+        async with self._run_locks.write_scope(run.id):
+            return await self._execute_task_locked(run, code)
+
+    async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
+        self._require_execution_safety(run, code)
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
         if run.status == "terminated":
@@ -1605,6 +2390,27 @@ class Workbench:
             return {"state": task["state"], "kind": "已终止"}
         if task.get("locked_by") and not task.get("takeover_submit"):
             return {"state": task["state"], "kind": "locked"}
+        # Real execution boundary: granted_v1 is validated before any revision
+        # bump, state transition, worktree or command.  No Grant / missing spec
+        # can never fall through to the legacy agent/commit/merge chain.
+        grant: ExecutionGrant | None = None
+        granted_spec: dict[str, Any] | None = None
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            grant, granted_spec = await self._authorize_granted_execution(run, code)
+            # F-08: platform policy ∩ Grant.allowed_tool_refs ∩ materialized
+            # command/tool_refs.  Runs before preflight, worktree, writes and
+            # any process, so a denial has no side effects.
+            authorize_granted_command(
+                granted_spec.get("command") or [],
+                grant_tool_refs=grant.allowed_tool_refs,
+                spec_tool_refs=granted_spec.get("tool_refs") or [],
+                platform_whitelist=self._whitelist(),
+                platform_forbidden=self._forbidden(),
+            )
+            # F-06: no isolation backend means no execution side effects at all.
+            blocked = self._block_unless_isolated(run, task, code)
+            if blocked is not None:
+                return blocked
         task["revision"] = int(task.get("revision") or 1) + 1
         if task["state"] == "ready":
             self._set_state(run, task, "scheduled")
@@ -1614,6 +2420,8 @@ class Workbench:
                 self._set_state(run, task, "budget_or_stuck")
             self.emit(run, "budget.exceeded", code, {"used": task.get("tokens_used")})
             return {"state": task["state"], "kind": "预算耗尽"}
+        if granted_spec is not None and grant is not None:
+            return await self._execute_granted_task(run, code, task, card, granted_spec, grant)
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
@@ -1671,6 +2479,84 @@ class Workbench:
                 return {"state": task["state"], "kind": "已终止"}
             return await self._accept_review_merge(run, code, wt, list(tools.written))
 
+    async def _execute_granted_task(
+        self,
+        run: RunState,
+        code: str,
+        task: dict[str, Any],
+        card: TaskCard,
+        spec: dict[str, Any],
+        grant: ExecutionGrant,
+    ) -> dict[str, Any]:
+        """granted_v1 branch: write only inside an isolated per-task worktree."""
+        generation_id = self._generations.new_id(run.id)
+        command = [str(part) for part in (spec.get("command") or [])]
+        # F-08 re-check at the wrapper boundary, before any worktree or write.
+        authorize_granted_command(
+            command,
+            grant_tool_refs=grant.allowed_tool_refs,
+            spec_tool_refs=spec.get("tool_refs") or [],
+            platform_whitelist=self._whitelist(),
+            platform_forbidden=self._forbidden(),
+        )
+        blocked = self._block_unless_isolated(run, task, code)
+        if blocked is not None:
+            return blocked
+        repo = self.data_dir / "runs" / run.id / "repo"
+        if not (repo / ".git").exists():
+            init_repo_sync(repo, self.profile.get("initial_files"))
+        wt = self.data_dir / "runs" / run.id / "wt" / f"granted-{code}"
+        branch = f"{grant.feature_branch}/{code}"
+        try:
+            create_worktree(repo, wt, branch)
+        except Exception as exc:  # noqa: BLE001
+            return await self._finish_failure(run, task, card, "环境故障", str(exc), _exc_fields(exc))
+        writes = [
+            WriteSpec(path=str(item.get("path") or ""), content=str(item.get("content") or ""))
+            for item in (spec.get("writes") or [])
+            if isinstance(item, dict)
+        ]
+        command = [str(part) for part in (spec.get("command") or [])]
+        try:
+            result = await execute_task_granted(
+                run.id,
+                code,
+                grant,
+                isolation_root=wt,
+                writes=writes,
+                test_command=command,
+                write_set=list(card.write_set),
+                whitelist=self._whitelist(),
+                env_allow=list(self.profile.get("env_allowlist") or ["PATH"]),
+                timeout=int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600),
+                tool_refs=list(spec.get("tool_refs") or []),
+                spec_command=command,
+            )
+        except CommandDenied as exc:
+            return await self._finish_failure(run, task, card, "任务描述问题", str(exc), {"exit_code": 1})
+        except IsolationUnavailable as exc:
+            task["last_error"] = "isolation_preflight_failed"
+            self.emit(run, "task.isolation_blocked", code, {"reason": exc.reason, "backend": exc.backend})
+            return {"state": task["state"], "kind": "BLOCKED", "isolation_backend": exc.backend, "reason": exc.reason}
+        if not self._generations.is_current(run.id, generation_id):
+            # P5: pause/terminate/replan bumped the generation.  A late tool or
+            # LLM reply must not write evidence, state or files.
+            self.emit(run, "task.late_result_ignored", code, {"reason": "stale generation"})
+            return {"state": task["state"], "kind": "ignored", "reason": "stale_generation"}
+        task.setdefault("evidence", []).append(result.evidence)
+        self.emit(run, "task.evidence", code, {"path": result.evidence_path, "ok": result.ok})
+        if result.ok:
+            if can_transition(task["state"], "code_finished"):
+                self._set_state(run, task, "code_finished")
+            if can_transition(task["state"], "accepted"):
+                self._set_state(run, task, "accepted")
+            self._refresh_ready(run)
+            self._maybe_tasks_complete(run)
+            return {"state": task["state"], "kind": "done", "evidence": result.evidence}
+        if can_transition(task["state"], "env_fail"):
+            self._set_state(run, task, "env_fail", reason="offline test failed")
+        return {"state": task["state"], "kind": "代码缺陷", "evidence": result.evidence}
+
     async def _accept_review_merge(
         self,
         run: RunState,
@@ -1680,6 +2566,13 @@ class Workbench:
     ) -> dict[str, Any]:
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
+        self._require_execution_safety(run, code)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_manual_merge_disabled",
+                "granted_v1 runs never use the legacy review/merge path",
+                status_code=409,
+            )
         if run.status == "terminated":
             self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
             return {"state": task["state"], "kind": "已终止"}
@@ -1871,6 +2764,10 @@ class Workbench:
         if run.status == "terminated":
             self.emit(run, "task.late_result_ignored", str(task.get("code") or ""), {"reason": "run terminated"}, "system")
             return {"state": task["state"], "kind": "已终止"}
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            # Defect recursion re-enters execute_task(); validate the bound grant
+            # before this failure handler mutates signatures/repair rounds/state.
+            await self._authorize_granted_execution(run, str(task.get("code") or ""))
         sig = failure_signature(output or kind)
         if task["signatures"] and task["signatures"][-1] == sig:
             kind = "任务描述问题"
@@ -1916,6 +2813,13 @@ class Workbench:
         return outs
 
     async def _run_regression(self, run: RunState, repo: Path, code: str = "") -> dict[str, Any]:
+        self._require_execution_safety(run, code)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_force_pass_disabled",
+                "granted_v1 runs never use the legacy regression/force-pass path",
+                status_code=409,
+            )
         _ = code
         patterns = self._judge_patterns()
         timeout = int((run.limits.get("orchestrator") or {}).get("attempt_timeout_s") or 600)
@@ -1987,6 +2891,28 @@ class Workbench:
         if action in {"retry", "resume", "skip", "force-pass", "takeover", "submit-takeover"}:
             self._reject_retired(run)
         task = run.tasks[code]
+        if action in {"retry", "submit-takeover", "force-pass", "takeover"}:
+            # Reject before changing state/revisions or creating a worktree: a
+            # granted run must not be half-way through a control action while
+            # the safety gate is closed.
+            self._require_execution_safety(run, code)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            # Same boundary as execute_task: retry is authorized before state
+            # changes, and the legacy takeover/force-pass paths stay unreachable.
+            if action == "retry":
+                await self._authorize_granted_execution(run, code)
+            elif action in {"submit-takeover", "takeover"}:
+                raise GrantRejected(
+                    "granted_manual_merge_disabled",
+                    "granted_v1 runs cannot use the legacy takeover workspace or merge",
+                    status_code=409,
+                )
+            elif action == "force-pass":
+                raise GrantRejected(
+                    "granted_force_pass_disabled",
+                    "granted_v1 runs cannot bypass verification with a legacy force-pass",
+                    status_code=409,
+                )
         if task["revision"] != expected_revision:
             raise RevisionConflict("revision mismatch")
         require_control(action, task["state"], reason=reason)
@@ -2042,6 +2968,8 @@ class Workbench:
             raise ValidationFailed("终止运行需二次确认")
         if action == "pause":
             run.paused = True
+            # P5: invalidate in-flight generations so late replies are dropped.
+            self._generations.bump(run.id)
         elif action == "resume":
             # Resuming a retired DeepSeek-only run would let the loop call the retired
             # provider; keep it read-only. Pause/terminate stay available.
@@ -2050,6 +2978,7 @@ class Workbench:
         elif action == "terminate":
             run.status = "terminated"
             run.paused = True
+            self._generations.bump(run.id)
             if run.artifacts.get("design_input_status") == "importing":
                 generation = int(run.artifacts.get("design_input_generation") or 0)
                 self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
@@ -2062,6 +2991,13 @@ class Workbench:
         return run
 
     async def _submit_takeover(self, run: RunState, code: str) -> dict[str, Any]:
+        self._require_execution_safety(run, code)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_manual_merge_disabled",
+                "granted_v1 runs cannot submit a legacy takeover merge",
+                status_code=409,
+            )
         task = run.tasks[code]
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
@@ -2095,6 +3031,13 @@ class Workbench:
 
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
+        self._require_execution_safety(run)
+        if run_execution_profile(run) == PROFILE_GRANTED:
+            raise GrantRejected(
+                "granted_acceptance_disabled",
+                "granted_v1 runs cannot use the legacy acceptance path",
+                status_code=409,
+            )
         self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"

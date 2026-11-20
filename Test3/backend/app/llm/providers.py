@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -150,6 +151,25 @@ class DashScopeProvider:
     def __init__(self, models: ModelsFile) -> None:
         self.models = models
         self._client = None
+        self._bot_clients: dict[tuple[str, str], Any] = {}
+
+    def _bot_client(self, base_url: str, api_key: str) -> Any:
+        """Client for a bot's own provider key; cached per (base_url, key)."""
+        cache_key = (base_url, hashlib.sha256(api_key.encode("utf-8")).hexdigest())
+        client = self._bot_clients.get(cache_key)
+        if client is None:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                http_client=httpx.AsyncClient(
+                    timeout=httpx.Timeout(600.0, connect=10.0),
+                    trust_env=bool(get_settings().test3_http_trust_env),
+                ),
+            )
+            self._bot_clients[cache_key] = client
+        return client
 
     def _client_obj(self) -> Any:
         if self._client is None:
@@ -183,8 +203,14 @@ class DashScopeProvider:
     ) -> LLMResult:
         cfg = self.models.slots[slot]
         started = time.perf_counter()
-        extra: dict[str, Any] = {"extra_body": cfg.extra_body} if cfg.extra_body else {}
-        if cfg.json_mode:
+        # A bot's own endpoint (base_url + its API key) replaces the workbench client.
+        endpoint = kwargs.get("endpoint")
+        own_endpoint = isinstance(endpoint, dict) and endpoint.get("api_key") and endpoint.get("base_url")
+        foreign = bool(own_endpoint) and endpoint["base_url"] != self.models.base_url
+        # extra_body is tuned for the configured provider; do not leak it to others.
+        extra: dict[str, Any] = {"extra_body": cfg.extra_body} if cfg.extra_body and not foreign else {}
+        # Callers that want free text (bot chat) pass json_mode=False.
+        if kwargs.get("json_mode", cfg.json_mode):
             extra["response_format"] = {"type": "json_object"}
         
         if tools:
@@ -195,7 +221,10 @@ class DashScopeProvider:
                 raise ValueError(f"Model {cfg.model} for slot {slot} does not support tool_calls (cfg.tool_calls is false).")
 
         try:
-            completion = await self._client_obj().chat.completions.create(
+            client = (
+                self._bot_client(endpoint["base_url"], endpoint["api_key"]) if own_endpoint else self._client_obj()
+            )
+            completion = await client.chat.completions.create(
                 model=kwargs.get("model") or cfg.model,
                 messages=messages,
                 temperature=kwargs.get("temperature", cfg.temperature),

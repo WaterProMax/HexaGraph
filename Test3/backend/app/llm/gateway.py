@@ -57,23 +57,45 @@ class Gateway:
         self.bucket = TokenBucket(int(models.limits.get("requests_per_minute", 120)), clock=clock)
         self.stats = {"tokens_in": 0, "tokens_out": 0, "calls": 0, "fallbacks": 0}
         self.events: list[dict[str, Any]] = []
+        self.last_provider_ref = ""
 
-    async def complete(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+    async def complete(
+        self,
+        slot: str,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        provider_ref: str | None = None,
+        **kwargs: Any,
+    ) -> LLMResult:
         async with self.sema:
             while not self.bucket.take():
                 await asyncio.sleep(0.01)
-            return await self._complete_with_retry(slot, messages, **kwargs)
+            return await self._complete_with_retry(
+                slot, messages, model=model, provider_ref=provider_ref, **kwargs
+            )
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return await self.provider.embed(texts)
 
-    async def _complete_with_retry(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResult:
+    async def _complete_with_retry(
+        self,
+        slot: str,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        provider_ref: str | None = None,
+        **kwargs: Any,
+    ) -> LLMResult:
         cfg = self.models.slots[slot]
         last_error: Exception | None = None
-        model = cfg.model
+        chosen_model = model or cfg.model
+        # provider_ref is descriptive here: the concrete provider is constructed
+        # once by the caller, and providers never receive an unknown keyword.
+        self.last_provider_ref = provider_ref or ""
         for attempt in range(3):
             try:
-                result = await self.provider.complete(slot, messages, model=model, **kwargs)
+                result = await self.provider.complete(slot, messages, model=chosen_model, **kwargs)
                 self.stats["tokens_in"] += result.tokens_in
                 self.stats["tokens_out"] += result.tokens_out
                 self.stats["calls"] += 1
@@ -85,7 +107,11 @@ class Gateway:
                 if not _retryable(exc) or attempt == 2:
                     break
                 await asyncio.sleep(0.01 * (2**attempt))
-        if cfg.fallback:
+        endpoint = kwargs.get("endpoint")
+        # Fallback models belong to the configured provider; a bot on another
+        # provider's endpoint must not be silently re-routed to them.
+        foreign_endpoint = isinstance(endpoint, dict) and endpoint.get("base_url") != self.models.base_url
+        if cfg.fallback and not foreign_endpoint:
             self.stats["fallbacks"] += 1
             self.events.append({"kind": "llm.fallback", "slot": slot, "fallback": cfg.fallback})
             try:
