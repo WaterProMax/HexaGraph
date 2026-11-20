@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.agents.runtime import RoleRegistry
 from app.api.routes import router
 from app.api.routes_bots import router as bots_router
+from app.api.routes_memberships import router as memberships_router
 from app.api.routes_skills import router as skills_router
 from app.llm.gateway import Gateway, build_provider
 from app.services.runtime import Workbench
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(router, prefix="/api")
     app.include_router(skills_router, prefix="/api")
     app.include_router(bots_router, prefix="/api")
+    app.include_router(memberships_router, prefix="/api")
     return app
 
 

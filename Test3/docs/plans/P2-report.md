@@ -79,4 +79,32 @@
 - `POST /api/bots/{bot_id}/archive` 返回 `{"bot_id", "status": "archived"}`；重复归档 409 `bot_already_archived`。
 - `PATCH` 已归档 Bot 的 `model` / `provider_ref` / `skill_bindings` 返回 409 `bot_archived`。
 - 未注册 `POST /api/projects/{project_id}/bots`；自然 404，测试断言 `bots` 行数不变。
-- 未新增顶级 Model CRUD 路由，未改 `GET/PUT /api/config/models`，未改前端。
+- 未新增顶级 Model CRUD 路由，未改 `GET/PUT /api/config/models`，未改前端。## T04 · 项目成员 M:N、唯一 Leader、移出保留 Bot
+
+- 时间：2026-11-20 10:22 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_membership.py tests/integration/test_memberships_api.py -v`
+- 退出码：0
+- 计数：15 passed（单元 8 / 集成 7）
+- 回归：`tests/unit/test_p1_f08_tool_authorization.py tests/unit/test_tools_llm_agents.py` → 27 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+
+### 触及文件
+
+- `app/projects/__init__.py`（NEW）
+- `app/projects/membership.py`（NEW：`MembershipService`、`ProjectMembership`、`MembershipCreate` 与错误类型）
+- `app/api/routes_memberships.py`（NEW）
+- `alembic/versions/0006_project_memberships.py`（NEW）
+- `tests/unit/test_membership.py`（NEW）
+- `tests/integration/test_memberships_api.py`（NEW）
+- `app/main.py`（MODIFY：挂载 memberships router，prefix=/api）
+- `app/storage/models.py`（MODIFY：`ProjectMembershipRow`、`uq_project_one_leader` 部分唯一索引）
+- `docs/plans/P2-report.md`（MODIFY）
+
+### 实现要点
+
+- 项目存在判定与 `POST /api/projects/{project_id}/runs` 一致：`project_id not in bench.projects` → 404 `project_not_found`。
+- `project_memberships` 只对 `bots(bot_id)` 建外键，未给内存项目表加外键。
+- 同一项目至多一个 `is_leader=1`：`uq_project_one_leader ... WHERE is_leader = 1` 部分唯一索引真正生效；并发写入时先以 no-op `UPDATE` 取 SQLite 写锁，`IntegrityError` 按索引/列名映射为 `leader_already_set` 或 `membership_exists`。
+- 同一 Bot 可加入多个项目；`DELETE` 只删除该项目 join 行，不删除 `bots` 行或 pin 历史。
+- 归档 Bot 加入成员返回 403 `bot_archived`；缺失关系 404 `membership_not_found`。
+- 未创建 T05 的 `run_bot_pin_snapshots`，未进入记忆/讨论/DAG/前端工作台。

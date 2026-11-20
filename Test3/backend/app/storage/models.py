@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -273,6 +273,24 @@ class BotPinRevisionRow(Base):
     provider_ref: Mapped[str] = mapped_column(String, nullable=False)
     skill_bindings: Mapped[list] = mapped_column(JSON, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class ProjectMembershipRow(Base):
+    __tablename__ = "project_memberships"
+    __table_args__ = (
+        Index(
+            "uq_project_one_leader",
+            "project_id",
+            unique=True,
+            sqlite_where=text("is_leader = 1"),
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(ForeignKey("bots.bot_id"), primary_key=True)
+    role_in_project: Mapped[str] = mapped_column(String, nullable=False)
+    is_leader: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class RunExecutionStateRow(Base):
