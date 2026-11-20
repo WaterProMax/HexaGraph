@@ -34,6 +34,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = [
   "live: calls real DashScope (deselect by default)",
+  "closeout: whole-book close gate; needs a real PR record (run explicitly, not in the default regression)",
 ]
 addopts = "-q -m 'not live'"
 

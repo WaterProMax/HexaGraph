@@ -6,6 +6,12 @@
   "push_attempted": false,
   "pr_attempted": false,
   "github_pr_url": null,
+  "feature_branch": "feat/test3-agent-team-v1",
+  "base_branch": "teamwork-001",
+  "merged": false,
+  "deployed": false,
+  "closeout_checked_at": "2026-11-20T00:00:00+00:00",
+  "closeout_detail": "P7-T03 close gate run locally: still BLOCKED. Requires the C.7 github_write sentence; after independent acceptance the parent agent performs one idempotent push and one idempotent gh pr create, then updates this record with the real https URL and re-runs the gate.",
   "recorded_at": "2026-11-19T07:02:08.489036+00:00",
   "detail": "No C.7 github_write authorization sentence was supplied in this session; local adapters and unit tests are complete, but no real push or PR was attempted.",
   "local_evidence": [
