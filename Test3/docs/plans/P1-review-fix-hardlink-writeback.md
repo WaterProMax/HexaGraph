@@ -48,6 +48,26 @@ accept / force-pass / takeover 的拒绝均未改动。
 该用例未删除、未 skip、未弱化。两条 skip（`test_isolated_execute_task.py:57`、
 `test_p1_rev03_isolation_preflight.py:219`）同样因无后端，**不是已验证**。
 
+## 补充：有 Docker 的验证（同日，用户授权开启 Docker）
+
+Docker Desktop 已在运行；本地没有任何带 pytest 的镜像，且不拉基础镜像。经用户确认，用宿主
+`pip download` 取得纯 Python wheel（pytest 9.2.0、pluggy、iniconfig、packaging、pygments、
+tomli、exceptiongroup、typing_extensions），在本地已有的 `python:3.10-slim` 上离线 COPY 安装，
+构建本地镜像 `test3-isolation-local:pytest`（Dockerfile 在 `/tmp`，不入库），并用
+`TEST3_ISOLATION_IMAGE=test3-isolation-local:pytest` 运行；未执行 `docker pull`。
+预检仍要求断网、`/work` 为挂载、不暴露 docker.sock、HOME 重定向、pytest 可用，这些均通过。
+
+- 指定 8 个文件：`70 passed, 1 skipped`
+- 全量 `-m 'not live'`：`416 passed, 1 skipped, 2 deselected`，0 失败
+- `test_whitelisted_pytest_cannot_write_absolute_outside_path` 现在通过（真实容器内逃逸被拦）；
+  `test_escape_is_contained_when_backend_available`、`test_failing_offline_test_is_not_success`
+  由 skip 变为真实通过。
+- 剩下的 1 条 skip（`test_p1_rev03_isolation_preflight.py:200`）是“无后端时必须失败”的用例，
+  有后端时按设计跳过（“covered by the escape test”）；无 Docker 的失败路径已在上一轮以
+  `IsolationUnavailable` 验证。
+- 这只证明本机这一镜像下的隔离行为；`execution_safety_ready` 仍为 False，不因此开闸。
+- 未推送 GitHub、未建分支/PR；`p1-pr-record.json` 仍为 `BLOCKED`。
+
 ## 状态
 
 - `execution_safety_ready` 仍为 False（`grep "execution_safety_ready = True" app/` 无结果）。
