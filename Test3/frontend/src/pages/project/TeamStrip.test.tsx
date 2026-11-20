@@ -10,28 +10,28 @@ const members: TeamMember[] = [
 afterEach(cleanup);
 
 describe("TeamStrip", () => {
-  it("shows the leader and members with an actor selector", () => {
-    render(<TeamStrip members={members} actorBotId="bot-b" onActorChange={vi.fn()} onManage={vi.fn()} />);
+  it("shows the leader and member avatars without an identity switcher", () => {
+    render(<TeamStrip members={members} onInvite={vi.fn()} onManage={vi.fn()} />);
     const strip = screen.getByTestId("team-strip");
     expect(strip.textContent).toContain("Leader");
-    const select = screen.getByTestId("actor-bot-select") as HTMLSelectElement;
-    expect(select.value).toBe("bot-b");
-    expect(Array.from(select.options).map((option) => option.value)).toEqual(["bot-a", "bot-b"]);
+    expect(screen.queryByTestId("actor-bot-select")).toBeNull();
+    expect(strip.textContent).not.toContain("当前操作身份");
   });
 
-  it("reports actor changes and opens management", () => {
-    const onActorChange = vi.fn();
+  it("opens invite and management from the strip", () => {
     const onManage = vi.fn();
-    render(<TeamStrip members={members} actorBotId="bot-a" onActorChange={onActorChange} onManage={onManage} />);
-    fireEvent.change(screen.getByTestId("actor-bot-select"), { target: { value: "bot-b" } });
-    expect(onActorChange).toHaveBeenCalledWith("bot-b");
+    const onInvite = vi.fn();
+    render(<TeamStrip members={members} onInvite={onInvite} onManage={onManage} />);
     fireEvent.click(screen.getByTestId("manage-members"));
     expect(onManage).toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("invite-bots"));
+    expect(onInvite).toHaveBeenCalled();
   });
 
   it("handles an empty team", () => {
-    render(<TeamStrip members={[]} actorBotId="" onActorChange={vi.fn()} onManage={vi.fn()} />);
-    expect(screen.getByTestId("team-strip").textContent).toContain("尚未加入 Bot");
+    render(<TeamStrip members={[]} onInvite={vi.fn()} onManage={vi.fn()} />);
+    expect(screen.getByTestId("team-strip").textContent).not.toContain("尚未加入 Bot");
+    expect(screen.getByRole("button", { name: "邀请 Bot" })).toBeTruthy();
     expect(screen.queryByTestId("actor-bot-select")).toBeNull();
   });
 });

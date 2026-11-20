@@ -8,6 +8,7 @@ import { useWorkstationLayout } from "../../workstationLayout";
 import { DefectList } from "./DefectList";
 import { DiscussionReviewPanel } from "./DiscussionReviewPanel";
 import { GrantStatusBanner } from "./GrantStatusBanner";
+import { InviteBotsDialog } from "./InviteBotsDialog";
 import { ManageMembersDialog } from "./ManageMembersDialog";
 import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
 import { TeamStrip, type TeamMember } from "./TeamStrip";
@@ -18,6 +19,8 @@ export type WorkstationTask = { code: string; title: string; progress: number; s
 
 export type ProjectWorkstationProps = {
   projectId: string;
+  /** Shown as the page title; falls back to a generic title until it loads. */
+  projectName?: string;
   loadState: LoadState;
   tasks: Array<{ code: string; title: string; progress: number; status: string }>;
   dirtyRef: { current: boolean };
@@ -31,8 +34,7 @@ export type ProjectWorkstationProps = {
   defects?: DefectRecord[];
   team?: {
     members: TeamMember[];
-    actorBotId: string;
-    onActorChange: (botId: string) => void;
+    onInvite: () => void;
     onManage: () => void;
   };
   memoryPanel?: ReactNode;
@@ -63,6 +65,7 @@ export function mapTasks(tasks: RunTask[]): WorkstationTask[] {
 
 export function ProjectWorkstation({
   projectId,
+  projectName = "",
   loadState,
   tasks,
   dirtyRef,
@@ -132,15 +135,13 @@ export function ProjectWorkstation({
   return (
     <div className="page ws-page">
       <div className="page-head">
-        <h1>项目工作台</h1>
-        <p className="mono">{projectId}</p>
+        <h1>{projectName || "项目工作台"}</h1>
       </div>
       <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
       {team && (
         <TeamStrip
           members={team.members}
-          actorBotId={team.actorBotId}
-          onActorChange={team.onActorChange}
+          onInvite={team.onInvite}
           onManage={team.onManage}
         />
       )}
@@ -304,25 +305,22 @@ export function ProjectWorkstation({
   );
 }
 
-export type ProjectWorkstationPageProps = { projectId?: string; actorBotId?: string; grantErrorCategory?: string | null };
+export type ProjectWorkstationPageProps = { projectId?: string; grantErrorCategory?: string | null };
 
-const ACTOR_STORAGE_KEY = "hexagraph.actorBotId.v1";
+/** Acting identity for discussion/defect/memory reads: the leader, else the first member. */
+function defaultActor(members: TeamMember[]): string {
+  return members.find((member) => member.is_leader)?.bot_id || members[0]?.bot_id || "";
+}
 
-export default function ProjectWorkstationPage({ projectId = "", actorBotId, grantErrorCategory = null }: ProjectWorkstationPageProps) {
+export default function ProjectWorkstationPage({ projectId = "", grantErrorCategory = null }: ProjectWorkstationPageProps) {
   const params = useParams();
   const id = projectId || params.projectId || "";
   const dirtyRef = useMemo(() => ({ current: false }), []);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [allBots, setAllBots] = useState<BotInstance[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [actor, setActor] = useState<string>(() => {
-    if (actorBotId) return actorBotId;
-    try {
-      return window.localStorage.getItem(ACTOR_STORAGE_KEY) || "";
-    } catch {
-      return "";
-    }
-  });
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [projectName, setProjectName] = useState("");
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [errorText, setErrorText] = useState("");
   const [tasks, setTasks] = useState<WorkstationTask[]>([]);
@@ -333,34 +331,27 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
   const [ballots, setBallots] = useState<ReviewBallot[]>([]);
   const [dissentItems, setDissentItems] = useState<string[]>([]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setProjectName("");
+    api
+      .projects()
+      .then((list: any) => {
+        const found = (Array.isArray(list) ? list : []).find((item: any) => String(item.id) === String(id));
+        if (!cancelled && found?.name) setProjectName(String(found.name));
+      })
+      .catch(() => {
+        // The generic title stays when the name cannot be read.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   const load = useCallback(async () => {
     setLoadState("loading");
     try {
-      const runs = await api.runs();
-      const owned = (Array.isArray(runs) ? runs : []).filter((run: any) => String(run.project_id) === String(id));
-      if (owned.length === 0) {
-        setTasks([]);
-        setLoadState("empty");
-        return;
-      }
-      const latest = owned[owned.length - 1];
-      setRunId(String(latest.id));
-      const raw = await api.tasks(String(latest.id));
-      const mapped = mapTasks(raw);
-      setTasks(mapped);
-
-      // Read-only P6 panels. Failures here must never blank the workstation.
-      try {
-        const grants = await api.executionGrants(String(latest.id));
-        const items = Array.isArray(grants?.items) ? grants.items : [];
-        const active = items[items.length - 1];
-        if (active?.status) setGrantStatus(active.status as GrantStatus);
-        // A stale grant means the signed baseline changed; surface the same
-        // category the schedule API would return.
-        setDerivedGrantError(active?.status === "stale" ? "baseline_stale" : null);
-      } catch {
-        setGrantStatus(undefined);
-      }
+      // Team + bots load first: a project with no run yet must still be able to invite bots.
       let memberRows: TeamMember[] = [];
       try {
         const [memberRes, botRes] = await Promise.all([api.memberships(String(id)), api.bots()]);
@@ -385,20 +376,32 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
       } catch {
         setTeamMembers([]);
       }
-      // Discussion/defect reads need an explicit actor. Honour the saved
-      // identity when it is still a member, otherwise fall back to the leader.
-      const effectiveActor =
-        memberRows.find((member) => member.bot_id === actor)?.bot_id ||
-        memberRows.find((member) => member.is_leader)?.bot_id ||
-        memberRows[0]?.bot_id ||
-        "";
-      if (effectiveActor !== actor) {
-        setActor(effectiveActor);
-        try {
-          window.localStorage.setItem(ACTOR_STORAGE_KEY, effectiveActor);
-        } catch {
-          // ignore storage restrictions
-        }
+      // Discussion/defect reads need an explicit actor: the leader, else the first member.
+      const effectiveActor = defaultActor(memberRows);
+      const runs = await api.runs();
+      const owned = (Array.isArray(runs) ? runs : []).filter((run: any) => String(run.project_id) === String(id));
+      if (owned.length === 0) {
+        setTasks([]);
+        setLoadState("empty");
+        return;
+      }
+      const latest = owned[owned.length - 1];
+      setRunId(String(latest.id));
+      const raw = await api.tasks(String(latest.id));
+      const mapped = mapTasks(raw);
+      setTasks(mapped);
+
+      // Read-only P6 panels. Failures here must never blank the workstation.
+      try {
+        const grants = await api.executionGrants(String(latest.id));
+        const items = Array.isArray(grants?.items) ? grants.items : [];
+        const active = items[items.length - 1];
+        if (active?.status) setGrantStatus(active.status as GrantStatus);
+        // A stale grant means the signed baseline changed; surface the same
+        // category the schedule API would return.
+        setDerivedGrantError(active?.status === "stale" ? "baseline_stale" : null);
+      } catch {
+        setGrantStatus(undefined);
       }
       if (effectiveActor) {
         try {
@@ -431,16 +434,19 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
         setLoadState("error");
       }
     }
-  }, [id, actor]);
+  }, [id]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  const actor = defaultActor(teamMembers);
+
   return (
     <>
     <ProjectWorkstation
       projectId={id}
+      projectName={projectName}
       loadState={loadState}
       tasks={tasks}
       dirtyRef={dirtyRef}
@@ -453,15 +459,7 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
       defects={defects}
       team={{
         members: teamMembers,
-        actorBotId: actor,
-        onActorChange: (botId: string) => {
-          setActor(botId);
-          try {
-            window.localStorage.setItem(ACTOR_STORAGE_KEY, botId);
-          } catch {
-            // ignore storage restrictions
-          }
-        },
+        onInvite: () => setInviteOpen(true),
         onManage: () => setDialogOpen(true),
       }}
       bots={allBots}
@@ -473,12 +471,24 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
         />
       }
     />
+    {inviteOpen && (
+      <InviteBotsDialog
+        projectId={id}
+        members={teamMembers}
+        allBots={allBots}
+        onClose={() => setInviteOpen(false)}
+        onChanged={load}
+      />
+    )}
     {dialogOpen && (
       <ManageMembersDialog
         projectId={id}
         members={teamMembers}
-        allBots={allBots}
         onClose={() => setDialogOpen(false)}
+        onInvite={() => {
+          setDialogOpen(false);
+          setInviteOpen(true);
+        }}
         onChanged={load}
       />
     )}

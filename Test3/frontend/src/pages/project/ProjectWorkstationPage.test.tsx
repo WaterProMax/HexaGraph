@@ -182,6 +182,19 @@ describe("P6-T04 grant, review and defect wiring", () => {
   });
 });
 
+describe("workstation title", () => {
+  it("shows the project name instead of a generic title or the raw id", () => {
+    renderWorkstation({ projectName: "自习室空位查询小程序" });
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("自习室空位查询小程序");
+    expect(screen.queryByText("proj-1")).toBeNull();
+  });
+
+  it("falls back to a generic title while the name is unknown", () => {
+    renderWorkstation();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("项目工作台");
+  });
+});
+
 describe("P6-R03 team strip and shared memory", () => {
   const teamMembers = [
     { bot_id: "bot-a", display_name: "Leader A", role_template: "leader", status: "active" as const, role_in_project: "lead", is_leader: true },
@@ -191,7 +204,7 @@ describe("P6-R03 team strip and shared memory", () => {
   it("renders the team strip and opens management", () => {
     const onManage = vi.fn();
     renderWorkstation({
-      team: { members: teamMembers, actorBotId: "bot-b", onActorChange: vi.fn(), onManage },
+      team: { members: teamMembers, onInvite: vi.fn(), onManage },
     });
     expect(screen.getByTestId("team-strip")).toBeTruthy();
     fireEvent.click(screen.getByTestId("manage-members"));

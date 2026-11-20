@@ -226,7 +226,6 @@ test("UI redesign walkthrough", async ({ page }) => {
 
   await page.goto("/projects/p1");
   await expect(page.getByTestId("team-strip")).toBeVisible();
-  await expect(page.getByTestId("actor-bot-select")).toHaveValue("bot-a");
   await page.screenshot({ path: `${SHOTS}/ui-r03-team-strip.png`, fullPage: true });
 
   await page.getByTestId("manage-members").click();

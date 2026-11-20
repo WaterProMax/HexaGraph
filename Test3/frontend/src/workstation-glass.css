@@ -592,17 +592,37 @@
 .team-member { position: relative; margin-left: -6px; }
 .team-member.is-leader .bot-avatar { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
 .team-leader-mark { position: absolute; left: 50%; bottom: -12px; transform: translateX(-50%); font-size: 9px; letter-spacing: 0.02em; color: var(--glass-accent); white-space: nowrap; }
-.team-actor { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; }
-.team-actor select { height: 32px; padding: 0 10px; border-radius: 999px; border: 1px solid #c9dceb; background: #ffffffd9; color: var(--glass-ink); font: inherit; }
 .members-dialog-backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 24px; background: rgba(18, 45, 66, 0.28); }
-.members-dialog { width: min(680px, 100%); max-height: 82vh; overflow: auto; padding: 18px; background: #fff; box-shadow: var(--shadow-float, 0 18px 40px -24px rgba(20, 60, 90, 0.4)); }
-.members-list { list-style: none; margin: 8px 0 0; padding: 0; }
-.members-row { display: flex; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid rgba(0, 0, 0, 0.06); }
-.members-name { flex: 1 1 auto; min-width: 0; font-weight: 550; }
+.members-dialog { width: min(560px, 100%); max-height: 82vh; overflow: auto; padding: 20px 22px; background: #fff; border-radius: 18px; box-shadow: var(--shadow-float, 0 18px 40px -24px rgba(20, 60, 90, 0.4)); }
+.members-count { margin-left: 8px; font-weight: 400; }
+.members-list { list-style: none; margin: 10px -8px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.members-row { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-radius: 12px; transition: background 0.15s; }
+.members-row:hover { background: rgba(0, 102, 250, 0.05); }
+.members-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.members-sub { font-size: 12px; color: var(--glass-muted, #5f7a8f); }
+.members-badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; color: var(--glass-accent, #0066fa); background: rgba(0, 102, 250, 0.1); }
+.members-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.members-empty { margin-top: 10px; padding: 18px 16px; text-align: center; }
+.members-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(0, 0, 0, 0.06); font-size: 12px; }
+.members-dialog button.chip { padding: 5px 14px; border-radius: 999px; border: 1px solid #c9dceb; background: #fff; color: var(--glass-ink, #14324a); font: inherit; font-size: 12px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.members-dialog button.chip:hover:not(:disabled) { background: #f0f7ff; border-color: #9fc4e6; }
+.members-dialog button.chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.members-dialog button.chip.danger { color: #b3361b; border-color: #efc9c0; }
+.members-dialog button.chip.danger:hover:not(:disabled) { background: #fff3f0; border-color: #e3a89b; }
+.members-name { display: flex; align-items: center; min-width: 0; font-weight: 600; }
 .members-error { margin: 10px 0; padding: 10px 12px; border-radius: 10px; background: #fff6f2; color: #8a2c14; font-size: 12px; }
-.members-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
-.members-add select, .members-add input[type="text"] { height: 34px; padding: 0 10px; border-radius: 10px; border: 1px solid #c9dceb; background: #fff; font: inherit; }
 .members-leader-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.team-strip .chip.primary, .members-dialog .chip.primary { border-color: var(--glass-accent, #0066fa); background: var(--glass-accent, #0066fa); color: #fff; }
+.team-strip .chip.primary:hover:not(:disabled), .members-dialog .chip.primary:hover:not(:disabled) { background: #0054c9; color: #fff; }
+.members-dialog .chip.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.invite-dialog { width: min(560px, 100%); }
+.invite-all { display: inline-flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; color: var(--glass-muted, #5f7a8f); }
+.invite-row { flex-wrap: wrap; border-radius: 10px; padding: 9px 8px; }
+.invite-row.is-selected { background: rgba(0, 102, 250, 0.06); }
+.invite-pick { display: flex; flex: 1 1 auto; align-items: center; gap: 10px; min-width: 0; cursor: pointer; }
+.invite-fail { font-size: 12px; color: #8a2c14; }
+.invite-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 14px 16px; }
+.invite-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .project-memory-panel { margin-top: 16px; }
 
 /* UI-R04: review cards, defect cards, task flash and Settings cards. */

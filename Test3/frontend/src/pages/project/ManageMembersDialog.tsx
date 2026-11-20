@@ -1,26 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import { ApiError, api } from "../../api/client";
-import type { BotInstance } from "../../api/types";
+import { useEffect, useState } from "react";
+import { api } from "../../api/client";
 import { BotAvatar } from "../../components/BotAvatar";
+import { roleLabel } from "../../lib/botRole";
+import { memberErrorText } from "./memberErrors";
 import type { TeamMember } from "./TeamStrip";
 
 export type ManageMembersDialogProps = {
   projectId: string;
   members: TeamMember[];
-  allBots: BotInstance[];
   onClose: () => void;
+  onInvite: () => void;
   onChanged: () => void | Promise<void>;
 };
 
-function errorCategory(err: unknown): string {
-  if (err instanceof ApiError) return err.category || `HTTP ${err.status}`;
-  return (err as any)?.message || "unknown_error";
-}
-
-export function ManageMembersDialog({ projectId, members, allBots, onClose, onChanged }: ManageMembersDialogProps) {
-  const [role, setRole] = useState("dev");
-  const [candidate, setCandidate] = useState("");
-  const [makeLeader, setMakeLeader] = useState(false);
+/** Manage existing members (leader / remove). Adding bots goes through the invite dialog. */
+export function ManageMembersDialog({ projectId, members, onClose, onInvite, onChanged }: ManageMembersDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -32,28 +26,6 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const available = useMemo(
-    () => allBots.filter((bot) => bot.status === "active" && !members.some((member) => member.bot_id === bot.bot_id)),
-    [allBots, members],
-  );
-
-  const add = async () => {
-    if (!candidate) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.addMembership(projectId, { bot_id: candidate, role_in_project: role || "dev", is_leader: makeLeader });
-      setCandidate("");
-      setMakeLeader(false);
-      await onChanged();
-    } catch (err) {
-      setError(errorCategory(err));
-      await onChanged();
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const remove = async (botId: string) => {
     setBusy(true);
     setError("");
@@ -61,7 +33,7 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
       await api.removeMembership(projectId, botId);
       await onChanged();
     } catch (err) {
-      setError(errorCategory(err));
+      setError(memberErrorText(err));
       await onChanged();
     } finally {
       setBusy(false);
@@ -72,7 +44,7 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
    * The backend has no PATCH / leader transfer.  Keep every existing member:
    * drop the old leader, add it back as a regular member, then re-add the
    * target with is_leader=true.  Any failure reloads the list and surfaces the
-   * error category instead of silently losing a member.
+   * error instead of silently losing a member.
    */
   const promote = async (targetBotId: string) => {
     const oldLeader = members.find((member) => member.is_leader);
@@ -97,7 +69,7 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
       });
       await onChanged();
     } catch (err) {
-      setError(errorCategory(err));
+      setError(memberErrorText(err));
       await onChanged();
     } finally {
       setBusy(false);
@@ -115,7 +87,10 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
         onClick={(event) => event.stopPropagation()}
       >
         <div className="section-title">
-          <span>管理项目成员</span>
+          <span>
+            管理项目成员
+            <span className="hint members-count">{members.length} 人</span>
+          </span>
           <button type="button" className="chip" aria-label="关闭成员管理" onClick={onClose}>
             关闭
           </button>
@@ -127,55 +102,53 @@ export function ManageMembersDialog({ projectId, members, allBots, onClose, onCh
           </div>
         )}
 
-        <ul className="members-list">
-          {members.length === 0 && <li className="muted">还没有成员。</li>}
-          {members.map((member) => (
-            <li key={member.bot_id} className="members-row">
-              <BotAvatar bot={member} size={28} />
-              <span className="members-name">{member.display_name}</span>
-              <span className="chip">{member.role_in_project}</span>
-              {member.is_leader && <span className="chip status-published">Leader</span>}
-              <button
-                type="button"
-                className="chip"
-                disabled={busy || member.is_leader}
-                aria-label={`将 ${member.display_name} 设为 Leader`}
-                onClick={() => promote(member.bot_id)}
-              >
-                设为 Leader
-              </button>
-              <button
-                type="button"
-                className="chip"
-                disabled={busy}
-                aria-label={`移出 ${member.display_name}`}
-                onClick={() => remove(member.bot_id)}
-              >
-                移出
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <div className="members-add">
-          <div className="section-title">
-            <span>添加成员</span>
+        {members.length === 0 ? (
+          <div className="well muted members-empty" data-testid="members-empty">
+            项目里还没有成员，邀请 Bot 加入后才能开始协作。
           </div>
-          <select aria-label="添加 Bot" value={candidate} onChange={(event) => setCandidate(event.target.value)}>
-            <option value="">选择 Bot</option>
-            {available.map((bot) => (
-              <option key={bot.bot_id} value={bot.bot_id}>
-                {bot.display_name} · {bot.role_template}
-              </option>
+        ) : (
+          <ul className="members-list">
+            {members.map((member) => (
+              <li key={member.bot_id} className="members-row">
+                <BotAvatar bot={member} size={34} nativeTitle={false} />
+                <div className="members-info">
+                  <span className="members-name">
+                    {member.display_name}
+                    {member.is_leader && <span className="members-badge">Leader</span>}
+                  </span>
+                  <span className="members-sub">{roleLabel(member.role_in_project)}</span>
+                </div>
+                <div className="members-actions">
+                  {!member.is_leader && (
+                    <button
+                      type="button"
+                      className="chip"
+                      disabled={busy}
+                      aria-label={`将 ${member.display_name} 设为 Leader`}
+                      onClick={() => promote(member.bot_id)}
+                    >
+                      设为 Leader
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="chip danger"
+                    disabled={busy}
+                    aria-label={`移出 ${member.display_name}`}
+                    onClick={() => remove(member.bot_id)}
+                  >
+                    移出
+                  </button>
+                </div>
+              </li>
             ))}
-          </select>
-          <input aria-label="项目角色" value={role} onChange={(event) => setRole(event.target.value)} placeholder="dev" />
-          <label className="members-leader-toggle">
-            <input type="checkbox" checked={makeLeader} onChange={(event) => setMakeLeader(event.target.checked)} />
-            设为 Leader
-          </label>
-          <button type="button" className="chip" disabled={busy || !candidate} onClick={add} aria-label="添加成员">
-            添加成员
+          </ul>
+        )}
+
+        <div className="members-footer">
+          <span className="muted">想加入更多 Bot？</span>
+          <button type="button" className="chip primary" data-testid="members-invite-more" disabled={busy} onClick={onInvite}>
+            邀请更多 Bot
           </button>
         </div>
       </div>
