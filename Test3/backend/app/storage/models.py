@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -237,6 +237,16 @@ class ExecutionGrantRow(Base):
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="active")
     payload: Mapped[str] = mapped_column(Text)
+
+
+class SkillDefinitionRow(Base):
+    """Immutable versioned skill definition keyed by (skill_id, version)."""
+
+    __tablename__ = "skill_definitions"
+
+    skill_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[str] = mapped_column(String, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class RunExecutionStateRow(Base):

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.runtime import RoleRegistry
 from app.api.routes import router
+from app.api.routes_skills import router as skills_router
 from app.llm.gateway import Gateway, build_provider
 from app.services.runtime import Workbench
 from app.settings import get_settings, load_models, load_roles, validate_config
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router, prefix="/api")
+    app.include_router(skills_router, prefix="/api")
     return app
 
 

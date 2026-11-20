@@ -15,7 +15,7 @@ empty list means "nothing is authorized", never a wildcard.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from app.errors import GrantRejected
 from app.tools.sandbox import command_allowed
@@ -103,7 +103,47 @@ def authorize_granted_command(
     return argv
 
 
+def _layer_refs(source) -> set[str]:
+    """Read a tool-ref layer from a collection, mapping or model object.
+
+    An empty or missing layer resolves to an empty set, which is an empty
+    authorization, never a wildcard.
+    """
+    if source is None:
+        return set()
+    if isinstance(source, str):
+        text = source.strip()
+        return {text} if text else set()
+    if isinstance(source, Mapping):
+        for key in ("tool_policy", "allowed_tool_refs"):
+            if key in source:
+                return _layer_refs(source[key])
+        return set()
+    if hasattr(source, "tool_policy"):
+        return _layer_refs(source.tool_policy)
+    if hasattr(source, "allowed_tool_refs"):
+        return _layer_refs(source.allowed_tool_refs)
+    return set(_clean_refs(source))
+
+
+def effective_tools(platform, bot, grant, skill=None) -> set[str]:
+    """Effective command authority: platform ∩ bot ∩ grant (∩ skill pin).
+
+    Each layer is intersected independently.  A layer that is empty, including
+    an explicit empty list, authorizes nothing; prose in ``description_md``
+    never expands the set.
+    """
+    layers = [_layer_refs(platform), _layer_refs(bot), _layer_refs(grant)]
+    if skill is not None:
+        layers.append(_layer_refs(skill))
+    effective = set(layers[0])
+    for layer in layers[1:]:
+        effective &= layer
+    return effective
+
+
 __all__ = [
     "DEFAULT_PLATFORM_WHITELIST",
     "authorize_granted_command",
+    "effective_tools",
 ]
