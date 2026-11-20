@@ -150,3 +150,38 @@
 
 - `CreateSessionBody.requirement_snapshot` 由 `dict` 改为 `str | dict`，service 注解保持 `Any`；同时接受字符串与对象，契约要求字符串。
 - 新增 HTTP 测试：字符串 `"plain requirement"` 创建成功，`requirement_snapshot_hash == hash_artifact("plain requirement")`；既有 dict 测试保持。
+
+## T05 · DecisionPackage、人工规格门、hash 进入基线
+
+- 时间：2026-11-20 11:28 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_decision_package.py tests/e2e/test_discussion_to_baseline.py -v`
+- 退出码：0
+- 计数：9 passed（DecisionPackage 8 / e2e 1）
+- 回归：`tests/unit/test_discussion_rules.py tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 40 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+- P4 全量七文件合跑：**60 passed**，退出码 0
+
+### 触及文件
+
+- `app/discussion/decision.py`（NEW）
+- `tests/unit/test_decision_package.py`（NEW）
+- `tests/e2e/test_discussion_to_baseline.py`（NEW）
+- `app/api/routes_discussion.py`（MODIFY：submit-decision / resolve）
+- `Test3/docs/plans/P4-report.md`（MODIFY）
+
+### 实现要点
+
+- `decision_package_digest` 只取 `CANONICAL_FIELDS = (session_id, requirement_snapshot_hash, proposal_ids, dissent_items, hard_gate_summary, body_md)`，调用 `hash_artifact`；`decision_id` / `sha256` 不参与，绝不对 sha256 再 hash。
+- `submit_decision`：仅 leader；status 必须 `converged_pending_human` 且尚无 package；proposal_ids 取全部 proposal（按 round, author 排序）；hard_gate_summary 复用当前轮 review 的同一硬门槛聚合；dissent = 请求列表 + 所有 review dissent（去重保序）；status 保持 `converged_pending_human`。
+- `resolve_decision`：只接受 approved/rejected；status 必须 `converged_pending_human` 且 package 存在；approved 且给 run_id 时先确认 run 存在（否则 404 run_not_found，session 不变 approved）；rejected 不写/不覆盖 hash。
+- approved 且无 `run_execution_state` 行：使用 `store_approved_baseline_hash(run, "DecisionPackage", digest)`，同时更新 `run.approved_baseline_hashes` 与 `run.artifacts["approved_baseline_hashes"]`。
+- approved 且已有行：`read_run_execution_state` 读取后合并 `{**existing, "DecisionPackage": digest}`，调用 `bench.persist_run_execution_state`，保持原 profile / plan_hash / allowed_tool_refs；不改 granted，不 schedule，不 execute。
+- 并发两次 approve：Workbench 级 in-process lock + SQLite 写锁串行；第二次看到 approved 幂等返回，hash 值唯一且相同。
+- e2e 两 Bot 完整 HTTP 路径；monkeypatch `bench.schedule_once` / `bench.execute_task` 为一旦调用就失败；`execution_safety_ready is False`；scripted provider 无真实模型调用。
+
+### 契约扩展登记
+
+- `resolve` 可选 `run_id`；approved 且提供 run_id 时写 `run_execution_state` / run 基线哈希。
+- 基线 key 必须正好是 `"DecisionPackage"`。
+- 新增 404 `run_not_found`；`submit-decision` 非 leader 403 `forbidden`；重复 package / 状态不符 409 `invalid_status`。
+- `comment` 字段被请求模型接受但不持久化（DecisionPackage 无对应字段）。

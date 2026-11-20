@@ -14,6 +14,12 @@ from app.discussion.cross_review import (
     SelfReviewForbidden,
     submit_review,
 )
+from app.discussion.decision import (
+    InvalidDecision,
+    RunNotFound,
+    resolve_decision,
+    submit_decision,
+)
 from app.discussion.models import DiscussionBudget, ReviewBallot
 from app.discussion.proposals import (
     BudgetExhausted,
@@ -64,6 +70,17 @@ class ConvergeBody(BaseModel):
     tokens_used: int = 0
     elapsed_seconds: int = 0
     dissent_items: list[str] = []
+
+
+class SubmitDecisionBody(BaseModel):
+    body_md: str
+    dissent_items: list[str] = []
+
+
+class ResolveBody(BaseModel):
+    decision: str
+    comment: str | None = None
+    run_id: str | None = None
 
 
 def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
@@ -368,3 +385,78 @@ async def converge_session(session_id: str, request: Request) -> Any:
         "session": record.model_dump(),
         "dissent_items": dissent_items,
     }
+
+
+@router.post("/discussion-sessions/{session_id}/submit-decision", status_code=201)
+async def submit_session_decision(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = SubmitDecisionBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    async with bench.db_session() as session:
+        try:
+            package = await submit_decision(
+                session_id,
+                body.body_md,
+                body.dissent_items,
+                actor_bot_id=actor,
+                session=session,
+            )
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            await session.rollback()
+            return _json_error(403, "forbidden", str(exc))
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+    return JSONResponse(status_code=201, content=package.model_dump())
+
+
+@router.post("/discussion-sessions/{session_id}/resolve")
+async def resolve_session_decision(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ResolveBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    async with bench.db_session() as session:
+        try:
+            record = await resolve_decision(
+                session_id,
+                body.decision,
+                body.comment,
+                run_id=body.run_id,
+                actor_bot_id=actor,
+                bench=bench,
+                session=session,
+            )
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+        except InvalidDecision as exc:
+            await session.rollback()
+            return _json_error(400, "validation_error", str(exc))
+        except RunNotFound as exc:
+            await session.rollback()
+            return _json_error(404, "run_not_found", str(exc))
+    return record.model_dump()
