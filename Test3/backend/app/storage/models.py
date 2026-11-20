@@ -303,6 +303,21 @@ class RunBotPinSnapshotRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class MemoryRecordRow(Base):
+    """Versioned memory payload; old bodies are protected by a SQLite trigger."""
+
+    __tablename__ = "memory_records"
+    __table_args__ = (Index("ix_memory_owner", "owner_bot_id", "visibility"),)
+
+    mem_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_bot_id: Mapped[str] = mapped_column(String, nullable=False)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    visibility: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class RunExecutionStateRow(Base):
     """SQLite authority for a run's execution profile and approved hashes.
 
