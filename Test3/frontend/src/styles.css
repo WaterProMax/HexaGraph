@@ -1055,3 +1055,13 @@ body {
 .bot-skill-list li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: #ffffffb8; border: 1px solid #cfe3f2; }
 .bot-form-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 16px; }
 .bot-archive-confirm { display: inline-flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 10px; background: #fff4f0; border: 1px solid #ffc9b8; }
+
+/* P6 项目工作台 */
+.ws-page .ws-left { padding: 12px; overflow: auto; }
+.task-tree { display: flex; flex-direction: column; gap: 6px; }
+.task-tree-item { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; text-align: left; padding: 10px; border-radius: 12px; border: 1px solid transparent; background: #ffffffa6; color: inherit; cursor: pointer; }
+.task-tree-item:hover { background: #ffffffd9; }
+.task-tree-item.active, .task-tree-item[aria-selected="true"] { border-color: #8fc4ef; background: #ffffff; box-shadow: 0 6px 18px -16px #235f8f; }
+.task-tree-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-progress { grid-column: 1 / -1; font-size: 11px; color: var(--glass-muted); }
+.task-graph-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }

@@ -36,3 +36,14 @@
 - client：`parseApiError` 现在同时识别 `{"error_category","detail"}` 与旧 `{"detail":{category,summary,run_id}}`；新增 bots/skills/成员/grants/schedule/讨论/验收/缺陷方法，讨论与验收请求带 `X-Bot-Id`。
 - 页面：`pages/bots/BotListPage.tsx` + `BotForm.tsx`。列表四态 testid `bots-loading` / `bots-empty`（含「还没有 Bot」）/ `bots-error` / `bots-forbidden`；创建与编辑表单内嵌模型槽位与 Skill 版本绑定；创建 `POST /api/bots` 的 body 不含 `bot_id`，编辑走 `PATCH /api/bots/{id}`，归档走 `POST /api/bots/{id}/archive` 且需二次确认。
 - 数据：只调用真实端点 `GET /api/bots`、`GET /api/skills`、`GET /api/config/models`、`GET /api/bots/{id}`。
+
+## T03 · 项目工作台：左任务树 + 四 Tab + splitter + dirtyRef
+
+- 命令：`cd Test3/frontend && npm test -- src/pages/project/ProjectWorkstationPage.test.tsx src/components/WorkstationSplitter.test.tsx`
+- 退出码：0
+- 计数：2 files / 14 tests passed（工作台 9 / 既有 splitter 5）；随后全量 `npm test` 为 24 files / 196 tests passed，`npx tsc --noEmit` 通过。
+- 页面：`pages/project/ProjectWorkstationPage.tsx`。展示组件 `ProjectWorkstation` 接收 `projectId / loadState / tasks / dirtyRef / initialTab`；容器按 `GET /api/runs` → 过滤 `project_id` → `GET /api/runs/{run_id}/tasks` 取真实任务，按契约映射：`done=100`，`running|verifying=40`，其余 0，状态原样使用后端枚举（无 `succeeded`）。
+- 四 Tab：`tab-details / tab-monitor / tab-activity / tab-graph` 与 `panel-*`；点击左侧任务切回详情并显示该 code。
+- 复用：`WorkstationSplitter` 与 `useWorkstationLayout`，断言 `data-testid="ws-splitter"` 与 `role=separator` 仍在；备注编辑把共享 `dirtyRef.current` 置 true（与 `DesignSpecInput` 同一模式）。
+- 四态：`ws-loading / ws-empty / ws-error / ws-forbidden`；空任务列表显示 `ws-empty` 且不崩溃。
+- 项目入口：`pages/Projects.tsx` 的项目卡片新增「打开工作台」链接到 `/projects/:projectId`，原「创建并开始」跳到 `/workstation/${run.id}` 的行为保持不变。

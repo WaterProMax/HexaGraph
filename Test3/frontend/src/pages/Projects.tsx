@@ -1,6 +1,6 @@
 import { Button, Form, Input } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 
 export default function Projects() {
@@ -58,6 +58,9 @@ export default function Projects() {
                   {item.profile ? ` · ${item.profile}` : ""}
                 </div>
               </div>
+              <Link className="chip" to={`/projects/${item.id}`}>
+                打开工作台
+              </Link>
             </div>
           ))}
         </div>
