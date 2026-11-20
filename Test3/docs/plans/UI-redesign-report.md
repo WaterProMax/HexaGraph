@@ -18,7 +18,7 @@ R05 的完整 SHA 由本文件内容决定，提交后见 `git log -1 --format=%
 
 | 参考要点 | 本次落地 |
 |---|---|
-| 产品分区：侧栏 / 主区 / 单 Bot 面板 | 侧栏 = 浏览导航 + 助手头像列表 + 最近运行；`/bots/:id` = 单 Bot 工作区（配置 / 个人记忆 / 所属项目三个 Tab） |
+| 产品分区：侧栏 / 主区 / 单 Bot 面板 | 侧栏 = 浏览导航 + 助手头像列表 + 最近运行；`/bots/:id` = 单 Bot 工作区（配置 / 个人记忆两个 Tab） |
 | 展开态联系人行 | 头像 + display_name + role_template + active/archived 胶囊；当前路径命中时 `aria-current="page"` |
 | 折叠 / 图标密度 | 保留 76px 折叠轨；下方竖排圆形头像，`title`/`aria-label` 为「名称 · 角色」 |
 | 新建入口 | 侧栏「+ 新建 Bot」与 `/bots` 页顶部「+ 新建 Bot」，都链到 `/bots/new` |
@@ -66,6 +66,19 @@ R05 的完整 SHA 由本文件内容决定，提交后见 `git log -1 --format=%
 ## 截图索引
 
 `Test3/docs/plans/screenshots/ui-redesign/index.md`，共 11 张：侧栏展开/折叠、Bot 列表/新建/工作区、项目列表/团队条/成员弹窗、互评与缺陷定位、Settings。P6 的 `p6-t0*.png` 未被覆盖。
+
+## 人审微调
+
+- 角色预设并入字段：`BotForm` 顶部那排独立预设按钮已去掉，改为「角色模板」下拉内置 Leader / 产品经理 / 后端工程师 / 测试运维 / 通用工程师五个选项；选中后仍按原规则建议模型槽位，编辑模式下下拉禁用且不为 PATCH 提交 `role_template`。后端 `role_template` 是自由字符串，UI 收敛为五个预设；若已有 Bot 的角色不在这五个之内，编辑时把原值作为额外选项显示，不会被悄悄改掉。
+- 同批更新：`ui-r02-bot-new.png`、`ui-r02-bot-workspace.png` 重拍（后者编辑表单同样换成下拉），`index.md` 描述同步。
+- 验证：`npx tsc --noEmit`、`npm test`、`npm run build`、`npx playwright test e2e/openmausbot-ui.pw.ts`（1 passed）均通过；最终计数见本节末条。
+- 创建流程改为弹出式三步向导：`/bots/new` 直接在 Bot 列表页上方弹出「创建新 Bot」对话框（遮罩 + 模糊背景），页脚为 取消 / 上一步 / 下一步，第 1 步必须有名字才能继续。
+  1. **身份**：104px 封面预览（由名字、职责与确定性色板实时生成）+ 名字输入 + Emoji / 色板 + 职责五选一（Leader / 产品经理 / 后端工程师 / 测试运维 / 通用工程师，各带一句分工说明），选中职责仍联动建议模型槽位。
+  2. **模型**：Provider / 模型槽位 / 模型 / secret_ref / 允许工具 / 令牌预算。
+  3. **Skill**：身份摘要（封面、名字、职责·槽位·模型、已绑定条数）+ Skill 版本绑定，底部「创建 Bot」。
+- 头像草稿在创建成功后才按新 `bot_id` 写入 `hexagraph.botAvatar.v1`，不提前落库、不发后端字段；编辑模式仍是单页表单（禁用角色模板下拉，BotPatch 不带 `role_template`）。对话框根节点仍是 `data-testid="bot-form"`，新增 `bot-create-overlay` / `bot-identity` / `bot-duty-grid` / `duty-*` / `bot-step-summary`；Esc 与「取消」都回到 `/bots`。未复制参考实现的拟物形状选择器（属于对方签名吉祥物部件），只用我们自己的圆形头像 + Emoji + 色板。
+- 同批更新：`ui-r02-bot-new.png` 重拍为第 1 步，新增 `ui-r02-bot-new-model.png`（第 2 步）与 `ui-r02-bot-new-skill.png`（第 3 步）；`npm test` 现为 34 files / 255 passed。
+- `e2e/p6-walkthrough.pw.ts` 同步适配向导（补两步「下一步」，并把「新建 Bot」定位改为 `bots-new-link`——R01 加入侧栏同名链接后原 `getByRole` 会严格模式冲突，此前该走查已无法运行）。P6 的 8 张已跟踪截图按原样保留，未用新 UI 覆写。
 
 ## 声明
 

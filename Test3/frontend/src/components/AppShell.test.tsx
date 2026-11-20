@@ -33,23 +33,19 @@ afterEach(() => {
 });
 
 describe("AppShell navigation", () => {
-  it("exposes Bot, Project and Settings by href", () => {
+  it("has no separate browse group: Bot and project sections replace it", () => {
     renderShell();
-    const nav = screen.getByRole("navigation", { name: "浏览" });
-    expect(within(nav).getByRole("link", { name: "Bot" }).getAttribute("href")).toBe("/bots");
-    expect(within(nav).getByRole("link", { name: "项目" }).getAttribute("href")).toBe("/projects");
-    expect(within(nav).getByRole("link", { name: "模型槽位" }).getAttribute("href")).toBe("/settings");
-    for (const key of REQUIRED_NAV_KEYS) {
-      expect(DEFAULT_NAV_ITEMS.some((item) => item.key === key)).toBe(true);
-    }
+    expect(screen.queryByRole("navigation", { name: "浏览" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "工作台" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "模型槽位" })).toBeNull();
+    expect(screen.getByTestId("sidebar-bot-list").textContent).toContain("Bot");
+    expect(screen.queryByText("助手")).toBeNull();
+    expect(REQUIRED_NAV_KEYS).toHaveLength(0);
   });
 
-  it("accepts custom navigation beyond the three required entries", () => {
+  it("still renders custom navigation when provided", () => {
     renderShell([...DEFAULT_NAV_ITEMS, { key: "inbox", label: "收件箱", to: "/inbox" }], "/inbox");
     const nav = screen.getByRole("navigation", { name: "浏览" });
-    expect(within(nav).getByRole("link", { name: "Bot" })).toBeTruthy();
-    expect(within(nav).getByRole("link", { name: "项目" })).toBeTruthy();
-    expect(within(nav).getByRole("link", { name: "模型槽位" })).toBeTruthy();
     expect(within(nav).getByRole("link", { name: "收件箱" }).getAttribute("href")).toBe("/inbox");
   });
 
@@ -65,11 +61,12 @@ describe("AppShell navigation", () => {
 describe("route table", () => {
   it("has no top-level /models, /skills, Market or Cron routes", () => {
     const paths = [...APP_ROUTE_PATHS] as string[];
+    expect(paths).not.toContain("/settings");
     expect(paths).not.toContain("/models");
     expect(paths).not.toContain("/skills");
     expect(paths.some((p) => p.startsWith("/models"))).toBe(false);
     expect(paths.some((p) => p.startsWith("/skills"))).toBe(false);
-    expect(paths).toEqual(expect.arrayContaining(["/bots", "/projects", "/settings"]));
+    expect(paths).toEqual(expect.arrayContaining(["/bots", "/projects"]));
   });
 
   it("keeps the retired landing routes", () => {
@@ -78,6 +75,23 @@ describe("route table", () => {
     expect(paths).toContain("/deepseek/:id?");
   });
 });
+describe("project section in the shell", () => {
+  it("lists projects under their own heading with a create link", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const body = String(input) === "/api/projects" ? [{ id: "p1", name: "Alpha" }] : [];
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }),
+    );
+    renderShell();
+    const section = await screen.findByTestId("sidebar-project-list");
+    expect(within(section).getByTestId("sidebar-new-project").getAttribute("href")).toBe("/projects");
+    expect((await within(section).findByRole("link", { name: /Alpha/ })).getAttribute("href")).toBe("/projects/p1");
+    expect(screen.queryByText("最近运行")).toBeNull();
+  });
+});
+
 describe("assistant list in the shell", () => {
   const botItems = [
     { bot_id: "bot-1", display_name: "Leader A", role_template: "leader", status: "active" },
@@ -115,11 +129,6 @@ describe("assistant list in the shell", () => {
     const rail = await screen.findByTestId("sidebar-bot-rail");
     expect(within(rail).getByRole("link", { name: "Leader A · leader" }).getAttribute("href")).toBe("/bots/bot-1");
     expect(within(rail).getByRole("link", { name: "周明 · pm" })).toBeTruthy();
-    // Browse links survive the collapse.
-    const nav = screen.getByRole("navigation", { name: "浏览" });
-    expect(within(nav).getByRole("link", { name: "Bot" })).toBeTruthy();
-    expect(within(nav).getByRole("link", { name: "项目" })).toBeTruthy();
-    expect(within(nav).getByRole("link", { name: "模型槽位" })).toBeTruthy();
   });
 
   it("refreshes an avatar when the picker writes a preset", async () => {

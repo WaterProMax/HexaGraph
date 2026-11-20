@@ -1,0 +1,444 @@
+{
+  "recorded_at": "2026-11-19T14:10:23.386739+08:00",
+  "repo_root": "/Users/cenghuanxiao/Desktop/HexaGraph",
+  "current_branch": "chore/test3-retire-static-classroom-and-deepseek",
+  "head_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+  "origin_teamwork_001_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+  "fetch_status": "ok",
+  "dirty": [],
+  "worktrees": [
+    "/Users/cenghuanxiao/Desktop/HexaGraph  552923d [chore/test3-retire-static-classroom-and-deepseek]"
+  ],
+  "historical_references": {
+    "teamwork_001_known_old": "1950b621b1d639b5da717a666ca7a2ecd3247aaa",
+    "main_known_old": "f6a7b22ff7acaf18f01cae833a07b27ba2c73525"
+  },
+  "head_equals_historical_teamwork": false,
+  "t01_command_log": "Test3/docs/plans/p0-t01-cmd.log",
+  "commands": {
+    "backend_unit_example": "cd Test3/backend && uv run pytest tests/unit/<name>.py -v",
+    "make_test": "cd $(BACKEND) && uv run pytest -q -m \"not live\"",
+    "make_e2e": "cd $(BACKEND) && uv run pytest -q tests/e2e",
+    "frontend_test": "npm test -> vitest run",
+    "frontend_e2e": "npm run test:e2e -> playwright test",
+    "frontend_build": "npm run build -> tsc -b && vite build",
+    "make_e2e_equals_npm_test_e2e": false,
+    "test_execution": "未运行（P0 只读）"
+  },
+  "alembic_head": "0001",
+  "alembic_head_basis": "仅发现 Test3/backend/alembic/versions/0001_init.py；其 revision=\"0001\"、down_revision=None（第11-12行），单节点 down_revision 图的唯一 head 为 0001。Alembic history 未运行（P0 只读，且禁止可能同步依赖或写库的 uv run）。",
+  "next_alembic_hint": "0002",
+  "hooks": [
+    {
+      "symbol": "Workbench.schedule_once",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 1561,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 1543,
+      "status": "found",
+      "notes": "Workbench 在 runtime.py:153；schedule_once 在 1544-1548 先退休拒绝再进入锁，实际 API 挂接 routes.py:388-394。"
+    },
+    {
+      "symbol": "Workbench.resolve_gate",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 1036,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 1052,
+      "status": "found",
+      "notes": "1059 expected_revision；1063 退休拒绝；1081-1087 revision 校验、递增与事件。"
+    },
+    {
+      "symbol": "RunState.revision",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 100,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 100,
+      "status": "found",
+      "notes": "dataclass RunState 的 revision:int=1；仅记录现状，不作为 grant stale 输入。"
+    },
+    {
+      "symbol": "class RunState",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 100,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 95,
+      "status": "found",
+      "notes": "P0-T03 额外核符；@dataclass 在 94。"
+    },
+    {
+      "symbol": "execute_task",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 1616,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 1600,
+      "status": "found",
+      "notes": "1608 任务 revision 递增；1617-1624 使用 data_dir 下 repo/wt 并调用 create_worktree。"
+    },
+    {
+      "symbol": "provenance 读取",
+      "historical_file": "Test3/backend/app/services/runtime.py",
+      "historical_line": 518,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 554,
+      "status": "found",
+      "notes": "历史为 518+；当前 _is_retired_run 读 artifacts.provenance.mode；560 _provenance，629/739/937/1227 另有读写上下文。"
+    },
+    {
+      "symbol": "apply_transition",
+      "historical_file": "Test3/backend/app/orchestrator/transition.py",
+      "historical_line": 13,
+      "found_file": "Test3/backend/app/orchestrator/transition.py",
+      "found_line": 13,
+      "status": "found",
+      "notes": "13-24 为唯一 task.state 写入口并递增任务 revision；transition 在 32-44 调用。"
+    },
+    {
+      "symbol": "POST .../schedule",
+      "historical_file": "Test3/backend/app/api/routes.py",
+      "historical_line": 281,
+      "found_file": "Test3/backend/app/api/routes.py",
+      "found_line": 388,
+      "status": "found",
+      "notes": "实际 POST /api/runs/{run_id}/schedule：main.py:50 加 /api，routes.py:389-394 调 schedule_once；当前签名无 task_codes 请求体。"
+    },
+    {
+      "symbol": "POST .../gates/{id}/resolve",
+      "historical_file": "Test3/backend/app/api/routes.py",
+      "historical_line": 111,
+      "found_file": "Test3/backend/app/api/routes.py",
+      "found_line": 156,
+      "status": "found",
+      "notes": "实际 POST /api/gates/{gate_id}/resolve；157-169 查 run 并调 Workbench.resolve_gate，含 DeepSeekRetired/RevisionConflict 映射。"
+    },
+    {
+      "symbol": "GateResolve",
+      "historical_file": "Test3/backend/app/api/routes.py",
+      "historical_line": 31,
+      "found_file": "Test3/backend/app/api/routes.py",
+      "found_line": 38,
+      "status": "found",
+      "notes": "字段 decision、payload、expected_revision 在 39-41。"
+    },
+    {
+      "symbol": "classify_llm_error",
+      "historical_file": "Test3/backend/app/errors.py",
+      "historical_line": 107,
+      "found_file": "Test3/backend/app/errors.py",
+      "found_line": 127,
+      "status": "found",
+      "notes": "127-152 遍历异常并映射 environment/auth/rate_limit/timeout 等分类。"
+    },
+    {
+      "symbol": "Gateway.complete",
+      "historical_file": "Test3/backend/app/llm/gateway.py",
+      "historical_line": null,
+      "found_file": "Test3/backend/app/llm/gateway.py",
+      "found_line": 61,
+      "status": "found",
+      "notes": "历史位置为“类内”；complete 61-65 经 semaphore/bucket 后进入 _complete_with_retry。"
+    },
+    {
+      "symbol": "class Gateway",
+      "historical_file": "Test3/backend/app/llm/gateway.py",
+      "historical_line": null,
+      "found_file": "Test3/backend/app/llm/gateway.py",
+      "found_line": 44,
+      "status": "found",
+      "notes": "P0-T03 额外核符；provider.complete 当前在 76 使用模型槽配置。"
+    },
+    {
+      "symbol": "call_agent",
+      "historical_file": "Test3/backend/app/agents/runtime.py",
+      "historical_line": 57,
+      "found_file": "Test3/backend/app/agents/runtime.py",
+      "found_line": 63,
+      "status": "found",
+      "notes": "63-84 当前参数 name/inputs/registry/gateway/schema_name，并调 gateway.complete；尚无 bot_id/pin/memory 参数。"
+    },
+    {
+      "symbol": "静态课堂路由",
+      "historical_file": "Test3/frontend/src/App.tsx",
+      "historical_line": 146,
+      "found_file": "Test3/frontend/src/App.tsx",
+      "found_line": 141,
+      "status": "found",
+      "notes": "当前 /workstation/static-classroom 挂载 RetiredFeature，不是 StaticClassroomDemo；仅登记，不修改。"
+    },
+    {
+      "symbol": "deepseek 路由",
+      "historical_file": "Test3/frontend/src/App.tsx",
+      "historical_line": 147,
+      "found_file": "Test3/frontend/src/App.tsx",
+      "found_line": 142,
+      "status": "found",
+      "notes": "当前 /deepseek/:id? 挂载 RetiredFeature；历史只读标记在 App.tsx:104-110。"
+    },
+    {
+      "symbol": "WorkstationSplitter",
+      "historical_file": "Test3/frontend/src/components/WorkstationSplitter.tsx",
+      "historical_line": null,
+      "found_file": "Test3/frontend/src/components/WorkstationSplitter.tsx",
+      "found_line": 8,
+      "status": "found",
+      "notes": "可拖动/键盘 separator；Workstation.tsx:44 import、942 使用。"
+    },
+    {
+      "symbol": "dirtyRef / 分栏",
+      "historical_file": "前端既有",
+      "historical_line": null,
+      "found_file": "Test3/frontend/src/components/DesignSpecInput.tsx",
+      "found_line": 90,
+      "status": "found",
+      "notes": "dirtyRef 在 90 定义，115 重置，118 防覆盖，141 标记；分栏见 WorkstationSplitter.tsx:8。"
+    },
+    {
+      "symbol": "make test / make e2e",
+      "historical_file": "Test3/Makefile",
+      "historical_line": null,
+      "found_file": "Test3/Makefile",
+      "found_line": 17,
+      "status": "found",
+      "notes": "test 配方 17-18；e2e 配方 29-30，二者入口见 commands。"
+    },
+    {
+      "symbol": "npm test",
+      "historical_file": "Test3/frontend/package.json",
+      "historical_line": null,
+      "found_file": "Test3/frontend/package.json",
+      "found_line": 10,
+      "status": "found",
+      "notes": "实际为 vitest run；test:e2e 在 11 为 playwright test。"
+    },
+    {
+      "symbol": "git worktree",
+      "historical_file": "Test3/backend/app/workspace/gitops.py",
+      "historical_line": null,
+      "found_file": "Test3/backend/app/workspace/gitops.py",
+      "found_line": 78,
+      "status": "found",
+      "notes": "already_present；create_worktree 78-87、remove_worktree 56-60；runtime.py:1623 等使用。未在 P0 调用。"
+    },
+    {
+      "symbol": "StaticClassroomDemo",
+      "historical_file": "Test3/frontend/src/App.tsx",
+      "historical_line": 146,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "frontend/src 与 backend app 无该代码符号；仅 Test3/README.md:72 文档链接和 docs/StaticClassroomDemo.md:1-3 历史说明。"
+    },
+    {
+      "symbol": "deepseek（退休专用链符号）",
+      "historical_file": "Test3/frontend/src/App.tsx",
+      "historical_line": 147,
+      "found_file": "Test3/backend/app/services/runtime.py",
+      "found_line": 554,
+      "status": "found",
+      "notes": "当前为退休只读判断/守卫，不是可用专用 provider；详见 decommission-target-state.json。"
+    },
+    {
+      "symbol": "app/api/runtime.py",
+      "historical_file": "Test3/backend/app/api/runtime.py",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "明确不存在；实际运行时为 app/services/runtime.py。"
+    },
+    {
+      "symbol": "app/bots",
+      "historical_file": "Test3/backend/app/bots",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "目录不存在，非 already_present。"
+    },
+    {
+      "symbol": "app/memory",
+      "historical_file": "Test3/backend/app/memory",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "目录不存在，非 already_present。"
+    },
+    {
+      "symbol": "app/execution",
+      "historical_file": "Test3/backend/app/execution",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "目录不存在，非 already_present。"
+    },
+    {
+      "symbol": "app/discussion",
+      "historical_file": "Test3/backend/app/discussion",
+      "historical_line": null,
+      "found_file": "Test3/backend/app/discussion/__init__.py",
+      "found_line": 1,
+      "status": "found",
+      "notes": "already_present；另有 engine.py、rules.py。既有包不等于 C.4/C.5 新域契约已实现。"
+    },
+    {
+      "symbol": "app/skills",
+      "historical_file": "Test3/backend/app/skills",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "目录不存在，非 already_present。"
+    },
+    {
+      "symbol": "frontend/src/pages/bots",
+      "historical_file": "Test3/frontend/src/pages/bots",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "目录不存在，非 already_present。"
+    },
+    {
+      "symbol": "ExecutionGrant / approved_baseline_hashes / execution_profile / grant_stale_reason / task_codes",
+      "historical_file": "Test3/backend/app",
+      "historical_line": null,
+      "found_file": null,
+      "found_line": null,
+      "status": "missing",
+      "notes": "backend/app Python 源码搜索前四项无匹配；api/routes.py 搜索 task_codes 无匹配。只代表现状，不实施 P1。"
+    }
+  ],
+  "safe_isolated_baseline": true,
+  "coordination_required": true,
+  "worktree_plan": "user_provided_path",
+  "p0_cards_complete": [
+    "P0-T01",
+    "P0-T02",
+    "P0-T03",
+    "P0-T04",
+    "P0-T05"
+  ],
+  "dirty_basis": "dirty 是 2026-11-19T14:10:23.386739+08:00 在写任何 P0 文件前执行的明确 `git status --porcelain` 原始逐行结果；不是最终状态。最终状态见 final_review。",
+  "worktree_isolation": {
+    "worktree_created": true,
+    "current_workspace_direct_implementation_allowed": false,
+    "reasons": [
+      "T01–T04 证据已齐全且 T01 初始 dirty=0，但这只证明当时主工作区干净，不等于当前分支或当前工作区已获授权可直接实施 P1。",
+      "用户未提供 WORKTREE_PATH，P0 明确禁止 git worktree add；目前没有已获授权的具体隔离路径，因此保守设 safe_isolated_baseline=false，并等待人工。",
+      "decommission 索引与 P1 的 services/runtime.py、api/routes.py 存在真实行级重叠；当前分支又名为 chore/test3-retire-static-classroom-and-deepseek，必须先与另一下线任务协调，不能搭车改退休守卫或覆盖其修改。",
+      "现有 workspace/gitops.py 可作为后续隔离机制参考，但 create_worktree 使用 -B 且失败路径含强制清理；P0 未调用它，后续执行前必须审查参数、目标路径和清理边界。"
+    ],
+    "required_human_inputs": [
+      "明确提供绝对 WORKTREE_PATH，并确认该路径不存在或未授权内容不会被覆盖。",
+      "确认另一下线任务已结束或划定 runtime.py/routes.py 的写范围与先后顺序。",
+      "人审 safe_isolated_baseline=false 是否维持，或在上述条件满足后书面豁免/改判。"
+    ],
+    "future_plan": "等待人工提供 WORKTREE_PATH 与协调结论后，在指定的干净隔离树上建立 feature 分支；优先复用经审查的 workspace/gitops.py worktree 能力。隔离树建立前禁止在当前主工作区实施 P1；隔离树建立后也只修改任务授权文件，P1 仅改 granted_v1 分支，不搭车下线。",
+    "forbidden_write_paths": [
+      "隔离方案获人审前的当前主工作区所有 P1 业务代码、构建文件与锁文件",
+      "任何届时 git status --porcelain 显示的用户脏文件（禁止 stash/reset/clean 覆盖）",
+      "Test3/data/ 及任何运行数据",
+      "/Users/cenghuanxiao/Desktop/hexagraph-plan-v3/（任务书目录）",
+      "未由用户明确提供的 WORKTREE_PATH"
+    ],
+    "human_review_items": [
+      "布尔值：safe_isolated_baseline=false 与 coordination_required=true 是否认可。",
+      "隔离方案：worktree_plan=wait_for_human，提供 WORKTREE_PATH 并协调下线重叠后方可实施。"
+    ],
+    "approved_target": {
+      "path": "/Users/cenghuanxiao/Desktop/HexaGraph-Test3-agent-v1",
+      "branch": "feat/test3-agent-team-v1",
+      "base_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+      "path_existed_before": false,
+      "branch_existed_before": false,
+      "forced": false,
+      "created_at": "2026-11-19T14:48:47+08:00"
+    },
+    "resolution": "2026-11-19 人工明确提供路径与分支后已创建独立 worktree；P0 当时的 false 结论由 isolation_review 取代，原 reasons 保留为历史记录。"
+  },
+  "final_review": {
+    "recorded_at": "2026-11-19T14:38:18.627941+08:00",
+    "git_status_porcelain_raw": [
+      "?? Test3/docs/plans/"
+    ],
+    "dirty_count": 1,
+    "worktrees": [
+      "/Users/cenghuanxiao/Desktop/HexaGraph  552923d [chore/test3-retire-static-classroom-and-deepseek]"
+    ],
+    "current_branch": "chore/test3-retire-static-classroom-and-deepseek",
+    "head_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+    "json_validation": "baseline-lock.json 与 decommission-target-state.json 均由 Python json.load 成功解析；hooks_count=31。",
+    "worktree_added": false,
+    "note": "最终 dirty 原始行仅指向本阶段新建证据目录；T01 初始 dirty=[]。未据此认定当前主工作区可直接实施 P1。"
+  },
+  "isolation_review": {
+    "recorded_at": "2026-11-19T14:50:28+08:00",
+    "purpose": "只完成工作区隔离，不实施 P1",
+    "remote_verification": {
+      "command": "git ls-remote origin refs/heads/teamwork-001 refs/heads/main",
+      "teamwork_001": "552923d9992a38eb806ff760833bb71ac4b759cf",
+      "main": "1950b621b1d639b5da717a666ca7a2ecd3247aaa",
+      "matches_local_origin_teamwork_001": true
+    },
+    "original_workspace": {
+      "path": "/Users/cenghuanxiao/Desktop/HexaGraph",
+      "branch": "chore/test3-retire-static-classroom-and-deepseek",
+      "head_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+      "head_tree": "3734070f041dbf8ec868a3f8d7f8e5a1db0dfe73",
+      "tracked_change_count": 0,
+      "untracked_evidence": [
+        "Test3/docs/plans/P0-report.md",
+        "Test3/docs/plans/baseline-lock.json",
+        "Test3/docs/plans/decommission-target-state.json",
+        "Test3/docs/plans/p0-t01-cmd.log"
+      ],
+      "worktrees_before": [
+        "/Users/cenghuanxiao/Desktop/HexaGraph"
+      ]
+    },
+    "new_worktree": {
+      "path": "/Users/cenghuanxiao/Desktop/HexaGraph-Test3-agent-v1",
+      "branch": "feat/test3-agent-team-v1",
+      "base_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+      "head_sha": "552923d9992a38eb806ff760833bb71ac4b759cf",
+      "head_tree": "3734070f041dbf8ec868a3f8d7f8e5a1db0dfe73",
+      "status_before_evidence_copy": "empty",
+      "status_after_evidence_copy": [
+        "?? Test3/docs/plans/P0-report.md",
+        "?? Test3/docs/plans/baseline-lock.json",
+        "?? Test3/docs/plans/decommission-target-state.json",
+        "?? Test3/docs/plans/p0-t01-cmd.log"
+      ],
+      "evidence_untracked": true,
+      "committed": false
+    },
+    "evidence_copy": {
+      "moved": false,
+      "committed": false,
+      "sha256": {
+        "P0-report.md": "7c747639cdbd79048746f804019c95fa2a31e475707870608656544d2e05c450",
+        "baseline-lock.json": "697d3fc8928c442a9344dbf7ec507b07b50c90a972283b410e883aa5f29c0225",
+        "decommission-target-state.json": "83db912b938dea2464a46df88ecde4d90fe4d2e3dcbbc5cd9aa1c8670a17f828",
+        "p0-t01-cmd.log": "fd4490f321b10be9503665f01301553883792daa31c840f6d84a3431bc471c98"
+      },
+      "note": "复制时四份文件 SHA-256 与原文件一致；随后仅在新 worktree 的副本中更新本报告与 safe_isolated_baseline 门禁字段，原工作区副本保持原样。"
+    },
+    "rules": [
+      "下线任务继续留在原工作区 chore/test3-retire-static-classroom-and-deepseek，四份 P0 证据不移动、不提交。",
+      "新功能仅在 /Users/cenghuanxiao/Desktop/HexaGraph-Test3-agent-v1 的 feat/test3-agent-team-v1 开发。",
+      "共享文件（至少 runtime.py、routes.py）按函数/符号逐个核对差异，禁止整文件覆盖或恢复已下线功能。",
+      "不运行/停止服务，不碰密钥与运行数据，不 push、不建 PR。"
+    ],
+    "safe_isolated_baseline_conditions": {
+      "baseline_identical": true,
+      "no_business_changes": true,
+      "original_task_unaffected": true
+    },
+    "conclusion": {
+      "safe_isolated_baseline": true,
+      "coordination_required": true,
+      "note": "可在隔离树开始 P1；coordination_required 仍为 true，共享文件必须逐函数核对，禁止整文件覆盖。"
+    }
+  }
+}

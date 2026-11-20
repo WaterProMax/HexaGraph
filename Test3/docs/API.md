@@ -102,6 +102,7 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 | 方法 | 路径 | 成功 | 主要错误 |
 |---|---|---|---|
 | POST | `/api/skills` | 201 `SkillDefinition` | 400 `validation_error`；409 `skill_version_exists` |
+| POST | `/api/skills/import` | 201 新建 / 200 已存在 `SkillDefinition`（请求体 `{"url"}`） | 400 `validation_error` / `skill_too_large`；404 `skill_source_not_found`；502 `github_unavailable` |
 | GET | `/api/skills` | 200 `{"items": [...]}` | — |
 | GET | `/api/skills/{skill_id}/versions` | 200 `{"items": [...]}` | 404 `skill_not_found` |
 | POST | `/api/bots` | 201 `BotInstance`（服务器生成 `bot_id`） | 400 `validation_error`；409 `bot_name_conflict` |
@@ -116,6 +117,8 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 - 未注册 `POST /api/projects/{project_id}/bots`；该路径自然 404，且不写 `bots` 表。
 - 同一项目至多一个 `is_leader=true`；同一 Bot 可加入多个项目。移出项目只解除成员关系，不删除 Bot 或其 pin 历史。
 - Bot 的 `model` / `provider_ref` / `skill_bindings` 变更会追加 pin revision；同一 `(run_id, bot_id)` 的冻结快照在运行开始时写入 `run_bot_pin_snapshots`，运行中 PATCH Bot 不改变已冻结值。
+- `POST /api/skills/import`：只接受 `https://github.com/` 的公开仓库地址（仓库主页、`/tree/<ref>/<dir>`、`/blob/<ref>/<dir>/SKILL.md`），只访问 `api.github.com` 与 `raw.githubusercontent.com`，不跟随重定向，`SKILL.md` 上限 64KB。`skill_id` 为 `<owner>-<name>`，`version` 为提交 sha 前 7 位（同一提交重复导入幂等返回 200），`allowed_tool_refs` 恒为空。Bot 通过 `skill_bindings` 绑定。
+- Bot 的 `api_key`（`POST` / `PATCH` 请求体可选，只写）：服务端校验 `provider_ref` 在目录内（`dashscope`、`deepseek`、`moonshot`、`zhipu`、`volcengine`、`minimax`、`siliconflow`、`hunyuan`、`qianfan`、`stepfun`，未知值 400 `validation_error`），加密存入 `<data_dir>/secrets/`，不写 `bots.payload`、pin、事件，也不出现在任何响应；Bot 的响应只附带只读布尔 `has_api_key`（是否已存 Key，不含 Key 本身）。`PATCH` 传空字符串删除；归档时删除。`call_agent` 在冻结 pin 后按 `provider_ref` 的 base URL 与该 Key 调用；未设置 Key 的 Bot 仍走环境变量里的百炼密钥。该 Key 仅用于 `call_agent` 路径，`run_tool_agent` 仍用工作台默认。
 - `PATCH /api/bots/{bot_id}` 的 200 响应增加只读 `pin_revision` 是 P2 的契约扩展；请求体不接受 `bot_id` / `status` / `role_template`。
 - Skill 的 `description_md` 只是说明文本，不扩展工具权限；`allowed_tool_refs` 为空表示该层无授权，不是通配符。实际权限取平台 ∩ Bot.tool_policy ∩ Grant.allowed_tool_refs（再 ∩ 冻结 skill 版本）。
 

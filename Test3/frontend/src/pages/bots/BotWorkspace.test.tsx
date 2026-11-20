@@ -34,8 +34,7 @@ function renderWorkspace() {
         <BotWorkspace
           bot={bot}
           providerOptions={providers}
-          skillOptions={[]}
-          loadState="ready"
+                    loadState="ready"
           onSave={vi.fn()}
           onArchive={vi.fn()}
         />
@@ -82,23 +81,6 @@ describe("BotWorkspace", () => {
     renderWorkspace();
     fireEvent.click(screen.getByTestId("bot-tab-memory"));
     expect(await screen.findByTestId("bot-memory-forbidden")).toBeTruthy();
-  });
-
-  it("lists the projects that contain this bot", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url === "/api/projects") return json([{ id: "p1", name: "Alpha" }]);
-        if (url === "/api/projects/p1/memberships")
-          return json({ items: [{ project_id: "p1", bot_id: "bot-1", role_in_project: "dev", is_leader: true }] });
-        return json({ items: [] });
-      }),
-    );
-    renderWorkspace();
-    fireEvent.click(screen.getByTestId("bot-tab-projects"));
-    expect(await screen.findByText("Alpha")).toBeTruthy();
-    expect(screen.getByText("Leader")).toBeTruthy();
   });
 
   it("applies a picked emoji to the header avatar and storage", async () => {

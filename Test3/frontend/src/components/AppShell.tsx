@@ -1,16 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AppstoreOutlined,
-  DesktopOutlined,
   FolderOpenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   PlusOutlined,
   RobotOutlined,
-  SettingOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
-import { Link, NavLink } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { BotInstance } from "../api/types";
 import { BOT_AVATAR_EVENT } from "../lib/botAvatar";
@@ -19,18 +17,12 @@ import { BotAvatar } from "./BotAvatar";
 
 export type LoadState = "loading" | "empty" | "error" | "forbidden" | "ready";
 
-/** The P6 navigation contract: these keys must always be reachable. */
-export const REQUIRED_NAV_KEYS = ["bots", "projects", "settings"] as const;
+/** Bot and project lists live in their own sidebar sections; extra links are optional. */
+export const REQUIRED_NAV_KEYS = [] as const;
 
 export type NavItem = { key: string; label: string; to: string };
 
-/** Visible labels stay Chinese where the product already reads that way; keys/hrefs are the contract. */
-export const DEFAULT_NAV_ITEMS: NavItem[] = [
-  { key: "workstation", label: "工作台", to: "/workstation" },
-  { key: "bots", label: "Bot", to: "/bots" },
-  { key: "projects", label: "项目", to: "/projects" },
-  { key: "settings", label: "模型槽位", to: "/settings" },
-];
+export const DEFAULT_NAV_ITEMS: NavItem[] = [];
 
 export type AppShellProps = {
   navItems: Array<{ key: string; label: string; to: string }>;
@@ -61,10 +53,8 @@ function BrandMark() {
 }
 
 function iconFor(key: string) {
-  if (key === "workstation") return <DesktopOutlined />;
   if (key === "bots") return <RobotOutlined />;
   if (key === "projects") return <FolderOpenOutlined />;
-  if (key === "settings") return <SettingOutlined />;
   return <AppstoreOutlined />;
 }
 
@@ -74,7 +64,7 @@ function isActive(currentPath: string, to: string): boolean {
 }
 
 /**
- * Shared application shell: sidebar + recent runs + main column.
+ * Shared application shell: sidebar (browse, assistants, projects) + main column.
  *
  * Extracted from the original inline `Sidebar` so P6 pages can be mounted
  * without a second, unrelated shell.  Collapse-on-narrow-viewport behaviour is
@@ -85,8 +75,8 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
     () => typeof window !== "undefined" && window.innerWidth < COMPACT_VIEWPORT,
   );
   const [, setAvatarVersion] = useState(0);
-  const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
-  const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
+  const { data: projectList } = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const projects: Array<{ id: string; name: string }> = Array.isArray(projectList) ? projectList : [];
   const {
     data: botList,
     isLoading: botsLoading,
@@ -116,11 +106,11 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
       <aside className={`sidebar ${collapsed ? "collapsed" : ""}`} aria-label="应用导航">
         <div className="sidebar-top">
           <Link
-            to="/workstation"
+            to="/bots"
             className="brand"
             style={{ color: "inherit", textDecoration: "none" }}
             title={collapsed ? "HexaGraph" : undefined}
-            aria-label="HexaGraph 工作台"
+            aria-label="HexaGraph"
           >
             <BrandMark />
             <span className="brand-name">HexaGraph</span>
@@ -137,6 +127,7 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
           </button>
         </div>
         <div className="sidebar-scroll">
+          {navItems.length > 0 && (
           <nav className="nav-group" aria-label="浏览" id="sidebar-navigation">
             <h2 className="nav-label">浏览</h2>
             {navItems.map((n) => {
@@ -156,10 +147,11 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               );
             })}
           </nav>
+          )}
           {collapsed ? (
             <section className="nav-group assistant-rail" aria-labelledby="assistant-rail-heading" data-testid="sidebar-bot-rail">
               <h2 className="nav-label" id="assistant-rail-heading">
-                助手
+                Bot
               </h2>
               <Link
                 to="/bots/new"
@@ -188,7 +180,7 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
           ) : (
             <section className="nav-group assistant-group" aria-labelledby="assistant-heading" data-testid="sidebar-bot-list">
               <h2 className="nav-label" id="assistant-heading">
-                <span>助手</span>
+                <span>Bot</span>
                 <span className="mono">{bots.length}</span>
               </h2>
               <Link
@@ -231,25 +223,32 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               })}
             </section>
           )}
-          <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
-            <h2 className="nav-label" id="recent-runs-heading">
-              <span>最近运行</span>
-              <span className="mono">{runs?.length ?? 0}</span>
+          <section className="nav-group project-group" aria-labelledby="project-heading" data-testid="sidebar-project-list">
+            <h2 className="nav-label" id="project-heading">
+              <span>项目</span>
+              <span className="mono">{projects.length}</span>
             </h2>
-            {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
-            {recent.map((r: any) => {
-              const readOnly = Boolean(r.read_only || r.provenance?.mode === "deepseek");
+            <Link
+              to="/projects"
+              className="nav-item assistant-new"
+              data-testid="sidebar-new-project"
+              aria-label="创建项目"
+            >
+              <PlusOutlined />
+              <span className="nav-text">创建项目</span>
+            </Link>
+            {projects.map((project) => {
+              const active = currentPath === `/projects/${project.id}`;
               return (
-                <NavLink
-                  key={r.id}
-                  to={`/workstation/${r.id}`}
-                  className="nav-item"
-                  title={readOnly ? "已下线的 DeepSeek 历史运行（只读）" : undefined}
+                <Link
+                  key={project.id}
+                  to={`/projects/${project.id}`}
+                  className={`nav-item ${active ? "active" : ""}`}
+                  aria-current={active ? "page" : undefined}
                 >
-                  <span className={`dot ${runDot(r)}`} />
-                  <span className="nav-text">{r.idea || r.id.slice(0, 8)}</span>
-                  <span className="nav-meta">{readOnly ? "只读" : `S${r.stage}`}</span>
-                </NavLink>
+                  <FolderOpenOutlined />
+                  <span className="nav-text">{project.name}</span>
+                </Link>
               );
             })}
           </section>

@@ -112,25 +112,68 @@ describe("BotListPage create flow", () => {
       if (url === "/api/bots" && init?.method === "POST")
         return json({ bot_id: "bot-new", display_name: "Leader A", status: "active" }, 201);
       if (url === "/api/bots") return json({ items: [] });
+      if (url === "/api/skills/import" && init?.method === "POST")
+        return json({ skill_id: "acme-review", version: "abc1234", description_md: "", allowed_tool_refs: [] }, 201);
       if (url === "/api/skills") return json(skillList);
       return json({ slots: { coder: { model: "m1" } } });
     });
     renderAt("/bots/new");
     await screen.findByTestId("bot-form");
     fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "Leader A" } });
-    fireEvent.change(screen.getByLabelText("模型槽位"), { target: { value: "coder" } });
-    await screen.findByRole("option", { name: "review@1.0.0" });
-    fireEvent.change(screen.getByLabelText("Skill 版本"), { target: { value: "review@1.0.0" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加绑定" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "m1" } });
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    expect(screen.getByTestId("skill-empty")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("GitHub 地址"), { target: { value: "https://github.com/acme/skills" } });
+    fireEvent.click(screen.getByRole("button", { name: /^添\s*加$/ }));
+    await screen.findByText("acme-review@abc1234");
     fireEvent.click(screen.getByRole("button", { name: "创建 Bot" }));
 
-    await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
-    const post = calls.find((call) => call.method === "POST")!;
-    expect(post.url).toBe("/api/bots");
+    await waitFor(() => expect(calls.some((call) => call.url === "/api/bots" && call.method === "POST")).toBe(true));
+    const post = calls.find((call) => call.url === "/api/bots" && call.method === "POST")!;
     expect(post.body.display_name).toBe("Leader A");
     expect(post.body.model).toBe("m1");
-    expect(post.body.skill_bindings).toEqual([{ skill_id: "review", pinned_version: "1.0.0" }]);
+    expect(calls.find((call) => call.url === "/api/skills/import")!.body).toEqual({ url: "https://github.com/acme/skills" });
+    expect(post.body.skill_bindings).toEqual([{ skill_id: "acme-review", pinned_version: "abc1234" }]);
     expect(post.body).not.toHaveProperty("bot_id");
+  });
+
+  it("stores the cover picked before creation under the new bot id", async () => {
+    stubFetch((url, init) => {
+      if (url === "/api/bots" && init?.method === "POST")
+        return json({ bot_id: "bot-new", display_name: "封面 Bot", status: "active" }, 201);
+      if (url === "/api/bots") return json({ items: [] });
+      if (url === "/api/skills") return json(skillList);
+      return json({ slots: { coder: { model: "m1" } } });
+    });
+    window.localStorage.clear();
+    renderAt("/bots/new");
+    await screen.findByTestId("bot-identity");
+    fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "封面 Bot" } });
+    fireEvent.click(screen.getByLabelText("头像 🦊"));
+    fireEvent.click(screen.getByLabelText("颜色 #7c3aed"));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "下一步" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建 Bot" }));
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem("hexagraph.botAvatar.v1");
+      const preset = raw ? JSON.parse(raw)["bot-new"] : undefined;
+      expect(preset).toEqual({ emoji: "🦊", color: "#7c3aed" });
+    });
+  });
+
+  it("closes the dialog and returns to the list on cancel", async () => {
+    stubFetch((url) => {
+      if (url === "/api/bots") return json({ items: [] });
+      if (url === "/api/skills") return json(skillList);
+      return json({ slots: { coder: { model: "m1" } } });
+    });
+    renderAt("/bots/new");
+    await screen.findByTestId("bot-create-overlay");
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByTestId("bot-create-overlay")).toBeNull());
+    expect(await screen.findByTestId("bots-empty")).toBeTruthy();
   });
 });
 describe("Bot workspace route", () => {
@@ -158,7 +201,7 @@ describe("Bot workspace route", () => {
     expect(await screen.findByTestId("bot-workspace")).toBeTruthy();
     expect(screen.getByTestId("bot-tab-config")).toBeTruthy();
     expect(screen.getByTestId("bot-tab-memory")).toBeTruthy();
-    expect(screen.getByTestId("bot-tab-projects")).toBeTruthy();
+    expect(screen.queryByTestId("bot-tab-projects")).toBeNull();
     expect(screen.getByTestId("bot-form")).toBeTruthy();
   });
 });

@@ -82,6 +82,8 @@ async function mockApi(page: import("@playwright/test").Page, state: MockState) 
     if (apiPath === "/projects") return json([project]);
     if (apiPath === "/config/models") return json({ provider: "dashscope", slots: { flagship: { model: "qwen-max" }, coder: { model: "qwen-plus" } } });
     if (apiPath === "/config/models/test" && method === "POST") return json({ ok: true, note: "probe-ok" });
+    if (apiPath === "/skills/import" && method === "POST")
+      return json({ skill_id: "acme-review", version: "abc1234", description_md: "", allowed_tool_refs: [] }, 201);
     if (apiPath === "/skills") return json({ items: [{ skill_id: "review", version: "1.0.0", description_md: "", allowed_tool_refs: [] }] });
     if (apiPath === "/bots" && method === "POST") {
       const body = JSON.parse(req.postData() || "{}");
@@ -107,19 +109,18 @@ test("P6 UI-A1 walkthrough", async ({ page }) => {
   const state: MockState = { bots: [], forbidBots: false, failBots: false };
   await mockApi(page, state);
 
-  // 1. Sidebar reaches Bot / Project / Settings.
+  // 1. Sidebar has a Bot section and a project section.
   await page.goto("/workstation");
   const nav = page.getByRole("navigation", { name: "浏览" });
-  await expect(nav.getByRole("link", { name: "Bot" })).toHaveAttribute("href", "/bots");
-  await expect(nav.getByRole("link", { name: "项目" })).toHaveAttribute("href", "/projects");
-  await expect(nav.getByRole("link", { name: "模型槽位" })).toHaveAttribute("href", "/settings");
+  await expect(nav).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-new-bot")).toHaveAttribute("href", "/bots/new");
+  const projects = page.getByTestId("sidebar-project-list");
+  await expect(projects.getByTestId("sidebar-new-project")).toHaveAttribute("href", "/projects");
+  await expect(nav.getByRole("link", { name: "模型槽位" })).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/p6-t01-sidebar.png`, fullPage: true });
 
-  await nav.getByRole("link", { name: "项目" }).click();
+  await projects.getByTestId("sidebar-new-project").click();
   await expect(page.getByRole("heading", { name: "项目" })).toBeVisible();
-  await nav.getByRole("link", { name: "模型槽位" }).click();
-  await expect(page.getByRole("heading", { name: "模型槽位" })).toBeVisible();
-  await expect(page.getByText("qwen-max").first()).toBeVisible();
 
   // 2. No top-level Model/Skill/Market/Cron navigation.
   await expect(nav.getByRole("link", { name: "Model" })).toHaveCount(0);
@@ -135,13 +136,16 @@ test("P6 UI-A1 walkthrough", async ({ page }) => {
   await expect(page.getByTestId("bots-empty")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/p6-t02-empty.png`, fullPage: true });
 
-  await page.getByRole("link", { name: "新建 Bot" }).click();
+  await page.getByTestId("sidebar-new-bot").click();
   await expect(page.getByTestId("bot-form")).toBeVisible();
   const form = page.getByTestId("bot-form");
   await form.getByLabel("显示名").fill("Leader A");
-  await form.getByLabel("模型槽位").selectOption("flagship");
-  await form.getByLabel("Skill 版本").selectOption("review@1.0.0");
-  await form.getByRole("button", { name: "添加绑定" }).click();
+  await form.getByRole("button", { name: "下一步" }).click();
+  await form.getByLabel("模型", { exact: true }).selectOption("qwen-max");
+  await form.getByRole("button", { name: "下一步" }).click();
+  await form.getByLabel("GitHub 地址").fill("https://github.com/acme/skills/tree/main/review");
+  await form.getByRole("button", { name: /添\s*加/ }).click();
+  await expect(form.getByText("acme-review@abc1234")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/p6-t02-create.png`, fullPage: true });
   await page.getByRole("button", { name: "创建 Bot" }).click();
   await expect(page.getByRole("link", { name: /Leader A/ })).toBeVisible();

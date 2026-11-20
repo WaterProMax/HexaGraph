@@ -14,7 +14,9 @@ npx playwright test e2e/openmausbot-ui.pw.ts
 | `ui-r01-sidebar-expanded.png` | R01 | 展开侧栏：浏览导航 + 「助手」联系人列表（头像 / 名称 / 角色 / 状态）+ 新建 Bot + 最近运行 |
 | `ui-r01-sidebar-collapsed.png` | R01 | 76px 折叠轨：导航图标、圆形「+」、竖排圆形头像（title 为「名称 · 角色」），最近运行隐藏 |
 | `ui-r02-bots-list.png` | R02 | `/bots` 列表：头像、名称、角色·模型·槽位、状态胶囊 |
-| `ui-r02-bot-new.png` | R02 | `/bots/new`：角色预设（Leader / 产品经理 / 后端 / 测试运维 / 通用）+ 表单 |
+| `ui-r02-bot-new.png` | R02 | `/bots/new` 弹出「创建新 Bot」对话框第 1 步：封面（大头像 + Emoji + 色板）、名字、职责五选一 |
+| `ui-r02-bot-new-model.png` | R02 | 第 2 步：模型与能力（Provider / 槽位 / 模型 / secret_ref / 允许工具 / 令牌预算） |
+| `ui-r02-bot-new-skill.png` | R02 | 第 3 步：身份摘要 + Skill 版本绑定，底部「创建 Bot」 |
 | `ui-r02-bot-workspace.png` | R02 | `/bots/:id`：大头像、更换头像选择器（Emoji + 色板）、三个 Tab、编辑表单 |
 | `ui-r03-projects.png` | R03 | `/projects` 卡片上的成员头像与 Leader |
 | `ui-r03-team-strip.png` | R03 | 项目工作台团队条、当前操作身份、管理成员入口、任务树与四 Tab |

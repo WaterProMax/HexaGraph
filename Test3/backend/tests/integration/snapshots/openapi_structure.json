@@ -658,6 +658,13 @@
         "201"
       ]
     },
+    "POST /api/skills/import": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "200"
+      ]
+    },
     "POST /api/tasks/{task_id}/{action}": {
       "body": "ControlBody",
       "params": [

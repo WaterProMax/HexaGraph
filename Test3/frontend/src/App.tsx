@@ -8,7 +8,6 @@ import Todos from "./pages/Todos";
 import Tasks from "./pages/Tasks";
 import Timeline from "./pages/Timeline";
 import Budget from "./pages/Budget";
-import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 import RetiredFeature from "./pages/RetiredFeature";
@@ -27,7 +26,6 @@ export const APP_ROUTE_PATHS = [
   "/bots",
   "/bots/new",
   "/bots/:id",
-  "/settings",
   "/runs/:id/*",
 ] as const;
 
@@ -38,7 +36,7 @@ export default function App() {
   return (
     <AppShell navItems={DEFAULT_NAV_ITEMS} currentPath={loc.pathname}>
       <Routes>
-        <Route path="/" element={<Navigate to="/workstation" replace />} />
+        <Route path="/" element={<Navigate to="/bots" replace />} />
         <Route path="/workstation/static-classroom" element={<RetiredFeature feature="static-classroom" />} />
         <Route path="/deepseek/:id?" element={<RetiredFeature feature="deepseek" />} />
         <Route path="/workstation/:id?" element={<Workstation />} />
@@ -47,9 +45,8 @@ export default function App() {
         <Route path="/bots" element={<BotListPage />} />
         <Route path="/bots/new" element={<BotListPage mode="create" />} />
         <Route path="/bots/:id" element={<BotListPage mode="edit" />} />
-        <Route path="/settings" element={<Settings />} />
         <Route path="/runs/:id/*" element={<RunShell />} />
-        <Route path="*" element={<Navigate to="/workstation" replace />} />
+        <Route path="*" element={<Navigate to="/bots" replace />} />
       </Routes>
     </AppShell>
   );

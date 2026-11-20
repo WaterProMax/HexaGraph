@@ -1,9 +1,7 @@
 import { useState } from "react";
 import type { BotInstance } from "../api/types";
-import { AVATAR_PALETTE, readAvatarPresets, writeAvatarPreset, type BotAvatarPreset } from "../lib/botAvatar";
+import { AVATAR_EMOJI_CHOICES, AVATAR_PALETTE, readAvatarPresets, writeAvatarPreset, type BotAvatarPreset } from "../lib/botAvatar";
 import { BotAvatar } from "./BotAvatar";
-
-const EMOJI_CHOICES = ["🦊", "🐼", "🦉", "🚀", "🧭", "🛠️", "🧪", "📚", "🧠", "🎯"];
 
 export type BotAvatarPickerProps = {
   bot: Pick<BotInstance, "bot_id" | "display_name" | "role_template" | "status">;
@@ -37,7 +35,7 @@ export function BotAvatarPicker({ bot, onChanged, onClose }: BotAvatarPickerProp
         <span>Emoji</span>
       </div>
       <div className="avatar-emoji-row">
-        {EMOJI_CHOICES.map((emoji) => (
+        {AVATAR_EMOJI_CHOICES.map((emoji) => (
           <button
             key={emoji}
             type="button"

@@ -85,7 +85,7 @@ const memory = {
   run_id: null,
 };
 
-const privateMemory = { ...memory, mem_id: "m2", visibility: "private", title: "个人偏好" };
+const privateMemory = { ...memory, mem_id: "m2", visibility: "private", title: "个人偏好", body: { text: "个人偏好" } };
 
 const session = {
   session_id: "s1",
@@ -191,8 +191,19 @@ test("UI redesign walkthrough", async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/ui-r02-bots-list.png`, fullPage: true });
 
   await page.goto("/bots/new");
-  await expect(page.getByTestId("preset-pm")).toBeVisible();
+  await expect(page.getByTestId("bot-create-overlay")).toBeVisible();
+  await expect(page.getByTestId("bot-identity")).toBeVisible();
+  await expect(page.getByTestId("bot-duty-grid")).toBeVisible();
+  await page.getByLabel("显示名").fill("周明");
+  await page.getByTestId("duty-pm").click();
+  await page.getByLabel("头像 🦉").click();
   await page.screenshot({ path: `${SHOTS}/ui-r02-bot-new.png`, fullPage: true });
+  await page.getByRole("button", { name: "下一步" }).click();
+  await expect(page.getByTestId("bot-form").getByLabel("供应商")).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/ui-r02-bot-new-model.png`, fullPage: true });
+  await page.getByRole("button", { name: "下一步" }).click();
+  await expect(page.getByTestId("bot-step-summary")).toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/ui-r02-bot-new-skill.png`, fullPage: true });
 
   await page.goto("/bots/bot-a");
   await expect(page.getByTestId("bot-workspace")).toBeVisible();
@@ -235,11 +246,6 @@ test("UI redesign walkthrough", async ({ page }) => {
   await expect(page.getByRole("treeitem", { name: /T-02/ })).toHaveClass(/highlight/);
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${SHOTS}/ui-r04-defect-locate.png`, fullPage: true });
-
-  // R05: Settings cards keep the existing probe button.
-  await page.goto("/settings");
-  await expect(page.getByText("qwen-max").first()).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/ui-r05-settings.png`, fullPage: true });
 
   // Writes only ever went to the mocked HTTP boundary (nothing reached a real backend).
   expect(writes.length).toBeGreaterThanOrEqual(0);

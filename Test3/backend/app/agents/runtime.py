@@ -8,6 +8,8 @@ from pydantic import BaseModel, ValidationError
 
 from app.bots.snapshot import BotPinError, get_frozen_pin
 from app.errors import AgentOutputError
+from app.llm.bot_secrets import BotSecretStore
+from app.llm.catalog import endpoint_for
 from app.llm.gateway import Gateway
 from app.memory.injection import build_memory_slot
 from app.memory.store import SecretInBody, assert_no_secrets
@@ -95,6 +97,23 @@ def _render_memory_slot(items: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def _bot_endpoint(gateway: Gateway, bot_id: str, provider_ref: str) -> dict[str, str] | None:
+    """The bot's own base_url + API key, or None to use the workbench default.
+
+    The key is read at call time from the encrypted BotSecretStore; the frozen pin
+    only fixes provider_ref and model.
+    """
+    if gateway.data_dir is None:
+        return None
+    api_key = BotSecretStore(gateway.data_dir).get(bot_id)
+    if not api_key:
+        return None
+    base_url = endpoint_for(provider_ref, gateway.models.base_url)
+    if base_url is None:
+        raise AgentOutputError("模型配置或凭据不可用", category="auth")
+    return {"base_url": base_url, "api_key": api_key}
+
+
 async def call_agent(
     name: str,
     inputs: dict[str, Any],
@@ -117,6 +136,9 @@ async def call_agent(
         db_path = gateway.data_dir / "test3.db" if gateway.data_dir is not None else None
         pin = await get_frozen_pin(run_id, bot_id, db_path=db_path)
         pin_kwargs = {"model": pin["model"], "provider_ref": pin["provider_ref"]}
+        endpoint = _bot_endpoint(gateway, bot_id, pin["provider_ref"])
+        if endpoint is not None:
+            pin_kwargs["endpoint"] = endpoint
         if memory_slot is None:
             memory_slot = await build_memory_slot(
                 bot_id,

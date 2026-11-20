@@ -4,6 +4,7 @@ import { ApiError, api } from "../../api/client";
 import type { BotInstance, SkillDefinition } from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
 import { BotAvatar } from "../../components/BotAvatar";
+import { writeAvatarPreset, type BotAvatarPreset } from "../../lib/botAvatar";
 import { BotForm, type ProviderOption } from "./BotForm";
 import { BotWorkspace } from "./BotWorkspace";
 
@@ -25,19 +26,18 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [errorText, setErrorText] = useState("");
   const [bots, setBots] = useState<BotInstance[]>([]);
-  const [skills, setSkills] = useState<SkillDefinition[]>([]);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [initial, setInitial] = useState<BotInstance | undefined>();
+  const [avatarDraft, setAvatarDraft] = useState<BotAvatarPreset>({});
   const [reloadKey, setReloadKey] = useState(0);
 
   const load = useCallback(async () => {
     setLoadState("loading");
     setErrorText("");
     try {
-      const [botList, skillList, models] = await Promise.all([api.bots(), api.skills(), api.models()]);
+      const [botList, models] = await Promise.all([api.bots(), api.models()]);
       const items: BotInstance[] = Array.isArray(botList?.items) ? botList.items : [];
       setBots(items);
-      setSkills(Array.isArray(skillList?.items) ? skillList.items : []);
       setProviders(slotsToOptions(models));
       if (mode === "edit") {
         const record = botId ? ((await api.bot(botId)) as BotInstance) : undefined;
@@ -63,10 +63,17 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
     void load();
   }, [load, reloadKey]);
 
+  const importSkill = async (url: string): Promise<SkillDefinition> =>
+    (await api.importSkill(url)) as SkillDefinition;
+
   const submit = async (draft: Record<string, unknown>) => {
     try {
-      if (mode === "create") await api.createBot(draft as any);
-      else if (botId) await api.patchBot(botId, draft as any);
+      if (mode === "create") {
+        const created = (await api.createBot(draft as any)) as BotInstance | undefined;
+        if (created?.bot_id && Object.keys(avatarDraft).length) {
+          writeAvatarPreset(created.bot_id, avatarDraft);
+        }
+      } else if (botId) await api.patchBot(botId, draft as any);
       navigate("/bots");
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 403) setLoadState("forbidden");
@@ -89,15 +96,9 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
   };
 
   return (
-    <div className="page">
+    <div className="page bot-page">
       <div className="page-head bot-page-head">
-        <div>
-          <h1>Bot</h1>
-          <p>每个 Bot 自带模型与 Skill 版本绑定；密钥只记录环境变量名。</p>
-        </div>
-        <Link className="chip" to="/bots/new" data-testid="bots-new-link">
-          + 新建 Bot
-        </Link>
+        <h1>Bot</h1>
       </div>
 
       {loadState === "loading" && (
@@ -153,28 +154,28 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
               </Link>
             ))}
           </div>
-          <div style={{ marginTop: 16 }}>
-            <Link className="chip" to="/bots/new">
-              新建 Bot
-            </Link>
-          </div>
         </>
       )}
 
       {mode === "create" && (loadState === "ready" || loadState === "empty") && (
-        <BotForm
-          mode="create"
-          providerOptions={providers}
-          skillOptions={skills}
-          loadState={loadState}
-          onSubmit={submit}
-        />
+        <div className="bot-create-overlay" data-testid="bot-create-overlay">
+          <BotForm
+            mode="create"
+            providerOptions={providers}
+            loadState={loadState}
+            onSubmit={submit}
+            onImportSkill={importSkill}
+            avatarDraft={avatarDraft}
+            onAvatarChange={setAvatarDraft}
+            onCancel={() => navigate("/bots")}
+          />
+        </div>
       )}
       {mode === "edit" && loadState === "ready" && initial && (
         <BotWorkspace
           bot={initial}
           providerOptions={providers}
-          skillOptions={skills}
+          onImportSkill={importSkill}
           loadState={loadState}
           onSave={submit}
           onArchive={archive}

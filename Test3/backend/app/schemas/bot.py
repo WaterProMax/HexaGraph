@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 BotStatus = Literal["active", "archived"]
 
@@ -36,6 +36,8 @@ class BotCreate(BaseModel):
     tool_policy: list[str] = Field(default_factory=list)
     skill_bindings: list[BotSkillBinding] = Field(default_factory=list)
     token_budget: int | None = 40_000
+    # Write-only: stored in the encrypted BotSecretStore, never in the DB payload.
+    api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
 
 class BotPatch(BaseModel):
@@ -47,6 +49,8 @@ class BotPatch(BaseModel):
     tool_policy: list[str] | None = None
     skill_bindings: list[BotSkillBinding] | None = None
     token_budget: int | None = None
+    # Write-only; empty string removes the stored key.
+    api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
     # role_template / status / bot_id are intentionally absent; archiving has
     # its own endpoint and identity fields are server-owned.
 

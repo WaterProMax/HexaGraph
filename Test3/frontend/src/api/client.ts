@@ -113,7 +113,6 @@ export const api = {
   resumeRun: (id: string) => req(`/runs/${id}/resume`, { method: "POST" }),
   terminate: (id: string) => req(`/runs/${id}/terminate`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
   models: () => req("/config/models"),
-  testModels: () => req("/config/models/test", { method: "POST" }),
 
   // --- P2–P5 domains ---------------------------------------------------------
   bots: (status?: "active" | "archived") =>
@@ -126,6 +125,7 @@ export const api = {
   archiveBot: (botId: string) =>
     req(`/bots/${encodeURIComponent(botId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
   skills: () => req("/skills"),
+  importSkill: (url: string) => req("/skills/import", { method: "POST", body: JSON.stringify({ url }) }),
   memberships: (projectId: string) => req(`/projects/${projectId}/memberships`),
   addMembership: (projectId: string, body: import("./types").MembershipCreate) =>
     req(`/projects/${projectId}/memberships`, { method: "POST", body: JSON.stringify(body) }),

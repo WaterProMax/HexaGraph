@@ -107,7 +107,11 @@ class Gateway:
                 if not _retryable(exc) or attempt == 2:
                     break
                 await asyncio.sleep(0.01 * (2**attempt))
-        if cfg.fallback:
+        endpoint = kwargs.get("endpoint")
+        # Fallback models belong to the configured provider; a bot on another
+        # provider's endpoint must not be silently re-routed to them.
+        foreign_endpoint = isinstance(endpoint, dict) and endpoint.get("base_url") != self.models.base_url
+        if cfg.fallback and not foreign_endpoint:
             self.stats["fallbacks"] += 1
             self.events.append({"kind": "llm.fallback", "slot": slot, "fallback": cfg.fallback})
             try:

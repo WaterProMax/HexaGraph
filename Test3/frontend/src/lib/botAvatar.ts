@@ -37,6 +37,9 @@ export const AVATAR_PALETTE = [
   "#4d7c0f",
 ];
 
+/** Emoji offered by the create cover and the avatar picker. */
+export const AVATAR_EMOJI_CHOICES = ["🦊", "🐼", "🦉", "🚀", "🧭", "🛠️", "🧪", "📚", "🧠", "🎯"];
+
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 export function hashString(value: string): number {
@@ -121,6 +124,50 @@ export function writeAvatarPreset(
     window.dispatchEvent(new CustomEvent(BOT_AVATAR_EVENT, { detail: { botId } }));
   }
   return all;
+}
+
+/**
+ * Read an image file, center-crop it to a square and downscale, so the
+ * localStorage-backed preset stays small. Rejects for non-images.
+ */
+export function fileToAvatarDataUrl(file: File, size = 256): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("请选择图片文件"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("图片无法解析"));
+      image.onload = () => {
+        const side = Math.min(image.naturalWidth, image.naturalHeight);
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          reject(new Error("浏览器不支持图片处理"));
+          return;
+        }
+        context.drawImage(
+          image,
+          (image.naturalWidth - side) / 2,
+          (image.naturalHeight - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          size,
+          size,
+        );
+        resolve(canvas.toDataURL("image/jpeg", 0.88));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export function clearAvatarPreset(botId: string, storage?: Storage | null): Record<string, BotAvatarPreset> {

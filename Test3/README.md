@@ -69,7 +69,7 @@ cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代�
 - `/workstation/static-classroom`：独立静态课堂演示。
 - `/deepseek`、`/deepseek/:id`：DeepSeek 专用真实运行。
 
-历史运行的 `provenance.mode === "deepseek"` 快照仍可只读查看（列表、详情、artifacts、事件、任务），但新建、重试、恢复、调度和继续生成 PLAN 会返回受控 4xx，不会回退到百炼或 scripted。通用 OpenAI 兼容模型仍可在「模型槽位」（`/settings`）配置；离线测试继续使用 `scripted` / `replay`。静态课堂的历史说明保留在 [静态课堂演示文档](docs/StaticClassroomDemo.md)。
+历史运行的 `provenance.mode === "deepseek"` 快照仍可只读查看（列表、详情、artifacts、事件、任务），但新建、重试、恢复、调度和继续生成 PLAN 会返回受控 4xx，不会回退到百炼或 scripted。通用 OpenAI 兼容模型在 Bot 的模型配置里按供应商选择；离线测试继续使用 `scripted` / `replay`。静态课堂的历史说明保留在 [静态课堂演示文档](docs/StaticClassroomDemo.md)。
 
 ## 测试
 

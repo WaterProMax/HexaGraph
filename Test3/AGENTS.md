@@ -24,7 +24,7 @@ Scale：L（完整多体工作流工作台）。
 - 不使用 LangGraph、AutoGen 或其它 Agent 框架
 - 规则必须是确定性纯函数
 - SQLite 每个连接执行 `PRAGMA foreign_keys = ON` 与 `WAL`
-- 密钥只来自环境变量，不入库
+- 密钥不入库、不进响应、不进日志。默认来自环境变量；Bot 自带的 API Key（创建/更新时只写）加密存于 `<data_dir>/secrets/`（Fernet，`master.key` 权限 0600），仅在调用时读取
 
 ## 硬上限（不得擅自改）
 

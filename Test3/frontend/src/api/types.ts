@@ -23,6 +23,8 @@ export type BotInstance = {
   skill_bindings: BotSkillBinding[];
   token_budget: number | null;
   status: "active" | "archived";
+  /** Read-only: a provider key is stored server-side (the key itself is never returned). */
+  has_api_key?: boolean;
 };
 
 export type BotCreate = {
@@ -35,6 +37,8 @@ export type BotCreate = {
   tool_policy?: string[];
   skill_bindings?: BotSkillBinding[];
   token_budget?: number | null;
+  /** Write-only provider key; the server stores it encrypted and never returns it. */
+  api_key?: string;
 };
 
 export type BotPatch = {
@@ -46,6 +50,8 @@ export type BotPatch = {
   tool_policy?: string[];
   skill_bindings?: BotSkillBinding[];
   token_budget?: number | null;
+  /** Write-only; omit to keep the stored key, empty string removes it. */
+  api_key?: string;
 };
 
 export type SkillDefinition = {

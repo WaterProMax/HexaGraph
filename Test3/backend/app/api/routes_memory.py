@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.bots.registry import BotNotFound, BotRegistry
 from app.memory.access import MemoryAccessService, MemoryForbidden, is_project_member
+from app.memory.organizer import contains_secret, organize_note
 from app.memory.promotion import MemoryPromotionService, VisibilityNotProject
 from app.memory.store import (
     MemoryNotFound,
@@ -45,6 +46,16 @@ async def _body(request: Request) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _free_note(body: MemoryCreate) -> str | None:
+    """The raw text of a UI-typed private note, else None (structured bodies stay untouched)."""
+    if body.visibility != "private" or set(body.body) != {"text"}:
+        return None
+    if not any(src.kind == "note" for src in body.sources):
+        return None
+    text = body.body["text"]
+    return text.strip() if isinstance(text, str) and text.strip() else None
+
+
 async def _actor(request: Request, session) -> tuple[str | None, JSONResponse | None]:
     actor = (request.headers.get("X-Bot-Id") or "").strip()
     if not actor:
@@ -71,13 +82,25 @@ async def create_memory(request: Request) -> Any:
         except ValidationError as exc:
             return _json_error(400, "validation_error", str(exc))
         try:
-            await BotRegistry(session).get(body.owner_bot_id)
+            owner = await BotRegistry(session).get(body.owner_bot_id)
         except BotNotFound:
             return _json_error(404, "bot_not_found", f"bot not found: {body.owner_bot_id}")
         if body.visibility == "project" and body.project_id not in bench.projects:
             return _json_error(
                 404, "project_not_found", f"project not found: {body.project_id}"
             )
+        raw_note = _free_note(body)
+        if raw_note is not None and actor == body.owner_bot_id:
+            if contains_secret(raw_note):
+                return _json_error(400, "secret_in_body", "secret-like value in note")
+            organized = await organize_note(bench.gateway, owner, raw_note)
+            if organized is not None:
+                body = body.model_copy(
+                    update={
+                        "title": organized["title"] or body.title,
+                        "body": {"text": organized["text"]},
+                    }
+                )
         try:
             record = await MemoryAccessService(MemoryStore(session)).create(actor, body)
             await session.commit()

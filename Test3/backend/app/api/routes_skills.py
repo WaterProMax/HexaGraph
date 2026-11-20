@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.schemas.skill_definition import SkillCreate
+from app.settings import get_settings
+from app.skills.github_import import SkillImportError, fetch_skill
 from app.skills.registry import SkillNotFound, SkillRegistry, SkillVersionExists
 
 router = APIRouter()
@@ -47,6 +50,40 @@ async def create_skill(request: Request) -> JSONResponse:
                 f"skill {body.skill_id}@{body.version} already exists",
             )
     return JSONResponse(status_code=201, content=skill.model_dump())
+
+
+@router.post("/skills/import")
+async def import_skill(request: Request) -> JSONResponse:
+    """Register a skill from a public GitHub repo; version = commit sha, no tool grants."""
+    payload = await _body(request)
+    url = payload.get("url") if payload else None
+    if not isinstance(url, str) or not url.strip():
+        return _json_error(400, "validation_error", "url is required")
+    transport = getattr(request.app.state, "skill_import_transport", None)
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(15.0, connect=8.0),
+        follow_redirects=False,
+        trust_env=bool(get_settings().test3_http_trust_env),
+        transport=transport,
+    ) as client:
+        try:
+            body = await fetch_skill(url, client)
+        except SkillImportError as exc:
+            return _json_error(exc.status_code, exc.category, exc.detail)
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        registry = SkillRegistry(session)
+        try:
+            skill = await registry.create(body)
+            await session.commit()
+            status = 201
+        except SkillVersionExists:
+            # Same commit imported before: the stored definition is immutable, reuse it.
+            await session.rollback()
+            existing = await registry.list_versions(body.skill_id)
+            skill = next(item for item in existing if item.version == body.version)
+            status = 200
+    return JSONResponse(status_code=status, content=skill.model_dump())
 
 
 @router.get("/skills")
