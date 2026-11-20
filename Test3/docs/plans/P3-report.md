@@ -78,3 +78,44 @@
 - supersede 先把旧 version 置为 `superseded`（body 不变），再插入 N+1 `pending` 新版本；新 body 走密钥扫描；已 superseded 或 expected 不符抛 `MemoryVersionConflict`。
 - 所有状态变更先以 no-op `UPDATE` 取 SQLite 写锁；并发 publish 一成一冲突，并发 supersede 只产生一条新版本。
 - 契约扩展 `promoted_by` / `promoted_at` 已在 T01 登记，本卡实现写入。
+
+## T04 · 记忆 HTTP 与 call_agent 注入槽
+
+- 时间：2026-11-20 10:55 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/integration/test_memory_api.py tests/unit/test_memory_injection.py tests/integration/test_memory_member_removed.py tests/unit/test_memory_promotion.py -q`
+- 退出码：0
+- 计数：28 passed（memory_api 10 / injection 5 / member_removed 3 / promotion 10）
+- 回归：`tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 27 passed，退出码 0
+- API 契约：`tests/integration/test_api_contract.py` → 28 passed，退出码 0
+- OpenAPI：更新命令 1 passed，复跑 1 passed
+
+### 触及文件
+
+- `app/api/routes_memory.py`（NEW）
+- `app/memory/injection.py`（NEW）
+- `tests/integration/test_memory_api.py`（NEW）
+- `tests/unit/test_memory_injection.py`（NEW）
+- `app/main.py`（MODIFY：挂载 memory router，prefix=/api）
+- `app/agents/runtime.py`（MODIFY：`call_agent` 新增 `project_id` / `memory_slot` 并注入记忆块）
+- `app/memory/promotion.py`（MODIFY：expected_version 语义修正）
+- `tests/integration/test_memory_member_removed.py`（MODIFY：补 HTTP 撤成员场景）
+- `tests/unit/test_memory_promotion.py`（MODIFY：补 expected=99 -> conflict 单测）
+- `tests/integration/snapshots/openapi_structure.json`（MODIFY）
+- `Test3/docs/API.md`（MODIFY）
+- `Test3/docs/plans/P3-report.md`（MODIFY）
+
+### 实现要点
+
+- 所有记忆路由要求 `X-Bot-Id`；缺失/空白 400，actor 不存在 404；body 不再作为调用者身份。
+- 请求体与查询参数手工校验，失败 400；错误体统一 `{"error_category","detail"}`。
+- 三层可见性：private/run 仅 owner；project 仅成员；无 global。
+- `/publish` 与 `/supersede` 使用 expected_version 乐观锁；publish 仅 project，supersede 生成 N+1 pending 并保留旧 body。
+- `build_memory_slot` 注入 actor private、所属项目 published、actor run；逐项密钥扫描并在序列化后再查 `sk-`。
+- `call_agent` 先解析冻结 pin，再构建记忆槽；`bot_id=None` 不读 pin/bots/记忆；显式 `memory_slot` 可注入。
+
+### 契约扩展登记
+
+- `MemoryRecord.run_id` 仅存 payload。
+- `promoted_by` / `promoted_at` 记录人工晋升者与时间。
+- `call_agent` 新增 `project_id` / `memory_slot`。
+- `MemoryStore.latest_only`、`publish_version` / `supersede_version`、`app/memory/injection.py`。

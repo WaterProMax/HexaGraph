@@ -161,3 +161,60 @@ async def test_concurrent_read_and_membership_delete_never_500(app) -> None:
             await access.get(b1, project_id)
         assert (await access.get(b2, project_id)).body == {"text": "project"}
     assert await _memory_count(bench) == before == 3
+
+@pytest.mark.asyncio
+async def test_http_memory_access_after_membership_removal(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        b1 = await _create_bot(client, "B1")
+        b2 = await _create_bot(client, "B2")
+        await _add_member(client, p1, b1)
+        await _add_member(client, p1, b2)
+        private = await client.post(
+            "/api/memory/records",
+            json={
+                "owner_bot_id": b1,
+                "visibility": "private",
+                "sources": [],
+                "body": {"text": "http-private"},
+                "title": "http-private-note",
+            },
+            headers={"X-Bot-Id": b1},
+        )
+        project = await client.post(
+            "/api/memory/records",
+            json={
+                "owner_bot_id": b1,
+                "project_id": p1,
+                "visibility": "project",
+                "sources": [],
+                "body": {"text": "http-project"},
+                "title": "http-project-note",
+            },
+            headers={"X-Bot-Id": b1},
+        )
+    assert private.status_code == 201, private.text
+    assert project.status_code == 201, project.text
+    before = await _memory_count(bench)
+
+    async with _client(app) as client:
+        removed = await client.delete(f"/api/projects/{p1}/memberships/{b1}")
+        private_read = await client.get(
+            f"/api/memory/records/{private.json()['mem_id']}", headers={"X-Bot-Id": b1}
+        )
+        project_denied = await client.get(
+            f"/api/memory/records/{project.json()['mem_id']}", headers={"X-Bot-Id": b1}
+        )
+        project_read = await client.get(
+            f"/api/memory/records/{project.json()['mem_id']}", headers={"X-Bot-Id": b2}
+        )
+        bot = await client.get(f"/api/bots/{b1}")
+    assert removed.status_code == 204
+    assert private_read.status_code == 200
+    assert private_read.json()["title"] == "http-private-note"
+    assert project_denied.status_code == 403
+    assert project_denied.json()["error_category"] == "memory_forbidden"
+    assert project_read.status_code == 200
+    assert bot.status_code == 200
+    assert await _memory_count(bench) == before

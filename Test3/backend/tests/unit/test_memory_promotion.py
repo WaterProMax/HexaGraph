@@ -247,3 +247,13 @@ async def test_concurrent_supersede_creates_only_one_new_version(factory) -> Non
         old = await store.get(mem_id, 1)
     assert sorted(item.version for item in versions) == [1, 2]
     assert old.status == "superseded"
+
+@pytest.mark.asyncio
+async def test_non_existent_expected_version_is_conflict_not_missing(factory) -> None:
+    owner, _outsider, mem_id = await _seed_project_memory(factory)
+    async with factory() as session:
+        with pytest.raises(MemoryVersionConflict):
+            await MemoryPromotionService(MemoryStore(session)).publish(
+                mem_id, 99, actor=owner
+            )
+        await session.rollback()

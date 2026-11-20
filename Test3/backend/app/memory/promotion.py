@@ -8,7 +8,7 @@ membership store is introduced.
 from __future__ import annotations
 
 from app.memory.access import MemoryForbidden, is_project_member
-from app.memory.store import MemoryStore
+from app.memory.store import MemoryStore, MemoryVersionConflict
 from app.schemas.memory import MemoryRecord, MemorySource
 
 
@@ -21,12 +21,16 @@ class MemoryPromotionService:
         self.store = store
 
     async def _project_record(self, mem_id: str, expected_version: int) -> MemoryRecord:
-        record = await self.store.get(mem_id, expected_version)
-        if record.visibility != "project":
-            raise VisibilityNotProject(
-                f"memory {mem_id} is {record.visibility}, not project"
+        latest = await self.store.get(mem_id)
+        if latest.version != expected_version:
+            raise MemoryVersionConflict(
+                f"expected version {expected_version}, latest is {latest.version}"
             )
-        return record
+        if latest.visibility != "project":
+            raise VisibilityNotProject(
+                f"memory {mem_id} is {latest.visibility}, not project"
+            )
+        return latest
 
     async def _require_member(self, record: MemoryRecord, actor: str) -> None:
         if not record.project_id or not await is_project_member(

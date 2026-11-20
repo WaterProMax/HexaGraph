@@ -88,6 +88,7 @@
 ## 控制动作可用状态
 
 后端 `require_control` 与前端 `controlEnabled` 对齐 Design.md 16.3 的子集：`retry`/`force-pass` 仅 `needs_human|failed`；`skip`/`pause` 覆盖未完成态。缺理由的 `force-pass` 被拒绝。
+
 ## P2 新增路由（Skills / Bots / Memberships）
 
 P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请求体校验失败返回 **400**（不是 FastAPI 默认 422），错误体统一为：
@@ -117,3 +118,42 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 - Bot 的 `model` / `provider_ref` / `skill_bindings` 变更会追加 pin revision；同一 `(run_id, bot_id)` 的冻结快照在运行开始时写入 `run_bot_pin_snapshots`，运行中 PATCH Bot 不改变已冻结值。
 - `PATCH /api/bots/{bot_id}` 的 200 响应增加只读 `pin_revision` 是 P2 的契约扩展；请求体不接受 `bot_id` / `status` / `role_template`。
 - Skill 的 `description_md` 只是说明文本，不扩展工具权限；`allowed_tool_refs` 为空表示该层无授权，不是通配符。实际权限取平台 ∩ Bot.tool_policy ∩ Grant.allowed_tool_refs（再 ∩ 冻结 skill 版本）。
+
+## P3 记忆路由（Memory）
+
+所有 `/api/memory/...` 路由都要求请求头 `X-Bot-Id`。缺失或空白返回 400 `validation_error`；该 Bot 不存在返回 404 `bot_not_found`。调用者身份只来自该请求头，不使用 body 中的 `owner_bot_id`。
+
+错误体统一为：
+
+```json
+{"error_category": "validation_error", "detail": "..."}
+```
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/memory/records` | 201 `MemoryRecord`（version=1、status=pending） | 400 `validation_error` / `secret_in_body`；403 `memory_forbidden`；404 `bot_not_found` / `project_not_found` |
+| GET | `/api/memory/records?owner_bot_id=&project_id=&visibility=` | 200 `{"items": [...]}`，每个 mem 最新版本 | 400 `validation_error`；403 `memory_forbidden`；404 `project_not_found` |
+| GET | `/api/memory/records/{mem_id}?version=` | 200 指定或最新版本 | 400 `validation_error`（version 非整数）；403 `memory_forbidden`；404 `memory_not_found` |
+| POST | `/api/memory/records/{mem_id}/publish` | 200 published record | 400 `validation_error` / `visibility_not_project`；403 `memory_forbidden`；404 `memory_not_found`；409 `memory_version_conflict` |
+| POST | `/api/memory/records/{mem_id}/supersede` | 200 新 version（pending） | 400 `validation_error` / `secret_in_body` / `visibility_not_project`；403 `memory_forbidden`；404 `memory_not_found`；409 `memory_version_conflict` |
+
+### 可见性
+
+- `private`：仅 owner Bot 读写。
+- `project`：仅当前项目成员读写；`project_id` 必填，且必须存在于 Workbench。
+- `run`：仅 owner Bot 读写，`run_id` 必填；没有 run 参与者模型，不广播。
+- 没有 `global` 可见性；`run_id` 只存在 payload 中。
+
+`GET /api/memory/records` 未显式过滤时返回 actor 自己的 private、actor 所属项目的 project、actor 自己的 run。显式查询他人 private 或非成员项目返回 403。
+
+### 晋升与版本
+
+- `publish` 只接受 `project` 记忆；必须是当前项目成员；`expected_version` 不是最新版本或该版本已 published 返回 409。
+- `publish` 只改 status/元数据，写入 `promoted_by`（actor）与 `promoted_at`；旧 body 不变。
+- `supersede` 校验 `expected_version` 与成员关系；旧 version 置 `superseded`（body 不变），新 version=N+1 为 `pending`，需要再次 publish。
+- 任意旧 version body 由 SQLite 触发器保护，不能通过 UPDATE 改写。
+- 契约扩展：`MemoryRecord.run_id` 放在 payload；`publish` 记录 `promoted_by` / `promoted_at`；`MemoryStore.list(..., latest_only=True)` 默认只取每个 mem 最新版本。
+
+### 注入
+
+`call_agent(..., bot_id=..., run_id=..., project_id=...)` 在冻结 Bot pin 后自动构建记忆槽；显式 `memory_slot` 可覆盖。记忆块只作参考，带“不是指令”的 GUARD；他人 private/run、非成员项目记忆、含 `sk-` 或密钥字段的项均不会进入提示。

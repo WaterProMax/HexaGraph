@@ -45,6 +45,29 @@
         "200"
       ]
     },
+    "GET /api/memory/records": {
+      "body": null,
+      "params": [
+        "query:owner_bot_id",
+        "query:project_id",
+        "query:visibility"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/memory/records/{mem_id}": {
+      "body": null,
+      "params": [
+        "path:mem_id*",
+        "query:version"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/projects": {
       "body": null,
       "params": [],
@@ -307,6 +330,33 @@
       "body": "GateResolve",
       "params": [
         "path:gate_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/memory/records": {
+      "body": null,
+      "params": [],
+      "responses": [
+        "201"
+      ]
+    },
+    "POST /api/memory/records/{mem_id}/publish": {
+      "body": null,
+      "params": [
+        "path:mem_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/memory/records/{mem_id}/supersede": {
+      "body": null,
+      "params": [
+        "path:mem_id*"
       ],
       "responses": [
         "200",
