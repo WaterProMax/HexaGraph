@@ -45,3 +45,37 @@ describe("api error parsing", () => {
     });
   });
 });
+
+describe("P2–P5 error body compatibility", () => {
+  it("reads error_category and string detail from the standard domain error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error_category: "baseline_stale", detail: "approved hashes changed" }),
+      }),
+    );
+    await expect(api.executionGrants("run-1")).rejects.toMatchObject({
+      status: 409,
+      category: "baseline_stale",
+      message: "approved hashes changed",
+    });
+  });
+
+  it("keeps the legacy detail-object shape working", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ detail: { category: "import_in_progress", summary: "整理中", run_id: "r1" } }),
+      }),
+    );
+    await expect(api.executionGrants("run-1")).rejects.toMatchObject({
+      category: "import_in_progress",
+      summary: "整理中",
+      run_id: "r1",
+    });
+  });
+});

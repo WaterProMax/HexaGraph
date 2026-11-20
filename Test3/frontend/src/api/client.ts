@@ -30,11 +30,16 @@ function parseApiError(status: number, text: string): ApiError {
   let runId: string | undefined;
   let message = text.trim() || (status >= 500 ? emptyServerErrorMessage(status) : String(status));
   try {
-    const body = JSON.parse(text) as { detail?: unknown };
+    const body = JSON.parse(text) as { detail?: unknown; error_category?: unknown };
+    // P2–P5 domain errors: {"error_category": "...", "detail": "..."}.
+    if (typeof body?.error_category === "string" && body.error_category) {
+      category = body.error_category;
+    }
     const detail = body?.detail ?? body;
     if (detail && typeof detail === "object") {
       const rec = detail as Record<string, unknown>;
-      category = typeof rec.category === "string" ? rec.category : undefined;
+      // Legacy shape: {"detail": {category, summary, run_id}}.
+      category = typeof rec.category === "string" ? rec.category : category;
       summary = typeof rec.summary === "string" ? rec.summary : undefined;
       runId = typeof rec.run_id === "string" ? rec.run_id : undefined;
       if (summary) message = summary;
@@ -57,6 +62,11 @@ async function req(path: string, init?: RequestInit) {
     throw parseApiError(res.status, await res.text());
   }
   return res.json();
+}
+
+/** Attach the explicit actor header required by discussion/acceptance routes. */
+function botHeader(botId: string): Record<string, string> {
+  return { "X-Bot-Id": botId };
 }
 
 export const api = {
@@ -102,6 +112,48 @@ export const api = {
   terminate: (id: string) => req(`/runs/${id}/terminate`, { method: "POST", body: JSON.stringify({ confirm: true }) }),
   models: () => req("/config/models"),
   testModels: () => req("/config/models/test", { method: "POST" }),
+
+  // --- P2–P5 domains ---------------------------------------------------------
+  bots: (status?: "active" | "archived") =>
+    req(`/bots${status ? `?status=${status}` : ""}`),
+  bot: (botId: string) => req(`/bots/${encodeURIComponent(botId)}`),
+  createBot: (body: import("./types").BotCreate) =>
+    req("/bots", { method: "POST", body: JSON.stringify(body) }),
+  patchBot: (botId: string, body: import("./types").BotPatch) =>
+    req(`/bots/${encodeURIComponent(botId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  archiveBot: (botId: string) =>
+    req(`/bots/${encodeURIComponent(botId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
+  skills: () => req("/skills"),
+  memberships: (projectId: string) => req(`/projects/${projectId}/memberships`),
+  executionGrants: (runId: string) => req(`/runs/${runId}/execution-grants`),
+  executionProfile: (runId: string) => req(`/runs/${runId}/execution-profile`),
+  scheduleRun: (runId: string, taskCodes?: string[]) =>
+    req(`/runs/${runId}/schedule`, {
+      method: "POST",
+      body: JSON.stringify(taskCodes ? { task_codes: taskCodes } : {}),
+    }),
+
+  // Discussion (C.5.6) requires X-Bot-Id as the actor.
+  discussionSessions: (projectId: string, botId: string) =>
+    req(`/projects/${projectId}/discussion-sessions`, { headers: botHeader(botId) }),
+  discussionSession: (sessionId: string, botId: string) =>
+    req(`/discussion-sessions/${sessionId}`, { headers: botHeader(botId) }),
+  discussionProposals: (sessionId: string, botId: string) =>
+    req(`/discussion-sessions/${sessionId}/proposals`, { headers: botHeader(botId) }),
+  discussionReviews: (sessionId: string, botId: string) =>
+    req(`/discussion-sessions/${sessionId}/reviews`, { headers: botHeader(botId) }),
+  resolveDiscussion: (sessionId: string, body: { decision: "approved" | "rejected"; comment?: string; run_id?: string }, botId: string) =>
+    req(`/discussion-sessions/${sessionId}/resolve`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
+
+  // Module acceptance / defects (C.5.7) require X-Bot-Id.
+  moduleAcceptances: (runId: string, botId: string) =>
+    req(`/runs/${runId}/module-acceptances`, { headers: botHeader(botId) }),
+  defects: (runId: string, botId: string) =>
+    req(`/runs/${runId}/defects`, { headers: botHeader(botId) }),
 };
 
 export const CONTROL_ENABLED: Record<string, string[]> = {

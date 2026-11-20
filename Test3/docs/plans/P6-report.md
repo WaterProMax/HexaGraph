@@ -27,3 +27,12 @@
 - 实现：`components/AppShell.tsx` 从原 `App.tsx` 内联 Sidebar 抽取，保留折叠（`COMPACT_VIEWPORT=1100`）、最近运行、品牌区；导出 `DEFAULT_NAV_ITEMS`、`REQUIRED_NAV_KEYS`、`LoadState`、`AppShellProps`。`App.tsx` 导出 `APP_ROUTE_PATHS`，新增 `/bots`、`/bots/new`、`/bots/:id`、`/projects/:projectId`；`/settings` 继续渲染既有 `pages/Settings.tsx`。
 - 保留：`/workstation/static-classroom` → `RetiredFeature feature="static-classroom"`、`/deepseek/:id?` → `RetiredFeature feature="deepseek"` 原样保留；无顶级 `/models`、`/skills`。
 - Settings 回归：成功探测仍 `POST /api/config/models/test` 并展示结果；失败探测页面不崩溃、请求路径不变。
+## T02 · Bot 列表与表单：Model / Skill pin、四种加载态
+
+- 命令：`cd Test3/frontend && npm test -- src/pages/bots/BotListPage.test.tsx src/pages/bots/BotForm.test.tsx src/api/client.test.ts`
+- 退出码：0
+- 计数：3 files / 13 tests passed（列表 6 / 表单 4 / client 3）；补 2 条 P2–P5 错误体用例后 `src/api/client.test.ts` 为 5 passed，`npx tsc --noEmit` 通过。
+- 类型：新建 `src/api/types.ts`，字段与 C.4 后端同名（BotInstance / BotCreate / BotPatch / BotSkillBinding / SkillDefinition / ExecutionGrant / ReviewBallot / DecisionPackage / DiscussionSession / ModuleAcceptance / DefectRecord / ErrorBody / RunTask）。`secret_ref` 仅环境变量名。
+- client：`parseApiError` 现在同时识别 `{"error_category","detail"}` 与旧 `{"detail":{category,summary,run_id}}`；新增 bots/skills/成员/grants/schedule/讨论/验收/缺陷方法，讨论与验收请求带 `X-Bot-Id`。
+- 页面：`pages/bots/BotListPage.tsx` + `BotForm.tsx`。列表四态 testid `bots-loading` / `bots-empty`（含「还没有 Bot」）/ `bots-error` / `bots-forbidden`；创建与编辑表单内嵌模型槽位与 Skill 版本绑定；创建 `POST /api/bots` 的 body 不含 `bot_id`，编辑走 `PATCH /api/bots/{id}`，归档走 `POST /api/bots/{id}/archive` 且需二次确认。
+- 数据：只调用真实端点 `GET /api/bots`、`GET /api/skills`、`GET /api/config/models`、`GET /api/bots/{id}`。
