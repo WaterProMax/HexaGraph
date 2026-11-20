@@ -1,4 +1,8 @@
-"""Cross review for P4 discussions: no self review, no score-based truth."""
+"""Cross review for P4 discussions: no self review.
+
+Ballot scores never decide a proposal on their own; they are only summarised
+per proposal so convergence can compare the spread against a threshold.
+"""
 
 from __future__ import annotations
 
@@ -96,6 +100,41 @@ def score_spread(ballots: list[ReviewBallot]) -> float:
     return float(max(totals) - min(totals))
 
 
+def proposal_totals(ballots: list[ReviewBallot]) -> dict[str, float]:
+    """Average total score per proposal; proposals without ballots are omitted."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for ballot in ballots:
+        total = float(sum(ballot.scores.values()))
+        sums[ballot.proposal_id] = sums.get(ballot.proposal_id, 0.0) + total
+        counts[ballot.proposal_id] = counts.get(ballot.proposal_id, 0) + 1
+    return {
+        proposal_id: sums[proposal_id] / counts[proposal_id] for proposal_id in sums
+    }
+
+
+def proposal_spread(
+    ballots: list[ReviewBallot], proposal_ids: list[str] | None = None
+) -> float | None:
+    """Max minus min average total across scored proposals.
+
+    Only proposals that appear in ``proposal_ids`` (when given) and have at
+    least one ballot are compared.  Fewer than two scored proposals means the
+    spread is undefined.
+    """
+    if proposal_ids is None:
+        totals = proposal_totals(ballots)
+    else:
+        wanted = set(proposal_ids)
+        totals = proposal_totals(
+            [ballot for ballot in ballots if ballot.proposal_id in wanted]
+        )
+    if len(totals) < 2:
+        return None
+    values = list(totals.values())
+    return float(max(values) - min(values))
+
+
 async def open_cross_review(
     session_id: str, *, session: AsyncSession
 ) -> DiscussionSession:
@@ -107,6 +146,8 @@ __all__ = [
     "ProposalNotFound",
     "SelfReviewForbidden",
     "open_cross_review",
+    "proposal_spread",
+    "proposal_totals",
     "score_spread",
     "submit_review",
 ]

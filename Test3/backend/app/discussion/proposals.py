@@ -52,6 +52,10 @@ def _next_round(record: DiscussionSession, round_no: int | None) -> int:
         next_round = 1
     elif record.status in {"cross_review", "round_n_revise"}:
         next_round = record.current_round + 1
+    elif record.status == "converged_pending_human":
+        if record.decision_package is not None:
+            raise InvalidStatus("decision package already exists")
+        next_round = record.current_round + 1
     elif record.status == "budget_exhausted":
         raise BudgetExhausted("discussion budget is exhausted")
     else:

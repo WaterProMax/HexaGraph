@@ -256,6 +256,48 @@ async def test_resolve_before_converged_is_invalid(bench) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_approved_persists_comment(bench) -> None:
+    _project, leader, _alice, _bob, session_id = await _converged(bench)
+    await _package(bench, session_id, leader)
+    async with bench.db_session() as session:
+        resolved = await resolve_decision(
+            session_id,
+            "approved",
+            "同意，按此规格拆解",
+            actor_bot_id=leader,
+            bench=bench,
+            session=session,
+        )
+        await session.commit()
+    assert resolved.status == "approved"
+    assert resolved.resolution_comment == "同意，按此规格拆解"
+    async with bench.db_session() as session:
+        stored = await DiscussionSessionStore(session).get(session_id)
+    assert stored.resolution_comment == "同意，按此规格拆解"
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejected_persists_comment(bench) -> None:
+    _project, leader, _alice, _bob, session_id = await _converged(bench)
+    await _package(bench, session_id, leader)
+    async with bench.db_session() as session:
+        resolved = await resolve_decision(
+            session_id,
+            "rejected",
+            "缺少离线场景的验收标准",
+            actor_bot_id=leader,
+            bench=bench,
+            session=session,
+        )
+        await session.commit()
+    assert resolved.status == "rejected"
+    assert resolved.resolution_comment == "缺少离线场景的验收标准"
+    async with bench.db_session() as session:
+        stored = await DiscussionSessionStore(session).get(session_id)
+    assert stored.resolution_comment == "缺少离线场景的验收标准"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_approvals_are_idempotent(bench) -> None:
     project, leader, _alice, _bob, session_id = await _converged(bench)
     package = await _package(bench, session_id, leader)

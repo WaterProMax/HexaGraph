@@ -1,7 +1,9 @@
 """Deterministic convergence decision for a P4 discussion round.
 
-The decision uses only hard-gate booleans, dissent records, round counts and
-budget usage.  It is a pure function of ``DiscussionRoundState``.
+The decision uses hard-gate booleans, the per-proposal score spread, dissent
+records, round counts and budget usage.  It is a pure function of
+``DiscussionRoundState``; ballots never pick a winner, the spread only has to
+fall within ``DiscussionBudget.score_gap_threshold``.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.discussion.cross_review import proposal_spread
 from app.discussion.models import (
     DiscussionRoundState,
     DiscussionSession,
@@ -94,12 +97,18 @@ async def build_round_state(
     extra_dissent: list[str] | None = None,
 ) -> DiscussionRoundState:
     counts: list[int] = []
+    spread: float | None = None
     for round_no in range(1, record.current_round + 1):
         proposals, reviews = await _round_proposals_reviews(
             session, record.session_id, round_no
         )
         summary = _gate_summary(reviews)
         counts.append(sum(summary.values()) if proposals else 0)
+        if round_no == record.current_round:
+            spread = proposal_spread(
+                [ballot for ballots in reviews.values() for ballot in ballots],
+                [proposal.proposal_id for proposal in proposals],
+            )
     review_rows = list(
         (
             await session.execute(
@@ -125,6 +134,49 @@ async def build_round_state(
         hard_gate_pass_counts=counts,
         dissent_items=list(dict.fromkeys(dissent)),
         all_required_hard_gates_pass=latest == REQUIRED_HARD_GATE_COUNT,
+        score_spread=spread,
+    )
+
+
+def _spread_text(spread: float | None, threshold: float) -> str:
+    if spread is None:
+        return f"score spread unavailable (threshold {threshold:g})"
+    relation = "within" if spread <= threshold else "above"
+    return f"score spread {spread:g} {relation} threshold {threshold:g}"
+
+
+def _converge_with_score_gap(
+    state: DiscussionRoundState, threshold: float
+) -> tuple[str, str]:
+    """Threshold mode: unmet conditions get another round instead of dissent override."""
+    dissent = list(dict.fromkeys(state.dissent_items))
+    dissent_text = f"; dissent: {' | '.join(dissent)}" if dissent else ""
+    latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0
+    unmet = max(0, REQUIRED_HARD_GATE_COUNT - latest)
+    spread_text = _spread_text(state.score_spread, threshold)
+    spread_within = state.score_spread is not None and state.score_spread <= threshold
+    if state.all_required_hard_gates_pass and spread_within:
+        return (
+            "submit_human",
+            f"all required hard gates passed; {spread_text}" + dissent_text,
+        )
+    if state.current_round >= state.budget.max_rounds:
+        return (
+            "submit_human",
+            f"round limit reached at round {state.current_round}; "
+            f"unmet hard gates: {unmet}; {spread_text}" + dissent_text,
+        )
+    counts = state.hard_gate_pass_counts
+    if len(counts) >= 2 and counts[-1] <= counts[-2]:
+        return (
+            "no_improvement",
+            f"hard gate pass count did not improve: {counts[-2]} -> {counts[-1]}; "
+            f"{spread_text}" + dissent_text,
+        )
+    return (
+        "revise",
+        f"convergence conditions not met: {unmet} unmet hard gate(s); "
+        f"{spread_text}" + dissent_text,
     )
 
 
@@ -143,6 +195,8 @@ def should_converge(state: DiscussionRoundState) -> tuple[str, str]:
             "budget_exhausted",
             f"wallclock budget reached: {state.elapsed_seconds}/{budget.max_wallclock_seconds}",
         )
+    if budget.score_gap_threshold is not None:
+        return _converge_with_score_gap(state, budget.score_gap_threshold)
     dissent = list(dict.fromkeys(state.dissent_items))
     dissent_text = f"; dissent: {' | '.join(dissent)}" if dissent else ""
     latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0

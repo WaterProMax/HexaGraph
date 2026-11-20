@@ -11,16 +11,23 @@ from sqlalchemy import func, select
 
 from app.agents.runtime import RoleRegistry
 from app.bots.registry import BotRegistry
+from app.discussion.converge import build_round_state
 from app.discussion.cross_review import (
     DuplicateReview,
     ProposalNotFound,
     SelfReviewForbidden,
+    proposal_spread,
+    proposal_totals,
     score_spread,
     submit_review,
 )
 from app.discussion.models import ReviewBallot
 from app.discussion.proposals import start_round, submit_proposal
-from app.discussion.session_store import InvalidStatus, NotParticipant
+from app.discussion.session_store import (
+    DiscussionSessionStore,
+    InvalidStatus,
+    NotParticipant,
+)
 from app.leader.steward import DiscussionSteward
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
@@ -31,7 +38,7 @@ from app.services.runtime import Workbench
 from app.settings import load_models, load_roles
 from app.storage.db import make_engine, session_factory, sqlite_url
 from app.storage.migrate import upgrade_database
-from app.storage.models import DiscussionReviewRow
+from app.storage.models import DiscussionProposalRow, DiscussionReviewRow
 
 
 @pytest.fixture
@@ -198,6 +205,82 @@ async def test_concurrent_reviewers_create_two_rows(factory) -> None:
 def test_score_spread_is_not_referenced_by_submit_review() -> None:
     assert "score_spread" not in inspect.getsource(submit_review)
     assert score_spread([_ballot("a", "p", score=3), _ballot("b", "p", score=5)]) == 2.0
+
+
+def test_proposal_totals_averages_ballots_per_proposal() -> None:
+    ballots = [
+        _ballot("a", "p1", score=4),
+        _ballot("b", "p1", score=5),
+        _ballot("c", "p2", score=2),
+    ]
+    assert proposal_totals(ballots) == {"p1": 7.5, "p2": 5.0}
+
+
+def test_proposal_totals_and_spread_handle_empty_input() -> None:
+    assert proposal_totals([]) == {}
+    assert proposal_spread([]) is None
+    assert proposal_spread([_ballot("a", "p1")]) is None
+
+
+def test_proposal_spread_is_zero_for_tied_averages() -> None:
+    ballots = [_ballot("a", "p1", score=4), _ballot("b", "p2", score=4)]
+    assert proposal_spread(ballots) == 0.0
+
+
+def test_proposal_spread_respects_proposal_ids_and_skips_unscored() -> None:
+    ballots = [
+        _ballot("a", "p1", score=4),
+        _ballot("b", "p2", score=5),
+        _ballot("c", "p3", score=1),
+        _ballot("d", "p5", score=5),
+    ]
+    assert proposal_spread(ballots) == 4.0
+    assert proposal_spread(ballots, ["p1", "p2"]) == 1.0
+    assert proposal_spread(ballots, ["p1", "p3", "p4"]) == 3.0
+    assert proposal_spread(ballots, ["p1"]) is None
+    assert proposal_spread(ballots, ["p4", "p6"]) is None
+    assert proposal_spread(ballots, []) is None
+
+
+@pytest.mark.asyncio
+async def test_build_round_state_uses_current_round_proposal_spread(factory) -> None:
+    _leader, alice, bob, _carol, session_id, _proposal_id = await _seeded(factory)
+    async with factory() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(DiscussionProposalRow).where(
+                        DiscussionProposalRow.session_id == session_id
+                    )
+                )
+            ).scalars()
+        )
+    proposal_by_author = {row.author_bot_id: row.proposal_id for row in rows}
+    async with factory() as session:
+        await submit_review(
+            session_id,
+            _ballot(bob, proposal_by_author[alice], score=5),
+            session=session,
+        )
+        await submit_review(
+            session_id,
+            _ballot(alice, proposal_by_author[bob], score=3),
+            session=session,
+        )
+        await session.commit()
+    async with factory() as session:
+        record = await DiscussionSessionStore(session).get(session_id)
+        state = await build_round_state(session, record)
+    assert state.score_spread == 2.0
+
+
+@pytest.mark.asyncio
+async def test_build_round_state_without_reviews_has_no_spread(factory) -> None:
+    _leader, _alice, _bob, _carol, session_id, _proposal_id = await _seeded(factory)
+    async with factory() as session:
+        record = await DiscussionSessionStore(session).get(session_id)
+        state = await build_round_state(session, record)
+    assert state.score_spread is None
 
 
 def _app(tmp_path):

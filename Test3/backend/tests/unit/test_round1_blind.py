@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.bots.registry import BotRegistry
+from app.discussion.decision import submit_decision
 from app.discussion.models import DiscussionBudget
 from app.discussion.proposals import (
     BudgetExhausted,
@@ -83,6 +84,19 @@ async def _submit(factory, session_id: str, author: str, text: str):
         result = await submit_proposal(session_id, author, text, session=session)
         await session.commit()
         return result
+
+
+async def _pending_human(factory, *, max_rounds: int = 3):
+    leader, alice, bob, session_id = await _seeded(factory, max_rounds=max_rounds)
+    await _start(factory, session_id, leader)
+    await _submit(factory, session_id, alice, "Alice-plan")
+    await _submit(factory, session_id, bob, "Bob-plan")
+    async with factory() as session:
+        store = DiscussionSessionStore(session)
+        record = await store.get(session_id)
+        await store.save(record.model_copy(update={"status": "converged_pending_human"}))
+        await session.commit()
+    return leader, alice, bob, session_id
 
 
 @pytest.mark.asyncio
@@ -181,6 +195,64 @@ async def test_budget_exhaustion_sets_status(factory) -> None:
     async with factory() as session:
         record = await DiscussionSessionStore(session).get(session_id)
     assert record.status == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_start_round_from_converged_pending_human_opens_next_round(factory) -> None:
+    leader, alice, _bob, session_id = await _pending_human(factory)
+    record = await _start(factory, session_id, leader)
+    assert record.status == "round_n_revise"
+    assert record.current_round == 2
+    assert record.decision_package is None
+    await _submit(factory, session_id, alice, "Alice-plan-v2")
+    async with factory() as session:
+        items = await list_proposals(session_id, alice, session=session)
+    assert [(item["round"], item["body_md"]) for item in items] == [(2, "Alice-plan-v2")]
+    assert items[0]["sealed"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_leader_cannot_start_round_from_converged_pending_human(factory) -> None:
+    _leader, alice, _bob, session_id = await _pending_human(factory)
+    async with factory() as session:
+        with pytest.raises(Forbidden):
+            await start_round(session_id, actor_bot_id=alice, session=session)
+        await session.rollback()
+    async with factory() as session:
+        record = await DiscussionSessionStore(session).get(session_id)
+    assert record.status == "converged_pending_human"
+    assert record.current_round == 1
+
+
+@pytest.mark.asyncio
+async def test_start_round_from_converged_pending_human_with_package_is_invalid(factory) -> None:
+    leader, _alice, _bob, session_id = await _pending_human(factory)
+    async with factory() as session:
+        await submit_decision(
+            session_id, "# spec", [], actor_bot_id=leader, session=session
+        )
+        await session.commit()
+    async with factory() as session:
+        with pytest.raises(InvalidStatus):
+            await start_round(session_id, actor_bot_id=leader, session=session)
+        await session.rollback()
+    async with factory() as session:
+        record = await DiscussionSessionStore(session).get(session_id)
+    assert record.status == "converged_pending_human"
+    assert record.current_round == 1
+
+
+@pytest.mark.asyncio
+async def test_start_round_from_converged_pending_human_respects_max_rounds(factory) -> None:
+    leader, _alice, _bob, session_id = await _pending_human(factory, max_rounds=1)
+    async with factory() as session:
+        with pytest.raises(BudgetExhausted):
+            await start_round(session_id, actor_bot_id=leader, session=session)
+        await session.commit()
+    async with factory() as session:
+        record = await DiscussionSessionStore(session).get(session_id)
+    assert record.status == "budget_exhausted"
+    assert record.current_round == 1
 
 
 @pytest.mark.asyncio

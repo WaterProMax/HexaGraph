@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -547,16 +548,140 @@ async def test_create_session_accepts_string_requirement_snapshot(app) -> None:
     async with _client(app) as client:
         leader = await _create_bot(client, "Leader")
         alice = await _create_bot(client, "Alice")
+        bob = await _create_bot(client, "Bob")
         await _add_member(client, p1, leader, leader=True)
         await _add_member(client, p1, alice)
+        await _add_member(client, p1, bob)
         res = await client.post(
             f"/api/projects/{p1}/discussion-sessions",
             json={
                 "leader_bot_id": leader,
-                "participant_bot_ids": [alice],
+                "participant_bot_ids": [alice, bob],
                 "requirement_snapshot": "plain requirement",
             },
             headers=_headers(leader),
         )
     assert res.status_code == 201, res.text
     assert res.json()["requirement_snapshot_hash"] == hash_artifact("plain requirement")
+    assert res.json()["requirement_text"] == "plain requirement"
+
+
+async def _three_bots(client: AsyncClient, p1: str) -> tuple[str, str, str]:
+    leader = await _create_bot(client, "Leader")
+    alice = await _create_bot(client, "Alice")
+    bob = await _create_bot(client, "Bob")
+    await _add_member(client, p1, leader, leader=True)
+    await _add_member(client, p1, alice)
+    await _add_member(client, p1, bob)
+    return leader, alice, bob
+
+
+@pytest.mark.asyncio
+async def test_create_session_default_budget_uses_score_threshold(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader, alice, bob = await _three_bots(client, p1)
+        created = await _create_session(client, p1, leader, [alice, bob])
+    assert created.status_code == 201, created.text
+    budget = created.json()["budget"]
+    assert budget["max_rounds"] == 3
+    assert budget["score_gap_threshold"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_create_session_keeps_explicit_null_score_threshold(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader, alice, bob = await _three_bots(client, p1)
+        created = await _create_session(
+            client,
+            p1,
+            leader,
+            [alice, bob],
+            budget={"score_gap_threshold": None},
+        )
+    assert created.status_code == 201, created.text
+    budget = created.json()["budget"]
+    assert budget["max_rounds"] == 3
+    assert budget["score_gap_threshold"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_object_snapshot_serializes_requirement_text(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    snapshot = {"text": "中文需求", "scope": ["a", "b"]}
+    async with _client(app) as client:
+        leader, alice, bob = await _three_bots(client, p1)
+        created = await _create_session(
+            client, p1, leader, [alice, bob], requirement_snapshot=snapshot
+        )
+    assert created.status_code == 201, created.text
+    assert created.json()["requirement_text"] == json.dumps(snapshot, ensure_ascii=False)
+    assert "中文需求" in created.json()["requirement_text"]
+
+
+@pytest.mark.asyncio
+async def test_create_session_passes_previous_session_id(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader, alice, bob = await _three_bots(client, p1)
+        first = await _create_session(client, p1, leader, [alice, bob])
+        second = await _create_session(
+            client,
+            p1,
+            leader,
+            [alice, bob],
+            requirement_snapshot="revised requirement",
+            previous_session_id=first.json()["session_id"],
+        )
+    assert second.status_code == 201, second.text
+    assert second.json()["previous_session_id"] == first.json()["session_id"]
+    assert second.json()["requirement_text"] == "revised requirement"
+    assert first.json()["previous_session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_needs_at_least_two_participants(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader, alice, _bob = await _three_bots(client, p1)
+        single = await _create_session(client, p1, leader, [alice])
+        duplicated = await _create_session(client, p1, leader, [alice, alice])
+    assert single.status_code == 400
+    assert single.json()["error_category"] == "validation_error"
+    assert "至少需要 2 个 Bot" in single.json()["detail"]
+    assert duplicated.status_code == 400
+    assert "至少需要 2 个 Bot" in duplicated.json()["detail"]
+    assert await _session_count(bench) == 0
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_secret_in_requirement(app) -> None:
+    bench = app.state.workbench
+    p1 = bench.create_project("P1")["id"]
+    async with _client(app) as client:
+        leader, alice, bob = await _three_bots(client, p1)
+        leaked = await _create_session(
+            client,
+            p1,
+            leader,
+            [alice, bob],
+            requirement_snapshot="想法：用 sk-abc123 这把钥匙",
+        )
+        object_form = await _create_session(
+            client,
+            p1,
+            leader,
+            [alice, bob],
+            requirement_snapshot={"text": "sk-abc123"},
+        )
+    assert leaked.status_code == 400
+    assert leaked.json()["error_category"] == "secret_in_body"
+    assert object_form.status_code == 400
+    assert object_form.json()["error_category"] == "secret_in_body"
+    assert await _session_count(bench) == 0

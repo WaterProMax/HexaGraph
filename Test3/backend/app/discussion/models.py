@@ -15,6 +15,7 @@ DiscussionSessionStatus = Literal[
     "approved",
     "rejected",
     "budget_exhausted",
+    "terminated",
 ]
 
 
@@ -53,6 +54,9 @@ class DiscussionBudget(BaseModel):
     max_rounds: int = 3
     max_tokens: int | None = None
     max_wallclock_seconds: int | None = None
+    # ``None`` keeps the pre-threshold behaviour (hard gates only). New sessions
+    # get the 10% default written by the create route.
+    score_gap_threshold: float | None = None
 
 
 class DiscussionSession(BaseModel):
@@ -65,6 +69,11 @@ class DiscussionSession(BaseModel):
     budget: DiscussionBudget
     requirement_snapshot_hash: str
     decision_package: DecisionPackage | None = None
+    requirement_text: str = ""
+    previous_session_id: str | None = None
+    resolution_comment: str | None = None
+    paused: bool = False
+    created_at: str = ""
 
 
 @dataclass
@@ -76,6 +85,7 @@ class DiscussionRoundState:
     hard_gate_pass_counts: list[int]
     dissent_items: list[str]
     all_required_hard_gates_pass: bool
+    score_spread: float | None = None
 
 
 __all__ = [

@@ -43,6 +43,7 @@ from app.leader.steward import (
     LeaderNotInProject,
     ProjectNotFound,
 )
+from app.memory.organizer import contains_secret
 from app.storage.models import DiscussionReviewRow
 
 router = APIRouter()
@@ -53,6 +54,7 @@ class CreateSessionBody(BaseModel):
     participant_bot_ids: list[str]
     requirement_snapshot: str | dict
     budget: DiscussionBudget | None = None
+    previous_session_id: str | None = None
 
 
 class GroupBody(BaseModel):
@@ -132,6 +134,19 @@ async def create_session(project_id: str, request: Request) -> Any:
         return _json_error(404, "project_not_found", f"project not found: {project_id}")
     if body.leader_bot_id != actor:
         return _json_error(403, "forbidden", "leader_bot_id must match X-Bot-Id")
+    if len(dict.fromkeys(body.participant_bot_ids)) < 2:
+        return _json_error(400, "validation_error", "讨论至少需要 2 个 Bot 参与")
+    if isinstance(body.requirement_snapshot, str):
+        requirement_text = body.requirement_snapshot
+    else:
+        requirement_text = json.dumps(body.requirement_snapshot, ensure_ascii=False)
+    if contains_secret(requirement_text):
+        return _json_error(400, "secret_in_body", "requirement contains a secret-like value")
+    budget = (
+        DiscussionBudget(max_rounds=3, score_gap_threshold=2.0)
+        if body.budget is None
+        else body.budget
+    )
     async with bench.db_session() as session:
         steward = DiscussionSteward(session, project_exists=lambda pid: pid in bench.projects)
         try:
@@ -140,7 +155,9 @@ async def create_session(project_id: str, request: Request) -> Any:
                 body.leader_bot_id,
                 body.participant_bot_ids,
                 body.requirement_snapshot,
-                body.budget,
+                budget,
+                requirement_text=requirement_text,
+                previous_session_id=body.previous_session_id,
             )
             await session.commit()
         except ProjectNotFound:

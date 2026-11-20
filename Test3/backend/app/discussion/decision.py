@@ -144,6 +144,7 @@ async def resolve_decision(
         return await _resolve_once(
             session_id,
             decision,
+            comment=comment,
             run_id=run_id,
             bench=bench,
             session=session,
@@ -154,6 +155,7 @@ async def _resolve_once(
     session_id: str,
     decision: str,
     *,
+    comment: str | None,
     run_id: str | None,
     bench,
     session: AsyncSession,
@@ -194,7 +196,10 @@ async def _resolve_once(
         return record
     if record.status != "converged_pending_human":
         raise InvalidStatus(record.status)
-    updated = record.model_copy(update={"status": decision})
+    fields: dict = {"status": decision}
+    if comment is not None:
+        fields["resolution_comment"] = comment
+    updated = record.model_copy(update=fields)
     await store.save(updated)
     return updated
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +57,8 @@ class DiscussionSteward:
         participant_bot_ids: list[str],
         requirement_snapshot: Any,
         budget: DiscussionBudget | dict | None = None,
+        requirement_text: str = "",
+        previous_session_id: str | None = None,
     ) -> DiscussionSession:
         if self.project_exists is not None and not self.project_exists(project_id):
             raise ProjectNotFound(project_id)
@@ -79,6 +82,9 @@ class DiscussionSteward:
             budget=budget_obj,
             requirement_snapshot_hash=hash_artifact(requirement_snapshot),
             decision_package=None,
+            requirement_text=requirement_text,
+            previous_session_id=previous_session_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
         )
         await self.store.create(record)
         return record

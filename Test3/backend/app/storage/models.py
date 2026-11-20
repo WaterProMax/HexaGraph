@@ -378,6 +378,23 @@ class DiscussionReviewRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class DiscussionMessageRow(Base):
+    """Append-only chat timeline of one discussion session; payload never holds a proposal body."""
+
+    __tablename__ = "discussion_messages"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    bot_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+Index("ix_discussion_messages_session", DiscussionMessageRow.session_id)
+
+
 class ModuleAcceptanceRow(Base):
     """Human module acceptance (P5, contracts C.6)."""
 

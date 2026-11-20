@@ -105,7 +105,8 @@ class DiscussionSessionStore:
             .order_by(DiscussionSessionRow.session_id)
         )
         rows = list((await self.session.execute(stmt)).scalars())
-        return [_to_session(row) for row in rows]
+        records = [_to_session(row) for row in rows]
+        return sorted(records, key=lambda record: (record.created_at, record.session_id))
 
 
 __all__ = [

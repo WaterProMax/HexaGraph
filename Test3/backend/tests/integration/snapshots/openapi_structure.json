@@ -69,6 +69,31 @@
         "422"
       ]
     },
+    "GET /api/discussion-sessions/{session_id}/events": {
+      "body": null,
+      "params": [
+        "header:Last-Event-ID",
+        "header:X-Bot-Id",
+        "path:session_id*",
+        "query:bot_id"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "GET /api/discussion-sessions/{session_id}/messages": {
+      "body": null,
+      "params": [
+        "header:X-Bot-Id",
+        "path:session_id*",
+        "query:after"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/discussion-sessions/{session_id}/proposals": {
       "body": null,
       "params": [
@@ -447,6 +472,16 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/pause": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/discussion-sessions/{session_id}/proposals": {
       "body": null,
       "params": [
@@ -458,6 +493,16 @@
       ]
     },
     "POST /api/discussion-sessions/{session_id}/resolve": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/resume": {
       "body": null,
       "params": [
         "path:session_id*"
@@ -487,6 +532,16 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/run": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/discussion-sessions/{session_id}/submit-decision": {
       "body": null,
       "params": [
@@ -494,6 +549,16 @@
       ],
       "responses": [
         "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/terminate": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
         "422"
       ]
     },
