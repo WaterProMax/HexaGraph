@@ -3,7 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type { BotInstance, SkillDefinition } from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
+import { BotAvatar } from "../../components/BotAvatar";
 import { BotForm, type ProviderOption } from "./BotForm";
+import { BotWorkspace } from "./BotWorkspace";
 
 export type BotListPageProps = { mode?: "list" | "create" | "edit" };
 
@@ -88,9 +90,14 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
 
   return (
     <div className="page">
-      <div className="page-head">
-        <h1>Bot</h1>
-        <p>每个 Bot 自带模型与 Skill 版本绑定；密钥只记录环境变量名。</p>
+      <div className="page-head bot-page-head">
+        <div>
+          <h1>Bot</h1>
+          <p>每个 Bot 自带模型与 Skill 版本绑定；密钥只记录环境变量名。</p>
+        </div>
+        <Link className="chip" to="/bots/new" data-testid="bots-new-link">
+          + 新建 Bot
+        </Link>
       </div>
 
       {loadState === "loading" && (
@@ -125,17 +132,24 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
           </div>
           <div className="grid-list">
             {bots.map((bot) => (
-              <Link className="list-card" key={bot.bot_id} to={`/bots/${bot.bot_id}`} style={{ textDecoration: "none" }}>
+              <Link
+                className="list-card bot-list-card"
+                key={bot.bot_id}
+                to={`/bots/${bot.bot_id}`}
+                style={{ textDecoration: "none" }}
+              >
+                <BotAvatar bot={bot} size={40} />
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontWeight: 500 }}>{bot.display_name}</div>
+                  <div className="bot-list-name">{bot.display_name}</div>
                   <div className="mono muted">
-                    {bot.bot_id.slice(0, 8)} · {bot.model} · {bot.status}
+                    {bot.role_template} · {bot.model} · {bot.slot}
                   </div>
                   <div className="mono muted">
                     {bot.skill_bindings.map((binding) => `${binding.skill_id}@${binding.pinned_version}`).join(", ") ||
                       "未绑定 Skill"}
                   </div>
                 </div>
+                <span className={`chip status-${bot.status}`}>{bot.status}</span>
               </Link>
             ))}
           </div>
@@ -147,15 +161,23 @@ export default function BotListPage({ mode = "list" }: BotListPageProps) {
         </>
       )}
 
-      {(loadState === "ready" || loadState === "empty") && mode !== "list" && (
+      {mode === "create" && (loadState === "ready" || loadState === "empty") && (
         <BotForm
-          mode={mode}
-          initial={initial}
+          mode="create"
           providerOptions={providers}
           skillOptions={skills}
           loadState={loadState}
           onSubmit={submit}
-          onArchive={mode === "edit" ? archive : undefined}
+        />
+      )}
+      {mode === "edit" && loadState === "ready" && initial && (
+        <BotWorkspace
+          bot={initial}
+          providerOptions={providers}
+          skillOptions={skills}
+          loadState={loadState}
+          onSave={submit}
+          onArchive={archive}
         />
       )}
     </div>

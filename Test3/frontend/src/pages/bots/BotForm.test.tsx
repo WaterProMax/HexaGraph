@@ -107,3 +107,38 @@ describe("BotForm", () => {
     expect(onArchive).toHaveBeenCalledTimes(1);
   });
 });
+describe("role presets", () => {
+  it("applies a preset role and matching slot in create mode", () => {
+    const onSubmit = vi.fn();
+    render(
+      <BotForm
+        mode="create"
+        providerOptions={[{ slot: "flagship", model: "m1" }]}
+        skillOptions={skills}
+        loadState="ready"
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "PM Bot" } });
+    fireEvent.click(screen.getByTestId("preset-pm"));
+    fireEvent.click(screen.getByRole("button", { name: "创建 Bot" }));
+    const draft = onSubmit.mock.calls[0][0];
+    expect(draft.role_template).toBe("pm");
+    expect(draft.slot).toBe("flagship");
+    expect(draft.model).toBe("m1");
+  });
+
+  it("does not offer presets when editing", () => {
+    render(
+      <BotForm
+        mode="edit"
+        initial={botA}
+        providerOptions={providers}
+        skillOptions={skills}
+        loadState="ready"
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("preset-pm")).toBeNull();
+  });
+});

@@ -147,3 +147,46 @@ export type RunTask = {
   evidence?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
+/** Memory (C.4 / C.5.5). Bodies never contain secret plaintext. */
+export type MemorySource = { kind: string; ref: string; sha: string };
+
+export type MemoryVisibility = "private" | "project" | "run";
+export type MemoryStatus = "pending" | "published" | "superseded";
+
+export type MemoryRecord = {
+  mem_id: string;
+  owner_bot_id: string;
+  project_id: string | null;
+  visibility: MemoryVisibility;
+  version: number;
+  status: MemoryStatus;
+  sources: MemorySource[];
+  body: Record<string, unknown>;
+  title: string;
+  run_id: string | null;
+  promoted_by?: string | null;
+  promoted_at?: string | null;
+};
+
+export type MemoryCreate = {
+  owner_bot_id: string;
+  project_id?: string | null;
+  visibility: MemoryVisibility;
+  sources: MemorySource[];
+  body: Record<string, unknown>;
+  title?: string;
+  run_id?: string | null;
+};
+
+export type ProjectMembership = {
+  project_id: string;
+  bot_id: string;
+  role_in_project: string;
+  is_leader: boolean;
+};
+
+export type MembershipCreate = {
+  bot_id: string;
+  role_in_project: string;
+  is_leader?: boolean;
+};

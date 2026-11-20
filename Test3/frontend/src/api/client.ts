@@ -61,7 +61,9 @@ async function req(path: string, init?: RequestInit) {
   if (!res.ok) {
     throw parseApiError(res.status, await res.text());
   }
-  return res.json();
+  if (res.status === 204) return null;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 /** Attach the explicit actor header required by discussion/acceptance routes. */
@@ -125,6 +127,10 @@ export const api = {
     req(`/bots/${encodeURIComponent(botId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
   skills: () => req("/skills"),
   memberships: (projectId: string) => req(`/projects/${projectId}/memberships`),
+  addMembership: (projectId: string, body: import("./types").MembershipCreate) =>
+    req(`/projects/${projectId}/memberships`, { method: "POST", body: JSON.stringify(body) }),
+  removeMembership: (projectId: string, botId: string) =>
+    req(`/projects/${projectId}/memberships/${encodeURIComponent(botId)}`, { method: "DELETE" }),
   executionGrants: (runId: string) => req(`/runs/${runId}/execution-grants`),
   executionProfile: (runId: string) => req(`/runs/${runId}/execution-profile`),
   scheduleRun: (runId: string, taskCodes?: string[]) =>
@@ -147,6 +153,27 @@ export const api = {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify(body),
+    }),
+
+  // Memory (C.5.5): every route requires an explicit X-Bot-Id actor.
+  memories: (
+    query: { owner_bot_id?: string; project_id?: string; visibility?: "private" | "project" | "run" },
+    botId: string,
+  ) => {
+    const params = new URLSearchParams();
+    if (query.owner_bot_id) params.set("owner_bot_id", query.owner_bot_id);
+    if (query.project_id) params.set("project_id", query.project_id);
+    if (query.visibility) params.set("visibility", query.visibility);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return req(`/memory/records${suffix}`, { headers: botHeader(botId) });
+  },
+  createMemory: (body: import("./types").MemoryCreate, botId: string) =>
+    req("/memory/records", { method: "POST", headers: botHeader(botId), body: JSON.stringify(body) }),
+  publishMemory: (memId: string, expectedVersion: number, botId: string) =>
+    req(`/memory/records/${encodeURIComponent(memId)}/publish`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({ expected_version: expectedVersion }),
     }),
 
   // Module acceptance / defects (C.5.7) require X-Bot-Id.

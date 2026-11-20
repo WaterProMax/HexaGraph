@@ -133,3 +133,32 @@ describe("BotListPage create flow", () => {
     expect(post.body).not.toHaveProperty("bot_id");
   });
 });
+describe("Bot workspace route", () => {
+  it("opens the tabbed workspace on /bots/:id", async () => {
+    stubFetch((url) => {
+      if (url === "/api/bots/bot-1")
+        return json({
+          bot_id: "bot-1",
+          display_name: "Leader A",
+          role_template: "leader",
+          provider_ref: "dashscope",
+          model: "qwen-max",
+          slot: "flagship",
+          secret_ref: "DASHSCOPE_API_KEY",
+          tool_policy: [],
+          skill_bindings: [],
+          token_budget: 40000,
+          status: "active",
+        });
+      if (url === "/api/bots") return json({ items: [] });
+      if (url === "/api/skills") return json({ items: [] });
+      return json({ slots: { flagship: { model: "qwen-max" } } });
+    });
+    renderAt("/bots/bot-1");
+    expect(await screen.findByTestId("bot-workspace")).toBeTruthy();
+    expect(screen.getByTestId("bot-tab-config")).toBeTruthy();
+    expect(screen.getByTestId("bot-tab-memory")).toBeTruthy();
+    expect(screen.getByTestId("bot-tab-projects")).toBeTruthy();
+    expect(screen.getByTestId("bot-form")).toBeTruthy();
+  });
+});

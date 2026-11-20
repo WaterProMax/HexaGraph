@@ -15,6 +15,14 @@ export type BotFormProps = {
   onArchive?: () => void | Promise<void>;
 };
 
+const ROLE_PRESETS = [
+  { key: "leader", label: "Leader", role: "leader", slot: "flagship" },
+  { key: "pm", label: "产品经理", role: "pm", slot: "flagship" },
+  { key: "backend", label: "后端工程师", role: "backend", slot: "coder" },
+  { key: "qa", label: "测试运维", role: "qa", slot: "coder" },
+  { key: "coder", label: "通用工程师", role: "coder", slot: "coder" },
+];
+
 function parseList(value: string): string[] {
   return value
     .split(",")
@@ -76,6 +84,30 @@ export function BotForm({ mode, initial, providerOptions, skillOptions, loadStat
         <span>{mode === "create" ? "新建 Bot" : "编辑 Bot"}</span>
         <span className="mono muted">{mode === "create" ? "POST /api/bots" : "PATCH /api/bots/{id}"}</span>
       </div>
+      {mode === "create" && (
+        <div className="role-presets" aria-label="角色模板预设">
+          {ROLE_PRESETS.map((preset) => (
+            <button
+              key={preset.key}
+              type="button"
+              data-testid={`preset-${preset.key}`}
+              className={`chip ${roleTemplate === preset.role ? "active" : ""}`}
+              onClick={() => {
+                setRoleTemplate(preset.role);
+                const match = providerOptions.find(
+                  (option) => option.slot === preset.role || option.slot === preset.slot,
+                );
+                if (match) {
+                  setSlot(match.slot);
+                  setModel(match.model);
+                }
+              }}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="bot-form-grid">
         <label>
           <span>显示名</span>
