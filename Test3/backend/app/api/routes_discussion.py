@@ -8,7 +8,19 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
 from app.discussion.models import DiscussionBudget
-from app.discussion.session_store import Forbidden, InvalidStatus, SessionNotFound
+from app.discussion.proposals import (
+    BudgetExhausted,
+    DuplicateProposal,
+    list_proposals,
+    start_round,
+    submit_proposal,
+)
+from app.discussion.session_store import (
+    Forbidden,
+    InvalidStatus,
+    NotParticipant,
+    SessionNotFound,
+)
 from app.leader.steward import (
     DiscussionSteward,
     InvalidParticipant,
@@ -28,6 +40,15 @@ class CreateSessionBody(BaseModel):
 
 class GroupBody(BaseModel):
     participant_bot_ids: list[str] | None = None
+
+
+class StartRoundBody(BaseModel):
+    round: int | None = None
+
+
+class ProposalBody(BaseModel):
+    author_bot_id: str
+    body_md: str
 
 
 def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
@@ -137,3 +158,93 @@ async def group_session(session_id: str, request: Request) -> Any:
             await session.rollback()
             return _json_error(400, "validation_error", str(exc))
     return record.model_dump()
+
+@router.post("/discussion-sessions/{session_id}/rounds/start")
+async def start_session_round(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _optional_body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = StartRoundBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    async with bench.db_session() as session:
+        try:
+            record = await start_round(
+                session_id, body.round, actor_bot_id=actor, session=session
+            )
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            await session.rollback()
+            return _json_error(403, "forbidden", str(exc))
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+        except BudgetExhausted as exc:
+            await session.commit()
+            return _json_error(409, "budget_exhausted", str(exc))
+    return record.model_dump()
+
+
+@router.post("/discussion-sessions/{session_id}/proposals", status_code=201)
+async def create_proposal(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ProposalBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    if body.author_bot_id != actor:
+        return _json_error(403, "forbidden", "author_bot_id must match X-Bot-Id")
+    async with bench.db_session() as session:
+        try:
+            result = await submit_proposal(
+                session_id, body.author_bot_id, body.body_md, session=session
+            )
+            await session.commit()
+        except SessionNotFound:
+            await session.rollback()
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            await session.rollback()
+            return _json_error(403, "forbidden", str(exc))
+        except InvalidStatus as exc:
+            await session.rollback()
+            return _json_error(409, "invalid_status", str(exc))
+        except NotParticipant as exc:
+            await session.rollback()
+            return _json_error(403, "not_participant", str(exc))
+        except DuplicateProposal as exc:
+            await session.rollback()
+            return _json_error(409, "duplicate_proposal", str(exc))
+    return JSONResponse(status_code=201, content=result)
+
+
+@router.get("/discussion-sessions/{session_id}/proposals")
+async def get_proposals(session_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    actor, error = _actor(request)
+    if error is not None:
+        return error
+    async with bench.db_session() as session:
+        try:
+            items = await list_proposals(session_id, actor, session=session)
+        except SessionNotFound:
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except NotParticipant as exc:
+            return _json_error(403, "not_participant", str(exc))
+        except InvalidStatus as exc:
+            return _json_error(409, "invalid_status", str(exc))
+    return {"items": items}

@@ -34,3 +34,35 @@
 - `group` actor 必须是 leader；允许 `draft`/`grouping`；传入列表则重新校验并替换；并发 group 通过写锁串行，最终是某一次完整列表。
 - 未修改 `app/discussion/engine.py`、`rules.py`、`__init__.py`，legacy `GET /api/runs/{run_id}/discussion` 零行为变化；未写 `discussion_msg`。
 - 未更新 OpenAPI 快照/API.md（按 P4 约定留到后续统一）。
+
+## T02 · 独立盲首轮
+
+- 时间：2026-11-20 11:22 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_round1_blind.py tests/integration/test_discussion_session_api.py -v`
+- 退出码：0
+- 计数：21 passed（盲首轮单元 9 / 会话 HTTP 12，含 T01 回归用例）
+- 回归：`tests/unit/test_discussion_rules.py tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 40 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+
+### 触及文件
+
+- `app/discussion/proposals.py`（NEW）
+- `tests/unit/test_round1_blind.py`（NEW）
+- `app/api/routes_discussion.py`（MODIFY：start round / proposals / list）
+- `tests/integration/test_discussion_session_api.py`（MODIFY：T02 HTTP 场景）
+- `Test3/docs/plans/P4-report.md`（MODIFY）
+
+### 实现要点
+
+- `start_round`：leader-only；grouping → round1_independent（current_round=1）；cross_review/round_n_revise → round_n_revise（current_round+1）；超过 `budget.max_rounds` 时先把 status 置 `budget_exhausted` 再抛 409。
+- `submit_proposal`：仅 round1_independent / round_n_revise；author 必须是 participant；同一 (session, author, round) 重复返回 409 duplicate_proposal。
+- 全部 participant 本轮交齐后自动把本轮 proposal 全部 `sealed=0`，并调用 `open_cross_review` 把 status 置 `cross_review`；最后一票的返回体 `sealed=false`（前面提交者为 true）。
+- 密封期 `list_proposals` 对非作者返回 `body_md=None`、`sealed=true`；作者本人可见正文；解封后所有 participant 可见正文。测试同时断言密封期 JSON 不含他人正文。
+- 并发两个不同作者交卷：两行都落库，最终 status=cross_review，无丢行。
+- 契约说明：列出的模块函数没有 session 参数，实际实现增加 keyword-only `session` 注入（HTTP 与单测均显式传当前 AsyncSession），其余签名与行为不变。
+
+### 密封形状（写死）
+
+- 密封期、非作者：`{"proposal_id", "author_bot_id", "round", "sealed": true, "body_md": null}`。
+- 密封期、作者本人：`"sealed": true` 但 `body_md` 为正文。
+- 解封后所有 participant：`"sealed": false` 且 `body_md` 为正文。
