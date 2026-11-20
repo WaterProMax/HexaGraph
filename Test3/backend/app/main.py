@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -15,6 +16,7 @@ from app.api.routes_discussion_events import router as discussion_events_router
 from app.api.routes_memberships import router as memberships_router
 from app.api.routes_memory import router as memory_router
 from app.api.routes_skills import router as skills_router
+from app.discussion.driver import recover_interrupted_sessions
 from app.llm.gateway import Gateway, build_provider
 from app.services.runtime import Workbench
 from app.settings import get_settings, load_models, load_roles, validate_config
@@ -46,6 +48,10 @@ async def lifespan(app: FastAPI):
     gateway = Gateway(models, provider, data_dir=settings.data_dir())
     app.state.workbench = Workbench(gateway, RoleRegistry(roles), settings.data_dir())
     app.state.settings = settings
+    try:
+        await recover_interrupted_sessions(app.state.workbench)
+    except Exception:  # noqa: BLE001 - recovery must never block startup
+        logging.getLogger(__name__).exception("discussion recovery failed")
     app.state.workbench.start_loop()
     try:
         yield

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -70,6 +71,8 @@ from app.storage.models import (
     DiscussionReviewRow,
     ProjectMembershipRow,
 )
+
+logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = frozenset(
     {"approved", "rejected", "terminated", "budget_exhausted"}
@@ -1337,6 +1340,56 @@ async def _leader_request_revision(
 # public API
 
 
+def _needs_recovery(record: DiscussionSession) -> bool:
+    if record.status in TERMINAL_STATUSES or record.paused:
+        return False
+    if record.status == "converged_pending_human" and record.decision_package is not None:
+        return False
+    return True
+
+
+async def recover_interrupted_sessions(bench: Any) -> list[str]:
+    """Pause sessions whose in-process driver died with the previous process.
+
+    A restarted server has no driver tasks, so sessions left unpaused would
+    stall forever: the UI never calls ``run`` on its own.  Walking the whole
+    table and pausing each interrupted session makes the next user action an
+    explicit ``resume``.
+    """
+    async with bench.db_session() as session:
+        records = await DiscussionSessionStore(session).list_all()
+    recovered: list[str] = []
+    for record in records:
+        if not _needs_recovery(record):
+            continue
+        session_id = record.session_id
+        try:
+            async with bench.db_session() as session:
+                store = DiscussionSessionStore(session)
+                locked = await store.get_locked(session_id)
+                if not _needs_recovery(locked):
+                    await session.rollback()
+                    continue
+                await store.save(locked.model_copy(update={"paused": True}))
+                await session.commit()
+                round_no = locked.current_round
+            await _system(
+                bench,
+                session_id,
+                "paused",
+                "服务已重启，讨论已暂停。点击“继续”从中断处接着跑。",
+                round_no=round_no,
+                reason="server_restart",
+            )
+        except Exception:  # noqa: BLE001 - one bad session must not block startup
+            logger.exception(
+                "discussion recovery failed for session %s", session_id
+            )
+            continue
+        recovered.append(session_id)
+    return recovered
+
+
 async def step(bench: Any, session_id: str) -> bool:
     """Advance the session by one state-machine action.
 
@@ -1512,6 +1565,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "is_running",
     "pause_session",
+    "recover_interrupted_sessions",
     "resume_session",
     "run_session",
     "step",

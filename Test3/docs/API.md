@@ -277,6 +277,7 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - `run` 幂等：同一会话已有后台任务时直接返回当前状态；终态、或已生成决策包的 `converged_pending_human` 返回 409 invalid_status；对暂停中的会话调用等价于 `resume`。
 - `pause` 置 `paused=true` 并取消后台任务，可重复调用；`resume` 清 `paused` 并重启驱动器；`terminate` 置 `terminated` 并取消任务，对 `approved` / `rejected` 返回 409。
 - `resume` 可选 `{skip_bot_ids}`：只过滤本会话参与者；剩余参与者少于 2 个（或跳过 Leader）时直接置 `terminated`，不重启驱动器。
+- 服务启动时会把进行中的讨论置为 `paused`（系统消息 `event=paused`、`reason=server_restart`），不会自动续跑；用户点继续（`POST /resume`）后从数据库状态接着推进。
 
 消息流（两个只读 GET）：
 

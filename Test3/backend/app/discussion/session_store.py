@@ -98,6 +98,11 @@ class DiscussionSessionStore:
             raise SessionNotFound(session_id)
         return await self.get(session_id)
 
+    async def list_all(self) -> list[DiscussionSession]:
+        rows = list((await self.session.execute(select(DiscussionSessionRow))).scalars())
+        records = [_to_session(row) for row in rows]
+        return sorted(records, key=lambda record: (record.created_at, record.session_id))
+
     async def list_for_project(self, project_id: str) -> list[DiscussionSession]:
         stmt = (
             select(DiscussionSessionRow)
