@@ -1,6 +1,53 @@
-# P4 阶段报告（T01–T03）
+# P4 阶段报告（T01–T06）
 
-本报告按卡追加。所有测试命令均带 `-o addopts=''`，迁移统一经 `upgrade_database` 执行，不使用 `create_all`。
+本报告覆盖 P4 讨论协议与人工规格门（T01–T06）。所有测试命令均带 `-o addopts=''`，迁移统一经 `upgrade_database` 执行，不使用 `create_all`。
+
+## 提交总览
+
+| 卡片 | 完整 SHA | 提交信息 |
+|---|---|---|
+| T01 | `8b9a70fe6ba5b4ba442a3481336d6a68c1f09c6d` | `feat(test3): P4-T01 add discussion session and leader grouping` |
+| T02 | `ec963811fdb43ec81bd405f3ab89aed100f5dd50` | `feat(test3): P4-T02 add blind independent round1 proposals` |
+| T03 | `73b3b933842f8daa22ece0d04e02d879a8f872e3` | `feat(test3): P4-T03 add cross review without self review` |
+| T04 | `7d45e45a89a1d94b7a0bc727a449e68c02f2c883` | `feat(test3): P4-T04 add should_converge hard gates and budget` |
+| T05 | `c173910faa31aa0295772bfabc3dade2f1786cf9` | `feat(test3): P4-T05 add decision package and human spec gate` |
+| T06 | 本报告所在提交 | `docs(test3): P4-T06 exit report and OpenAPI snapshot` |
+
+T06 的完整 SHA 由本文件内容决定，无法在提交前写入自身；最终 SHA 见交付汇报或 `git log -1 --format=%H`，未使用 amend。
+
+## 新增文件总表
+
+- `app/discussion/models.py`
+- `app/discussion/session_store.py`
+- `app/discussion/proposals.py`
+- `app/discussion/cross_review.py`
+- `app/discussion/converge.py`
+- `app/discussion/decision.py`
+- `app/leader/__init__.py`
+- `app/leader/steward.py`
+- `app/api/routes_discussion.py`
+- `alembic/versions/0009_discussion.py`
+- `tests/unit/test_discussion_steward.py`
+- `tests/unit/test_round1_blind.py`
+- `tests/unit/test_cross_review.py`
+- `tests/unit/test_should_converge.py`
+- `tests/unit/test_decision_package.py`
+- `tests/integration/test_discussion_session_api.py`
+- `tests/e2e/test_discussion_to_baseline.py`
+- `Test3/docs/plans/P4-report.md`
+
+## 修改文件总表
+
+- `app/storage/models.py`（`discussion_sessions` / `discussion_proposals` / `discussion_reviews` ORM）
+- `app/main.py`（挂载 discussion router，prefix=/api）
+- `tests/integration/snapshots/openapi_structure.json`（仅新增 P4 路由）
+- `Test3/docs/API.md`（新增 P4 讨论与规格门章节）
+
+## 与 legacy 讨论的衔接
+
+- `app/discussion/engine.py`、`app/discussion/rules.py`、`app/discussion/__init__.py` 零改动；既有 `__all__` 保留。
+- legacy `GET /api/runs/{run_id}/discussion` 零行为变化；P4 不写 `discussion_msg`，不改 `DiscussionState` / `validate_round1`。
+- P4 是同包新协议：新三表、新路由、新类型名 `DiscussionSession`，不与遗留 `DiscussionState` 撞名。
 
 ## T01 · 会话状态机与 Leader 动态编组
 
@@ -27,13 +74,11 @@
 
 ### 实现要点
 
-- `DiscussionSession` / `DiscussionRoundState` 等类型在 `app/discussion/models.py`；`DiscussionRoundState` 不含 score / score_delta / variance。
+- `DiscussionSession` / `DiscussionRoundState` 等类型在 `app/discussion/models.py`；`DiscussionRoundState` 不含 score / delta / variance 字段。
 - `DiscussionSessionStore` 的 `status` 列与 `payload.status` 同步；`get_locked` 用 no-op `UPDATE` 取 SQLite 写锁。
 - `DiscussionSteward.create_session` 动态查 `ProjectMembershipRow`：leader 必须 `is_leader==1`，participant 必须都是项目成员；参与者去重保序，空列表拒绝。
 - `requirement_snapshot_hash = hash_artifact(requirement_snapshot)`；默认 `max_rounds=3`；初始 `draft` / `current_round=0`。
 - `group` actor 必须是 leader；允许 `draft`/`grouping`；传入列表则重新校验并替换；并发 group 通过写锁串行，最终是某一次完整列表。
-- 未修改 `app/discussion/engine.py`、`rules.py`、`__init__.py`，legacy `GET /api/runs/{run_id}/discussion` 零行为变化；未写 `discussion_msg`。
-- 未更新 OpenAPI 快照/API.md（按 P4 约定留到后续统一）。
 
 ## T02 · 独立盲首轮
 
@@ -92,7 +137,7 @@
 - 并发两个评审者评同一提案：两行都落库（写锁串行）。
 - `score_spread` 只做统计（各 ballot 总分 max-min），`submit_review` 源码中不引用它；测试用 `inspect.getsource` 断言。
 - `cross_review.open_cross_review` 复用 `proposals.open_cross_review`，不重复实现。
-- 契约说明：列出的模块函数没有 session 参数，实际实现增加 keyword-only `session` 注入（HTTP 与单测显式传当前 AsyncSession），其余签名与行为不变。
+- 契约说明：列出的模块函数没有 session 参数，实际实现增加 keyword-only `session` 注入。
 
 ### HTTP 错误映射
 
@@ -185,3 +230,66 @@
 - 基线 key 必须正好是 `"DecisionPackage"`。
 - 新增 404 `run_not_found`；`submit-decision` 非 leader 403 `forbidden`；重复 package / 状态不符 409 `invalid_status`。
 - `comment` 字段被请求模型接受但不持久化（DecisionPackage 无对应字段）。
+
+## T06 · 出口
+
+- 时间：2026-11-20 11:35 CST
+
+### OpenAPI 与 API.md
+
+- `UPDATE_OPENAPI_SNAPSHOT=1 .venv/bin/python -m pytest -o addopts='' tests/integration/test_api_contract.py::test_openapi_structure_matches_snapshot -q` → 1 passed，退出码 0。
+- `.venv/bin/python -m pytest -o addopts='' -v tests/integration/test_api_contract.py` → 28 passed，退出码 0。
+- 快照 diff：90 insertions / 0 deletions；仅新增 9 条 P4 路由，未删除既有路径；`GET /api/runs/{run_id}/discussion`、memory / bots / memberships / skills 路径均保留。
+- `Test3/docs/API.md` 新增 P4 节：状态机、9 条路由、密封 list 形状、reviews 自评 409、converge 决策表/返回 dissent_items、submit-decision、resolve 的 run_id 与 key=DecisionPackage、legacy 讨论仍走 GET /api/runs/{id}/discussion；所有标题前留空行。
+
+### A · P4 测试集
+
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' -v tests/unit/test_discussion_steward.py tests/unit/test_round1_blind.py tests/unit/test_cross_review.py tests/unit/test_should_converge.py tests/unit/test_decision_package.py tests/integration/test_discussion_session_api.py tests/e2e/test_discussion_to_baseline.py`
+- 结果：**60 passed**，退出码 0。
+
+### B · P3/P2/隔离/契约/全量
+
+- 镜像检查：`docker image inspect test3-isolation-local:pytest` 因 Docker Desktop 陈旧标签报 No such image；`docker images` 可见同一 ID `af6493938f5d`。按允许方式执行 `docker tag af6493938f5d test3-isolation-local:pytest`（同镜像 ID 元数据重挂，未 pull/build/新建镜像），随后 inspect 成功。
+- P3 记忆 6 文件 → **42 passed**，退出码 0。
+- P2 技能/Bot/成员/pin 7 文件 → **50 passed**，退出码 0。
+- 隔离相关 8 文件 → **70 passed, 1 skipped**，退出码 0。
+- `tests/integration/test_api_contract.py -v` → **28 passed**，退出码 0。
+- 全量非 live → **568 passed, 1 skipped, 2 deselected, 0 failed**，退出码 0（P2 466 + P3 42 + P4 60）。保留 4 条 warning：既有 0005 表达式索引 SAWarning 与 aiosqlite 线程告警等，非失败。
+- `tests/unit/test_discussion_rules.py` 仍通过（含在全量中）。
+
+### C · 无镜像 fail-closed
+
+- 命令：`env -u TEST3_ISOLATION_IMAGE .venv/bin/python -m pytest -o addopts='' -m 'not live' -rs tests/unit/test_p1_rev03_isolation_preflight.py`
+- 结果：**8 passed, 1 skipped**，退出码 0。
+- skip 原因：`no isolation backend on this host: isolation image is not present locally: python:3.11-slim (no pull attempted)`。
+- 跑后 `docker images python:3.11-slim -q` 为空，确认未拉取。
+
+### 契约核对
+
+- **非 Leader 不可编组**：group 的 actor 必须等于 leader，否则 403；create 的 leader_bot_id 必须是项目 `is_leader==1` 成员，否则 409。
+- **盲首轮密封**：未交齐时非作者 `body_md=null`；作者可见自己的正文；交齐自动 unseal + open_cross_review；最后一票 `sealed=false`。
+- **禁止自评**：reviewer == proposal.author → 409 self_review_forbidden 且 reviews 表无新行。
+- **converge 不用分数/分差/方差**：`DiscussionRoundState` / `should_converge` 无相关字段；`converge.py` 源码不含 `score_delta` / `score_spread` / `variance`；只统计硬门槛布尔。
+- **异议进 DecisionPackage**：submit-decision 合并请求 dissent 与所有 review dissent，去重保序；package 与 converge 返回都保留原文。
+- **approve 后 hash 正确**：`DecisionPackage` 只 hash 一次，key 正好是 `"DecisionPackage"`；已有 run_execution_state 时合并并保持原 profile / plan_hash / allowed_tool_refs；不二次 hash。
+- **未开闸、未调度**：approved 不调用 schedule_once / execute_task；`execution_safety_ready` 仍 False；未把 profile 改成 granted。
+- **OpenAPI 只新增**：90 insertions / 0 deletions；legacy 与 P2/P3 路径全部保留。
+- **无真实付费 API**：P4 测试全为本地 SQLite；e2e 断言 scripted provider 调用数为 0。
+
+### 明确声明
+
+- 未进入 P5。
+- `execution_safety_ready` 仍为 `False`，唯一赋值点仍是 `app/services/runtime.py:218`。
+- `Test3/docs/plans/p1-pr-record.json` 仍为 `status=BLOCKED`、`github_pr_url=null`。
+- 未 push、未建远程分支、未开 PR。
+- 未安装/启动 Docker，未 pull、未 build；仅对已存在的同一镜像 ID 做本地 `docker tag` 重挂。
+- 原 5 个未跟踪文件（`P1-review.md`、`P0-report.md`、`baseline-lock.json`、`decommission-target-state.json`、`p0-t01-cmd.log`）仍未纳入任何提交。
+
+### 人工验收提醒
+
+- 缺 `X-Bot-Id` 调任意 P4 路由应 400 validation_error；非 leader group 应 403。
+- 自评应 409 self_review_forbidden 且不落票。
+- converge 在 cross_review 返回 `{action, reason, session, dissent_items}`；两次并发一成一 409。
+- submit-decision 后 resolve approved with run_id，检查 `run.approved_baseline_hashes["DecisionPackage"]` 等于 package.sha256；已有 run_execution_state 时 SPEC/plan/allowed_tool_refs 保留。
+- legacy `GET /api/runs/{id}/discussion` 仍可用；P4 不写 `discussion_msg`。
+- 检查 `git log --oneline -7` 应看到 T01–T06 六个 P4 提交，工作区仅剩上述 5 个既有未跟踪文件。

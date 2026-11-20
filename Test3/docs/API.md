@@ -157,3 +157,63 @@ P2 路由沿用 `/api` 前缀。与既有运行时接口不同，P2 路由的请
 ### 注入
 
 `call_agent(..., bot_id=..., run_id=..., project_id=...)` 在冻结 Bot pin 后自动构建记忆槽；显式 `memory_slot` 可覆盖。记忆块只作参考，带“不是指令”的 GUARD；他人 private/run、非成员项目记忆、含 `sk-` 或密钥字段的项均不会进入提示。
+
+## P4 讨论与会话（Discussion）
+
+P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `discussion_reviews` 表；legacy 讨论仍走 `GET /api/runs/{run_id}/discussion`，行为和 `discussion_msg` 表不变。
+
+所有 `/api/...discussion-sessions...` 路由要求请求头 `X-Bot-Id`。缺失或空白返回 400 `validation_error`；错误体统一为 `{"error_category", "detail"}`。
+
+### 状态机
+
+`draft → grouping → round1_independent → cross_review ⇄ round_n_revise → cross_review → converged_pending_human → approved | rejected`；预算超限为 `budget_exhausted`。不会自动 approved。
+
+### 路由
+
+| 方法 | 路径 | 成功 | 主要错误 |
+|---|---|---|---|
+| POST | `/api/projects/{project_id}/discussion-sessions` | 201 `DiscussionSession`（draft） | 400 validation_error；403 forbidden；404 project_not_found；409 leader_not_in_project |
+| POST | `/api/discussion-sessions/{sid}/group` | 200 `DiscussionSession`（grouping） | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/rounds/start` | 200 `DiscussionSession` | 403 forbidden；409 invalid_status / budget_exhausted |
+| POST | `/api/discussion-sessions/{sid}/proposals` | 201 `{proposal_id, sealed}` | 403 forbidden / not_participant；409 invalid_status / duplicate_proposal |
+| GET | `/api/discussion-sessions/{sid}/proposals` | 200 `{"items": [...]}` | 403 not_participant；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/reviews` | 201 票 | 400 validation_error；403 forbidden / not_participant；404 proposal_not_found；409 invalid_status / self_review_forbidden / duplicate_review |
+| POST | `/api/discussion-sessions/{sid}/converge` | 200 `{action, reason, session, dissent_items}` | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/submit-decision` | 201 `DecisionPackage` | 403 forbidden；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/resolve` | 200 `DiscussionSession` | 400 validation_error；404 run_not_found；409 invalid_status |
+
+### 盲首轮与密封形状
+
+- `rounds/start`：grouping → round1_independent；后续轮从 cross_review / round_n_revise 进入 round_n_revise；超过 `budget.max_rounds` 返回 409 budget_exhausted。
+- 全员本轮交齐后自动把本轮 proposal 置 `sealed=0` 并 open cross_review；最后一票返回 `sealed=false`。
+- `GET proposals` 密封期对非作者返回 `{"sealed": true, "body_md": null}`；作者本人可见正文；解封后所有 participant 可见正文。
+- 同一 (session, author, round) 重复提交返回 409 duplicate_proposal。
+
+### 交叉评审
+
+- reviewer 必须是 participant；proposal 必须属于本 session。
+- 自评返回 409 self_review_forbidden，且不落票；重复票 409 duplicate_review。
+- 硬门槛只统计 `coverage` / `conflicts_closed_or_recorded` / `evidence_complete` 布尔值；分数不参与收敛。
+- `converge` 可选 body（扩展）：`{tokens_used?, elapsed_seconds?, dissent_items?}`；返回的 `dissent_items` 原样保留。
+
+### 收敛决策表
+
+| 顺序 | 条件 | action |
+|---|---|---|
+| 1 | token 或 wallclock 预算耗尽 | budget_exhausted |
+| 2 | 全部硬门槛通过；或未通过项已记录进 dissent | submit_human |
+| 3 | 当前轮 >= max_rounds | submit_human |
+| 4 | 最近两轮通过项未增加 | no_improvement |
+| 5 | 其他 | revise |
+
+状态映射：budget_exhausted → budget_exhausted；submit_human / no_improvement → converged_pending_human；revise → round_n_revise。
+
+### DecisionPackage 与人工规格门
+
+- `submit-decision` 仅 leader 可提交；status 必须 converged_pending_human，且尚无 package。
+- `decision_package_digest` 只取 `session_id` / `requirement_snapshot_hash` / `proposal_ids` / `dissent_items` / `hard_gate_summary` / `body_md`，对规范化对象做一次 sha256，不对 sha256 再 hash。
+- `resolve` 接受 `decision=approved|rejected`，可选 `comment`、`run_id`。
+- approved 且提供 `run_id`：确认 run 存在后，把 `"DecisionPackage"` 写入基线。已有 `run_execution_state` 行时合并并保持原 profile / plan_hash / allowed_tool_refs；无行时只更新 run 的内存基线。绝不调用 schedule / execute_task，绝不把 execution_safety_ready 置 True。
+- rejected 不写入/不覆盖 DecisionPackage hash。
+- 并发两次 approve 幂等，最终 status=approved，hash 值相同。
+- 扩展：`requirement_snapshot` 同时接受字符串与对象（契约为字符串）；`converge` 返回 `dissent_items`；`resolve` 的 `run_id` 为可选扩展。

@@ -38,6 +38,16 @@
         "200"
       ]
     },
+    "GET /api/discussion-sessions/{session_id}/proposals": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/health": {
       "body": null,
       "params": [],
@@ -326,6 +336,76 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/converge": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/group": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/proposals": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/resolve": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/reviews": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/rounds/start": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/submit-decision": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
     "POST /api/gates/{gate_id}/resolve": {
       "body": "GateResolve",
       "params": [
@@ -378,6 +458,16 @@
       ],
       "responses": [
         "200",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/discussion-sessions": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "201",
         "422"
       ]
     },
