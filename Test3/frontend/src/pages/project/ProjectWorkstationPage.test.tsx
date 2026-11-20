@@ -240,3 +240,86 @@ describe("P6-R04 defect locate highlight", () => {
     expect(screen.getByTestId("detail-task-code").textContent).toBe("T-02");
   });
 });
+
+describe("discussion panel wiring", () => {
+  function json(body: unknown) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("shows the discussion view when the project has no run yet", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/projects") return json([{ id: "proj-1", name: "自习室空位查询" }]);
+        return json([]);
+      }),
+    );
+    render(
+      <MemoryRouter>
+        <ProjectWorkstationPage projectId="proj-1" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("disc-stage-bar")).toBeTruthy();
+    expect(screen.getByText(/先邀请 Bot/)).toBeTruthy();
+    expect(screen.queryByTestId("ws-empty")).toBeNull();
+    expect(screen.queryByTestId("task-tree")).toBeNull();
+    expect(screen.queryByTestId("tab-details")).toBeNull();
+  });
+
+  it("keeps the task area and hides the discussion view when a run exists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/runs") return json([{ id: "run-1", project_id: "proj-1" }]);
+        if (url === "/api/runs/run-1/tasks") {
+          return json([{ code: "T-01", state: "running", card: { title: "实现登录" } }]);
+        }
+        return json([]);
+      }),
+    );
+    render(
+      <MemoryRouter>
+        <ProjectWorkstationPage projectId="proj-1" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("实现登录")).toBeTruthy();
+    expect(screen.getByTestId("task-tree")).toBeTruthy();
+    expect(screen.queryByTestId("disc-stage-bar")).toBeNull();
+    expect(screen.queryByLabelText("一句话想法")).toBeNull();
+  });
+
+  it("replaces the empty notice and the task body with the discussion panel", () => {
+    renderWorkstation({
+      loadState: "empty",
+      tasks: [],
+      team: {
+        members: [
+          { bot_id: "bot-a", display_name: "Leader A", role_template: "leader", status: "active" as const, role_in_project: "lead", is_leader: true },
+        ],
+        onInvite: vi.fn(),
+        onManage: vi.fn(),
+      },
+      discussionPanel: <div data-testid="discussion-panel-stub">讨论视图</div>,
+    });
+
+    expect(screen.getByTestId("discussion-panel-stub")).toBeTruthy();
+    expect(screen.getByTestId("team-strip")).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1 })).toBeTruthy();
+    expect(screen.queryByTestId("ws-empty")).toBeNull();
+    expect(screen.queryByTestId("task-tree")).toBeNull();
+    expect(screen.queryByTestId("project-workstation")).toBeNull();
+  });
+
+  it("still shows the empty notice when no discussion panel is passed", () => {
+    renderWorkstation({ loadState: "empty", tasks: [] });
+    expect(screen.getByTestId("ws-empty")).toBeTruthy();
+    expect(screen.queryByTestId("discussion-panel-stub")).toBeNull();
+  });
+});
