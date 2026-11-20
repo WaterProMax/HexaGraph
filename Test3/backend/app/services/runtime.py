@@ -55,7 +55,7 @@ from app.execution.dag import dag_blocked_tasks, edges_from_tasks
 from app.execution.generation import GenerationGuard
 from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
-from app.execution.grant_repo import GrantRepo
+from app.execution.grant_repo import GrantRepo, read_grants_for_run
 from app.execution.isolated import WriteSpec, execute_task_granted
 from app.execution.isolation import preflight_isolation
 from app.execution.run_lock import RunLockRegistry
@@ -433,6 +433,9 @@ class Workbench:
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
             self.runs[run.id] = run
+            # SQLite is the authority for grants: a fresh process must not keep
+            # an empty cache and later re-bind specs with an empty grant_id.
+            self._grant_cache[run.id] = read_grants_for_run(self.db_path, run.id)
             self._interrupt_stale_import(run)
             if (run.artifacts.get("model_stage") or {}).get("status") == "running":
                 message = "服务重启中断了模型任务分解，未自动生成或执行计划；请人工重试"
@@ -686,6 +689,14 @@ class Workbench:
             self._db_engine = engine
             self._db_factory = session_factory(engine)
             self._db_ready = True
+            # Same authority rule for runs restored before the engine existed:
+            # re-read every run's grants from SQLite rather than trusting the
+            # process-local cache.
+            if self.runs:
+                async with self._db_factory() as session:
+                    repo = GrantRepo(session)
+                    for run_id in self.runs:
+                        self._grant_cache[run_id] = await repo.list_for_run(run_id)
 
     @asynccontextmanager
     async def db_session(self):
@@ -1173,6 +1184,8 @@ class Workbench:
                     changed = True
                 if changed:
                     await session.commit()
+        # A status refresh must keep the in-memory cache identical to SQLite.
+        self._grant_cache[run.id] = await self.grants_for_run(run.id)
 
     async def grants_for_run(self, run_id: str) -> list[ExecutionGrant]:
         async with self.db_session() as session:

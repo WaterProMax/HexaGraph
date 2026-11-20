@@ -7,6 +7,9 @@ this new domain; legacy runs keep their JSONL/snapshot storage.
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,4 +65,39 @@ class GrantRepo:
         return grant
 
 
-__all__ = ["GrantRepo"]
+def read_grants_for_run(db_path: Path, run_id: str) -> list[ExecutionGrant]:
+    """Read a run's grants without creating or migrating the database.
+
+    ``Workbench.restore_runs`` runs synchronously in ``__init__`` before the
+    async engine exists, so it hydrates the in-process grant cache through this
+    short read-only connection.  SQLite remains the authority; a missing file or
+    table (fresh install) yields an empty list instead of an error.
+    """
+    if not db_path.exists():
+        return []
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = connection.execute(
+            "select status, payload from execution_grants where run_id = ?",
+            (run_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+    grants: list[ExecutionGrant] = []
+    for status, payload in rows:
+        try:
+            grant = ExecutionGrant.model_validate_json(payload)
+        except Exception:  # noqa: BLE001 - a corrupt row must not break restore
+            continue
+        if grant.status != status:
+            grant = grant.model_copy(update={"status": status})
+        grants.append(grant)
+    return sorted(grants, key=lambda item: (item.created_at, item.grant_id))
+
+
+__all__ = ["GrantRepo", "read_grants_for_run"]
