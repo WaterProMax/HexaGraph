@@ -163,6 +163,85 @@ class MemoryStore:
         await self.session.flush()
         return record
 
+    async def publish_version(
+        self, mem_id: str, expected_version: int, *, actor: str
+    ) -> MemoryRecord:
+        return await self._retry(
+            lambda: self._publish_once(mem_id, expected_version, actor)
+        )
+
+    async def _publish_once(
+        self, mem_id: str, expected_version: int, actor: str
+    ) -> MemoryRecord:
+        latest = await self._locked_latest(mem_id)
+        if latest.version != expected_version or latest.status != "pending":
+            raise MemoryVersionConflict(
+                f"cannot publish {mem_id}@{expected_version} from {latest.status}@{latest.version}"
+            )
+        updated = latest.model_copy(
+            update={
+                "status": "published",
+                "promoted_by": actor,
+                "promoted_at": now_iso(),
+            }
+        )
+        row = await self.session.get(MemoryRecordRow, (mem_id, expected_version))
+        assert row is not None
+        row.status = "published"
+        row.payload = updated.model_dump()
+        await self.session.flush()
+        return updated
+
+    async def supersede_version(
+        self,
+        mem_id: str,
+        expected_version: int,
+        *,
+        body: dict,
+        sources: list[MemorySource] | list[dict[str, Any]],
+        actor: str,
+    ) -> MemoryRecord:
+        return await self._retry(
+            lambda: self._supersede_once(
+                mem_id, expected_version, body, sources, actor
+            )
+        )
+
+    async def _supersede_once(
+        self,
+        mem_id: str,
+        expected_version: int,
+        body: dict,
+        sources: list[MemorySource] | list[dict[str, Any]],
+        _actor: str,
+    ) -> MemoryRecord:
+        latest = await self._locked_latest(mem_id)
+        if latest.version != expected_version or latest.status == "superseded":
+            raise MemoryVersionConflict(
+                f"cannot supersede {mem_id}@{expected_version} from {latest.status}@{latest.version}"
+            )
+        assert_no_secrets(body)
+        record = MemoryRecord(
+            mem_id=mem_id,
+            owner_bot_id=latest.owner_bot_id,
+            project_id=latest.project_id,
+            visibility=latest.visibility,
+            version=latest.version + 1,
+            status="pending",
+            sources=_sources(sources),
+            body=dict(body),
+            title=latest.title,
+            run_id=latest.run_id,
+        )
+        row = await self.session.get(MemoryRecordRow, (mem_id, expected_version))
+        assert row is not None
+        old = latest.model_copy(update={"status": "superseded"})
+        row.status = "superseded"
+        row.payload = old.model_dump()
+        self.session.add(_row(record))
+        await self.session.flush()
+        return record
+
     async def _locked_latest(self, mem_id: str) -> MemoryRecord:
         result = await self.session.execute(
             text("UPDATE memory_records SET status = status WHERE mem_id = :mem_id"),

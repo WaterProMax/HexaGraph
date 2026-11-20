@@ -54,4 +54,27 @@
 - `MemoryAccessService.get` 显式拒绝他人 private 与非成员 project；`list_visible` 只返回 actor 可见的每个 mem 最新版本。
 - 移出成员只删除 `project_memberships` 行；私有记忆 v1/v2 仍可读，body 与移出前一致，`memory_records` 行数不变。
 - 集成测试并发读取私有历史/项目记忆与 DELETE membership，读取不会 500；最终 B1 失去项目可见性，B2 仍可读。
-- `GET /api/bots/{B1}` 在移出后仍 200。
+- `GET /api/bots/{B1}` 在移出后仍 200。## T03 · 人工晋升、supersede 与乐观锁
+
+- 时间：2026-11-20 10:49 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_memory_promotion.py tests/unit/test_memory_store.py -v`
+- 退出码：0
+- 计数：18 passed（promotion 9 / store 9）
+- 回归：`tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 27 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+
+### 触及文件
+
+- `app/memory/promotion.py`（NEW）
+- `tests/unit/test_memory_promotion.py`（NEW）
+- `app/memory/store.py`（MODIFY：新增 `publish_version` / `supersede_version` 原子方法）
+- `Test3/docs/plans/P3-report.md`（MODIFY）
+
+### 实现要点
+
+- 仅 `project` 可见性可 publish；`private` / `run` 抛 `VisibilityNotProject`。
+- publish / supersede 复用 T02 `is_project_member`，非成员抛 `MemoryForbidden`。
+- publish 只在当前 version 为 `pending` 时成功；写 `promoted_by=actor`、`promoted_at`，body 不变；同版本再次 publish 抛 `MemoryVersionConflict`。
+- supersede 先把旧 version 置为 `superseded`（body 不变），再插入 N+1 `pending` 新版本；新 body 走密钥扫描；已 superseded 或 expected 不符抛 `MemoryVersionConflict`。
+- 所有状态变更先以 no-op `UPDATE` 取 SQLite 写锁；并发 publish 一成一冲突，并发 supersede 只产生一条新版本。
+- 契约扩展 `promoted_by` / `promoted_at` 已在 T01 登记，本卡实现写入。
