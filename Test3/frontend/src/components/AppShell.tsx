@@ -5,13 +5,16 @@ import {
   FolderOpenOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PlusOutlined,
   RobotOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 import { api } from "../api/client";
+import type { BotInstance } from "../api/types";
 import { COMPACT_VIEWPORT } from "../workstationLayout";
+import { BotAvatar } from "./BotAvatar";
 
 export type LoadState = "loading" | "empty" | "error" | "forbidden" | "ready";
 
@@ -82,6 +85,13 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
   );
   const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
   const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
+  const {
+    data: botList,
+    isLoading: botsLoading,
+    isError: botsError,
+    refetch: refetchBots,
+  } = useQuery({ queryKey: ["bots"], queryFn: () => api.bots() });
+  const bots: BotInstance[] = Array.isArray(botList?.items) ? botList.items : [];
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -138,6 +148,81 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               );
             })}
           </nav>
+          {collapsed ? (
+            <section className="nav-group assistant-rail" aria-labelledby="assistant-rail-heading" data-testid="sidebar-bot-rail">
+              <h2 className="nav-label" id="assistant-rail-heading">
+                助手
+              </h2>
+              <Link
+                to="/bots/new"
+                className="rail-new"
+                data-testid="sidebar-new-bot"
+                aria-label="新建 Bot"
+                title="新建 Bot"
+              >
+                <PlusOutlined />
+              </Link>
+              {bots.map((bot) => {
+                const label = `${bot.display_name} · ${bot.role_template}`;
+                return (
+                  <Link
+                    key={bot.bot_id}
+                    to={`/bots/${bot.bot_id}`}
+                    className="rail-avatar"
+                    aria-label={label}
+                    title={label}
+                  >
+                    <BotAvatar bot={bot} size={38} title={label} />
+                  </Link>
+                );
+              })}
+            </section>
+          ) : (
+            <section className="nav-group assistant-group" aria-labelledby="assistant-heading" data-testid="sidebar-bot-list">
+              <h2 className="nav-label" id="assistant-heading">
+                <span>助手</span>
+                <span className="mono">{bots.length}</span>
+              </h2>
+              <Link
+                to="/bots/new"
+                className="nav-item assistant-new"
+                data-testid="sidebar-new-bot"
+                aria-label="新建 Bot"
+              >
+                <PlusOutlined />
+                <span className="nav-text">新建 Bot</span>
+              </Link>
+              {botsLoading && <div className="nav-item muted">加载助手…</div>}
+              {botsError && (
+                <button type="button" className="nav-item muted assistant-retry" onClick={() => void refetchBots()}>
+                  助手加载失败 · 重试
+                </button>
+              )}
+              {!botsLoading && !botsError && bots.length === 0 && (
+                <div className="nav-item muted" data-testid="sidebar-bots-empty">
+                  还没有 Bot
+                </div>
+              )}
+              {bots.map((bot) => {
+                const active = currentPath === `/bots/${bot.bot_id}`;
+                return (
+                  <Link
+                    key={bot.bot_id}
+                    to={`/bots/${bot.bot_id}`}
+                    className={`nav-item assistant-row ${active ? "active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                  >
+                    <BotAvatar bot={bot} size={30} />
+                    <span className="assistant-text">
+                      <span className="assistant-name">{bot.display_name}</span>
+                      <span className="assistant-role">{bot.role_template}</span>
+                    </span>
+                    <span className={`assistant-status status-${bot.status}`}>{bot.status}</span>
+                  </Link>
+                );
+              })}
+            </section>
+          )}
           <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
             <h2 className="nav-label" id="recent-runs-heading">
               <span>最近运行</span>

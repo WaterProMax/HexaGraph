@@ -425,3 +425,49 @@
 @media (max-width: 1280px) {
   .ws .canvas-toolbar .legend { display: none; }
 }
+
+/* UI-R01: deterministic bot avatars + contact-style assistant list. */
+.bot-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 2px 6px -4px rgba(22, 61, 90, 0.55);
+  user-select: none;
+}
+.bot-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bot-avatar.is-archived { filter: saturate(0.35); opacity: 0.72; }
+
+.sidebar .assistant-group .assistant-new { color: var(--glass-accent); font-weight: 600; }
+.sidebar .assistant-row { align-items: center; gap: 10px; }
+.assistant-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.assistant-name { font-size: 13px; font-weight: 600; color: var(--glass-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-role { font-size: 11px; color: var(--glass-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-status { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; background: #e6f0f7; color: var(--glass-secondary); font-size: 10px; letter-spacing: 0.02em; }
+.assistant-status.status-archived { background: #f3e7e7; color: #8a4a4a; }
+.assistant-retry { border: 0; text-align: left; cursor: pointer; background: transparent; font: inherit; }
+
+.assistant-rail { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.assistant-rail .rail-new,
+.assistant-rail .rail-avatar {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--glass-secondary);
+  background: rgba(255, 255, 255, 0.5);
+  transition: background 160ms var(--ease-out), transform 100ms ease-out;
+}
+.assistant-rail .rail-avatar { background: transparent; padding: 0; }
+.assistant-rail .rail-new:hover { background: rgba(255, 255, 255, 0.85); color: #0054c9; }
+.assistant-rail .rail-avatar:hover .bot-avatar { transform: translateY(-1px); }
+.assistant-rail .rail-new:focus-visible,
+.assistant-rail .rail-avatar:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
+.sidebar.collapsed .assistant-rail { padding: 6px 0; gap: 6px; }
+.sidebar.collapsed .assistant-rail .nav-label { max-height: 0; margin: 0; opacity: 0; overflow: hidden; }

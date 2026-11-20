@@ -77,3 +77,54 @@ describe("route table", () => {
     expect(paths).toContain("/deepseek/:id?");
   });
 });
+describe("assistant list in the shell", () => {
+  const botItems = [
+    { bot_id: "bot-1", display_name: "Leader A", role_template: "leader", status: "active" },
+    { bot_id: "bot-2", display_name: "周明", role_template: "pm", status: "archived" },
+  ];
+
+  function stubBotList(items: unknown[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/bots") {
+          return new Response(JSON.stringify({ items }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }),
+    );
+  }
+
+  it("lists bots with avatar rows and a new-bot link", async () => {
+    stubBotList(botItems);
+    renderShell();
+    const list = await screen.findByTestId("sidebar-bot-list");
+    const row = await screen.findByRole("link", { name: /Leader A/ });
+    expect(row.getAttribute("href")).toBe("/bots/bot-1");
+    expect(list.textContent).toContain("leader");
+    expect(screen.getByTestId("sidebar-new-bot").getAttribute("href")).toBe("/bots/new");
+  });
+
+  it("shows a compact avatar rail when collapsed", async () => {
+    stubBotList(botItems);
+    renderShell();
+    await screen.findByRole("link", { name: /Leader A/ });
+    fireEvent.click(screen.getByRole("button", { name: "收起导航" }));
+    const rail = await screen.findByTestId("sidebar-bot-rail");
+    expect(within(rail).getByRole("link", { name: "Leader A · leader" }).getAttribute("href")).toBe("/bots/bot-1");
+    expect(within(rail).getByRole("link", { name: "周明 · pm" })).toBeTruthy();
+    // Browse links survive the collapse.
+    const nav = screen.getByRole("navigation", { name: "浏览" });
+    expect(within(nav).getByRole("link", { name: "Bot" })).toBeTruthy();
+    expect(within(nav).getByRole("link", { name: "项目" })).toBeTruthy();
+    expect(within(nav).getByRole("link", { name: "模型槽位" })).toBeTruthy();
+  });
+
+  it("shows the sidebar empty hint without using the page-level testid", async () => {
+    stubBotList([]);
+    renderShell();
+    expect(await screen.findByTestId("sidebar-bots-empty")).toBeTruthy();
+    expect(screen.queryByTestId("bots-empty")).toBeNull();
+  });
+});
