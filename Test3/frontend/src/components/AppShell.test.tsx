@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_ROUTE_PATHS } from "../App";
 import { AppShell, DEFAULT_NAV_ITEMS, REQUIRED_NAV_KEYS } from "./AppShell";
+import { BOT_AVATAR_STORAGE_KEY, writeAvatarPreset } from "../lib/botAvatar";
 
 function renderShell(navItems = DEFAULT_NAV_ITEMS, currentPath = "/bots") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -119,6 +120,20 @@ describe("assistant list in the shell", () => {
     expect(within(nav).getByRole("link", { name: "Bot" })).toBeTruthy();
     expect(within(nav).getByRole("link", { name: "项目" })).toBeTruthy();
     expect(within(nav).getByRole("link", { name: "模型槽位" })).toBeTruthy();
+  });
+
+  it("refreshes an avatar when the picker writes a preset", async () => {
+    stubBotList(botItems);
+    renderShell();
+    const row = await screen.findByRole("link", { name: /Leader A/ });
+    expect(row.querySelector("[data-testid='bot-avatar']")?.textContent).toBe("LA");
+    writeAvatarPreset("bot-1", { emoji: "🦊" });
+    await vi.waitFor(() => {
+      expect(
+        screen.getByRole("link", { name: /Leader A/ }).querySelector("[data-testid='bot-avatar']")?.textContent,
+      ).toBe("🦊");
+    });
+    window.localStorage.removeItem(BOT_AVATAR_STORAGE_KEY);
   });
 
   it("shows the sidebar empty hint without using the page-level testid", async () => {

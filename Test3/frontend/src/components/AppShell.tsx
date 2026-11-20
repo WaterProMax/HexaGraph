@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, NavLink } from "react-router-dom";
 import { api } from "../api/client";
 import type { BotInstance } from "../api/types";
+import { BOT_AVATAR_EVENT } from "../lib/botAvatar";
 import { COMPACT_VIEWPORT } from "../workstationLayout";
 import { BotAvatar } from "./BotAvatar";
 
@@ -83,6 +84,7 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== "undefined" && window.innerWidth < COMPACT_VIEWPORT,
   );
+  const [, setAvatarVersion] = useState(0);
   const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
   const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
   const {
@@ -92,6 +94,12 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
     refetch: refetchBots,
   } = useQuery({ queryKey: ["bots"], queryFn: () => api.bots() });
   const bots: BotInstance[] = Array.isArray(botList?.items) ? botList.items : [];
+
+  useEffect(() => {
+    const onAvatarChange = () => setAvatarVersion((value) => value + 1);
+    window.addEventListener(BOT_AVATAR_EVENT, onAvatarChange);
+    return () => window.removeEventListener(BOT_AVATAR_EVENT, onAvatarChange);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;

@@ -9,6 +9,8 @@
  */
 
 export const BOT_AVATAR_STORAGE_KEY = "hexagraph.botAvatar.v1";
+/** Same-document notification so the sidebar refreshes without a reload. */
+export const BOT_AVATAR_EVENT = "hexagraph:bot-avatar-changed";
 
 export type BotAvatarPreset = {
   emoji?: string;
@@ -114,6 +116,9 @@ export function writeAvatarPreset(
     target?.setItem(BOT_AVATAR_STORAGE_KEY, JSON.stringify(all));
   } catch {
     // Storage full or blocked: the in-memory render still uses the default.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(BOT_AVATAR_EVENT, { detail: { botId } }));
   }
   return all;
 }
