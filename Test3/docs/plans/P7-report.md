@@ -149,3 +149,14 @@ T03 的完整 SHA 由本文件内容决定，无法在提交前写入自身；�
 - 恰好 3 个普通本地 commit，父链从 `0252dbc` 起连续；无 amend/reset/force。
 - 原 5 个未跟踪文件未纳入任何提交。
 - 本报告不是关闭完成声明；MV-04 未完成。
+
+## 最终收口更新（用户授权后已完成 PR #34 创建与关闭门槛全绿）
+
+在 42/42 张任务卡（P0–P7）完成独立验收后，已获用户明确授权（`t86s416`）执行远端推送与真实 PR 创建（不 merge、不 deploy）：
+
+- **P7 基线提交（推送前）**：`3e64c7b37bb646555c4a5aab253ecbffb9e13f85`（`0252dbc..3e64c7b` 共 3 个 P7 提交，已推送至 `origin/feat/test3-agent-team-v1`）。
+- **真实 PR**：[WaterProMax/HexaGraph#34](https://github.com/WaterProMax/HexaGraph/pull/34)（`feat/test3-agent-team-v1` → `teamwork-001`，`state=open`、`merged=false`、`deployed=false`）。
+- **记录回填**：`Test3/docs/plans/p1-pr-record.json` 已更新为 `status="PR_OPEN"`、`github_pr_url="https://github.com/WaterProMax/HexaGraph/pull/34"`、`mv_04="completed"`、`authorization_present=true`、`merged=false`、`deployed=false`。
+- **关闭门槛复跑**：`.venv/bin/python -m pytest -o addopts='' tests/unit/test_pr_record_not_blocked_as_done.py tests/unit/test_live_git_idempotent.py -v` → **14 passed in 0.07s（含 `test_real_p1_pr_record_is_complete` PASSED，退出码 0）**。
+- **后端全量非 live 复跑（含 closeout）**：`TEST3_ISOLATION_IMAGE=sha256:af6493938f5df1f06ca97f63bac9e0eebd9119185183dbc25cc4cc7143ef72cd .venv/bin/python -m pytest -o addopts='' -q -m 'not live'` → **621 passed, 1 skipped, 2 deselected, 0 failed（退出码 0）**。
+- **边界保持不变**：`execution_safety_ready` 仍仅在 `Test3/backend/app/services/runtime.py:230` 赋 `False`；未合并、未部署、未向 `teamwork-001` 或 `main` 推送、未启用 `model_live`；本收口记录作为独立后续提交追加，未 `amend` 或覆盖历史提交。
