@@ -73,6 +73,8 @@ class DiscussionSession(BaseModel):
     previous_session_id: str | None = None
     resolution_comment: str | None = None
     paused: bool = False
+    tokens_used: int = 0
+    elapsed_seconds: int = 0
     created_at: str = ""
 
 

@@ -59,6 +59,7 @@ from app.discussion.session_store import (
     InvalidStatus,
     NotParticipant,
     SessionNotFound,
+    retry_locked,
 )
 from app.errors import classify_llm_error
 from app.leader.steward import DiscussionSteward, InvalidParticipant
@@ -136,13 +137,73 @@ def _metrics(bench: Any) -> dict[str, dict[str, float]]:
 def _metric(bench: Any, session_id: str) -> dict[str, float]:
     entry = _metrics(bench).get(session_id)
     if entry is None:
-        entry = {"tokens": 0.0, "started_at": time.monotonic()}
+        entry = {
+            "tokens": 0.0,
+            "elapsed_base": 0.0,
+            "started_at": time.monotonic(),
+        }
         _metrics(bench)[session_id] = entry
     return entry
 
 
+def _seed_metric(
+    bench: Any,
+    session_id: str,
+    record: DiscussionSession,
+    *,
+    force: bool = False,
+) -> dict[str, float]:
+    """Seed the in-process counters from the persisted session record.
+
+    A fresh driver task starts from the values SQLite holds, so a process
+    restart neither loses usage nor counts the paused interval again.
+    """
+    metrics = _metrics(bench)
+    if not force and session_id in metrics:
+        return metrics[session_id]
+    entry = {
+        "tokens": float(record.tokens_used),
+        "elapsed_base": float(record.elapsed_seconds),
+        "started_at": time.monotonic(),
+    }
+    metrics[session_id] = entry
+    return entry
+
+
 def _elapsed(entry: dict[str, float]) -> int:
-    return max(int(time.monotonic() - float(entry.get("started_at", time.monotonic()))), 0)
+    started_at = float(entry.get("started_at", time.monotonic()))
+    elapsed_base = float(entry.get("elapsed_base", 0.0))
+    return max(int(elapsed_base + max(time.monotonic() - started_at, 0.0)), 0)
+
+
+async def _persist_usage(bench: Any, session_id: str) -> None:
+    """Write the in-process counters back without touching concurrent fields."""
+    entry = _metrics(bench).get(session_id)
+    if entry is None:
+        return
+    tokens = int(entry.get("tokens", 0.0))
+    elapsed = _elapsed(entry)
+    try:
+        async with bench.db_session() as session:
+            store = DiscussionSessionStore(session)
+
+            async def operation() -> None:
+                locked = await store.get_locked(session_id)
+                await store.save(
+                    locked.model_copy(
+                        update={
+                            "tokens_used": tokens,
+                            "elapsed_seconds": elapsed,
+                        }
+                    )
+                )
+                await session.commit()
+
+            await retry_locked(session, operation)
+    except Exception:  # noqa: BLE001 - persistence must never kill the driver
+        logger.exception(
+            "failed to persist discussion usage for session %s", session_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1394,22 +1455,27 @@ async def step(bench: Any, session_id: str) -> bool:
     """Advance the session by one state-machine action.
 
     Returns ``True`` when work was done and another step may follow; ``False``
-    for terminal, paused or non-actionable states.
+    for terminal, paused or non-actionable states.  Usage counters are written
+    back on every return path, including cancellation and failures.
     """
     record = await _get(bench, session_id)
     if record.status in TERMINAL_STATUSES or record.paused:
         return False
-    if record.status in {"draft", "grouping"}:
-        return await _step_group(bench, session_id)
-    if record.status in {"round1_independent", "round_n_revise"}:
-        return await _step_proposals(bench, session_id)
-    if record.status == "cross_review":
-        return await _step_reviews(bench, session_id)
-    if record.status == "converged_pending_human":
-        if record.decision_package is not None:
-            return False
-        return await _step_leader(bench, session_id)
-    return False
+    _seed_metric(bench, session_id, record)
+    try:
+        if record.status in {"draft", "grouping"}:
+            return await _step_group(bench, session_id)
+        if record.status in {"round1_independent", "round_n_revise"}:
+            return await _step_proposals(bench, session_id)
+        if record.status == "cross_review":
+            return await _step_reviews(bench, session_id)
+        if record.status == "converged_pending_human":
+            if record.decision_package is not None:
+                return False
+            return await _step_leader(bench, session_id)
+        return False
+    finally:
+        await _persist_usage(bench, session_id)
 
 
 async def run_session(bench: Any, session_id: str) -> None:
@@ -1423,7 +1489,7 @@ async def run_session(bench: Any, session_id: str) -> None:
     existing = tasks.get(session_id)
     if existing is not None and not existing.done():
         return
-    _metric(bench, session_id)
+    _seed_metric(bench, session_id, record, force=True)
     tasks[session_id] = asyncio.create_task(_drive(bench, session_id))
 
 
@@ -1450,6 +1516,7 @@ async def _drive(bench: Any, session_id: str) -> None:
             category=classify_llm_error(exc) or "internal",
         )
     finally:
+        await _persist_usage(bench, session_id)
         tasks = _tasks(bench)
         if tasks.get(session_id) is asyncio.current_task():
             tasks.pop(session_id, None)
@@ -1469,18 +1536,21 @@ async def _cancel_task(bench: Any, session_id: str) -> None:
 
 
 async def pause_session(bench: Any, session_id: str) -> DiscussionSession:
+    await _cancel_task(bench, session_id)
+    await _persist_usage(bench, session_id)
     already_paused = False
     async with bench.db_session() as session:
         store = DiscussionSessionStore(session)
         record = await store.get_locked(session_id)
         if record.status in TERMINAL_STATUSES:
             await session.rollback()
+            _metrics(bench).pop(session_id, None)
             return record
         already_paused = record.paused
         updated = record.model_copy(update={"paused": True})
         await store.save(updated)
         await session.commit()
-    await _cancel_task(bench, session_id)
+    _metrics(bench).pop(session_id, None)
     if not already_paused:
         await _system(bench, session_id, "paused", "讨论已暂停。")
     return updated
@@ -1528,6 +1598,7 @@ async def resume_session(
         )
     if terminated:
         await _cancel_task(bench, session_id)
+        _metrics(bench).pop(session_id, None)
         await _system(
             bench,
             session_id,
@@ -1543,17 +1614,20 @@ async def resume_session(
 
 async def terminate_session(bench: Any, session_id: str) -> DiscussionSession:
     await _cancel_task(bench, session_id)
+    await _persist_usage(bench, session_id)
     async with bench.db_session() as session:
         store = DiscussionSessionStore(session)
         record = await store.get_locked(session_id)
         if record.status in TERMINAL_STATUSES:
             await session.rollback()
+            _metrics(bench).pop(session_id, None)
             return record
         updated = record.model_copy(
             update={"status": "terminated", "paused": False}
         )
         await store.save(updated)
         await session.commit()
+    _metrics(bench).pop(session_id, None)
     await _system(
         bench, session_id, "terminated", "讨论已终止。", round_no=updated.current_round
     )

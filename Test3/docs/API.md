@@ -180,6 +180,7 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - `converged_pending_human` 且尚无决策包时，Leader 可 `rounds/start` 开下一轮（`current_round+1`，计入 `max_rounds`；超限置 `budget_exhausted` 并 409）。
 - `terminated` 来自三种情况：grouping 时项目内可用 Bot 少于 2 个（或 Leader 不在其中）；`resume` 的 `skip_bot_ids` 使剩余参与者少于 2 个或跳过了 Leader；显式 `terminate`。
 - 会话对象新增 `requirement_text`、`previous_session_id`、`resolution_comment`、`paused`；`resolve` 的 `comment` 写入 `resolution_comment`。
+- 会话对象新增 `tokens_used`、`elapsed_seconds`（随会话 JSON payload 持久化；老记录缺字段时按 0 读取）。`tokens_used` 是已累计的模型 `tokens_in + tokens_out`；`elapsed_seconds` 只统计驱动器实际运行的时间，暂停期间和无后台任务时不计。驱动器在每个 `step` 结束以及暂停 / 终止后写回这两个字段，进程重启或恢复时从记录续算，因此 `DiscussionBudget.max_tokens` / `max_wallclock_seconds` 跨重启仍然生效。
 
 ### 路由
 
