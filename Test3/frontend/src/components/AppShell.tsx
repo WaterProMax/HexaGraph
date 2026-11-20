@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { BotInstance } from "../api/types";
 import { BOT_AVATAR_EVENT } from "../lib/botAvatar";
+import { roleLabel } from "../lib/botRole";
 import { COMPACT_VIEWPORT } from "../workstationLayout";
 import { BotAvatar } from "./BotAvatar";
 
@@ -193,35 +194,25 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               <h2 className="nav-label" id="assistant-rail-heading">
                 Bot
               </h2>
-              <Link
-                to="/bots/new"
-                className="rail-new"
-                data-testid="sidebar-new-bot"
-                aria-label="新建 Bot"
-                title="新建 Bot"
-              >
-                <PlusOutlined />
-              </Link>
-              <Link
-                to="/bots"
-                className="rail-new"
-                data-testid="sidebar-manage-bots"
-                aria-label="Bot 管理"
-                title="Bot 管理"
-              >
-                <SettingOutlined />
-              </Link>
               {bots.map((bot) => {
-                const label = `${bot.display_name} · ${bot.role_template}`;
+                const label = `${bot.display_name} · ${roleLabel(bot.role_template)}`;
                 return (
                   <Link
                     key={bot.bot_id}
                     to={`/bots/${bot.bot_id}/chat`}
-                    className="rail-avatar"
+                    className="rail-avatar rail-tip"
                     aria-label={label}
-                    title={label}
                   >
-                    <BotAvatar bot={bot} size={38} title={label} />
+                    <BotAvatar
+                      bot={bot}
+                      size={38}
+                      title={label}
+                      nativeTitle={false}
+                    />
+                    <span className="rail-tooltip" aria-hidden="true">
+                      <strong>{bot.display_name}</strong>
+                      <span>{roleLabel(bot.role_template)}</span>
+                    </span>
                   </Link>
                 );
               })}
@@ -306,26 +297,34 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
               <span>项目</span>
               <span className="mono">{projects.length}</span>
             </h2>
-            <Link
-              to="/projects/new"
-              className="nav-item assistant-new"
-              data-testid="sidebar-new-project"
-              aria-label="创建项目"
-            >
-              <PlusOutlined />
-              <span className="nav-text">创建项目</span>
-            </Link>
+            {!collapsed && (
+              <Link
+                to="/projects/new"
+                className="nav-item assistant-new"
+                data-testid="sidebar-new-project"
+                aria-label="创建项目"
+              >
+                <PlusOutlined />
+                <span className="nav-text">创建项目</span>
+              </Link>
+            )}
             {projects.map((project) => {
               const active = currentPath === `/projects/${project.id}`;
               return (
                 <Link
                   key={project.id}
                   to={`/projects/${project.id}`}
-                  className={`nav-item ${active ? "active" : ""}`}
+                  className={`nav-item ${collapsed ? "rail-tip" : ""} ${active ? "active" : ""}`}
                   aria-current={active ? "page" : undefined}
                 >
                   <FolderOpenOutlined />
                   <span className="nav-text">{project.name}</span>
+                  {collapsed && (
+                    <span className="rail-tooltip" aria-hidden="true">
+                      <strong>{project.name}</strong>
+                      <span>项目</span>
+                    </span>
+                  )}
                 </Link>
               );
             })}

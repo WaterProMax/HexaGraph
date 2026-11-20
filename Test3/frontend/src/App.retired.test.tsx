@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -48,6 +48,8 @@ afterEach(() => {
 describe("retired entries", () => {
   it("keeps only the surviving sidebar entries", async () => {
     renderAt("/workstation/static-classroom");
+    // jsdom is narrower than the compact breakpoint, so start from the expanded sidebar.
+    fireEvent.click(await screen.findByRole("button", { name: "展开导航" }));
     expect(await screen.findByRole("link", { name: "新建 Bot" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "创建项目" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "模型槽位" })).toBeNull();

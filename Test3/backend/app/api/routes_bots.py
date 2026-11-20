@@ -4,9 +4,18 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from app.bots.chat import ChatRequest, chat_reply
+from app.bots.files import (
+    BotFileError,
+    BotFileStore,
+    budget_chars,
+    context_window,
+    file_item,
+    summarize,
+)
 from app.bots.registry import (
     BotAlreadyArchived,
     BotArchived,
@@ -14,7 +23,6 @@ from app.bots.registry import (
     BotNotFound,
     BotRegistry,
 )
-from app.bots.chat import ChatRequest, chat_reply
 from app.errors import AgentOutputError
 from app.llm.bot_secrets import BotSecretStore
 from app.llm.catalog import is_known_provider
@@ -197,8 +205,9 @@ async def chat_with_bot(bot_id: str, request: Request) -> JSONResponse:
         if bot.status == "archived":
             return _json_error(409, "bot_archived", "archived bots cannot chat")
         memory = await build_memory_slot(bot_id, project_id=None, run_id=None, session=session)
+        files = await BotFileStore(session).list(bot_id)
     try:
-        result = await chat_reply(bench.gateway, bot, body.messages, memory)
+        result = await chat_reply(bench.gateway, bot, body.messages, memory, files)
     except AgentOutputError as exc:
         category = exc.category or "model_error"
         return _json_error(400 if category == "auth" else 502, category, str(exc))
@@ -207,3 +216,68 @@ async def chat_with_bot(bot_id: str, request: Request) -> JSONResponse:
     if not result["reply"]:
         return _json_error(502, "empty_reply", "模型没有返回内容，请重试")
     return JSONResponse(content=result)
+
+
+def _library(bench: Any, bot: Any, rows: list[Any]) -> dict[str, Any]:
+    return {
+        "items": [file_item(row) for row in rows],
+        **summarize(rows),
+        "budget_chars": budget_chars(context_window(bench.gateway, bot.slot)),
+    }
+
+
+@router.get("/bots/{bot_id}/files")
+async def list_bot_files(bot_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        rows = await BotFileStore(session).list(bot_id)
+    return _library(bench, bot, rows)
+
+
+@router.post("/bots/{bot_id}/files", status_code=201)
+async def upload_bot_file(bot_id: str, request: Request) -> JSONResponse:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        if bot.status == "archived":
+            return _json_error(409, "bot_archived", "archived bots cannot take files")
+        budget = budget_chars(context_window(bench.gateway, bot.slot))
+        store = BotFileStore(session)
+        try:
+            row = await store.add(bot_id, payload.get("filename"), payload.get("content"), budget)
+        except BotFileError as exc:
+            await session.rollback()
+            return _json_error(exc.status, exc.category, exc.detail)
+        await session.commit()
+        rows = await store.list(bot_id)
+    return JSONResponse(
+        status_code=201, content={**_library(bench, bot, rows), "file": file_item(row)}
+    )
+
+
+@router.delete("/bots/{bot_id}/files/{file_id}")
+async def delete_bot_file(bot_id: str, file_id: str, request: Request) -> Response:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        try:
+            await BotFileStore(session).delete(bot_id, file_id)
+        except BotFileError as exc:
+            await session.rollback()
+            return _json_error(exc.status, exc.category, exc.detail)
+        await session.commit()
+    return Response(status_code=204)
+

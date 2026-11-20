@@ -16,7 +16,7 @@ from app.settings import get_settings
 from app.storage.migrate import alembic_config
 
 P0_HEAD = "0001"
-CURRENT_HEAD = "0010"
+CURRENT_HEAD = "0011"
 
 REQUIRED_TABLES = {
     "bots",
@@ -34,6 +34,7 @@ RECOMMENDED_TABLES = {
     "module_acceptances",
     "defects",
     "run_execution_state",
+    "bot_files",
 }
 C6_TABLES = REQUIRED_TABLES | RECOMMENDED_TABLES
 

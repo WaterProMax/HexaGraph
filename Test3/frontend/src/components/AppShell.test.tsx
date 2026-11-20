@@ -128,9 +128,12 @@ describe("assistant list in the shell", () => {
     await screen.findByRole("link", { name: /Leader A/ });
     fireEvent.click(screen.getByRole("button", { name: "收起导航" }));
     const rail = await screen.findByTestId("sidebar-bot-rail");
-    expect(within(rail).getByRole("link", { name: "Leader A · leader" }).getAttribute("href")).toBe("/bots/bot-1/chat");
-    expect(within(rail).getByRole("link", { name: "周明 · pm" })).toBeTruthy();
-    expect(within(rail).getByRole("link", { name: "Bot 管理" }).getAttribute("href")).toBe("/bots");
+    expect(within(rail).getByRole("link", { name: "Leader A · Leader" }).getAttribute("href")).toBe("/bots/bot-1/chat");
+    expect(within(rail).getByRole("link", { name: "周明 · 产品经理" })).toBeTruthy();
+    expect(within(rail).queryByRole("link", { name: "Bot 管理" })).toBeNull();
+    expect(within(rail).queryByRole("link", { name: "新建 Bot" })).toBeNull();
+    const projects = screen.getByTestId("sidebar-project-list");
+    expect(within(projects).queryByTestId("sidebar-new-project")).toBeNull();
   });
 
   it("refreshes an avatar when the picker writes a preset", async () => {

@@ -318,6 +318,20 @@ class MemoryRecordRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class BotFileRow(Base):
+    """Text file kept in a bot's library; the full text is injected into its chat prompt."""
+
+    __tablename__ = "bot_files"
+    __table_args__ = (Index("ix_bot_files_bot", "bot_id"),)
+
+    file_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(ForeignKey("bots.bot_id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String, nullable=False)
+    chars: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class DiscussionSessionRow(Base):
     __tablename__ = "discussion_sessions"
 

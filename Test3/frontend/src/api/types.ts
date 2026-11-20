@@ -199,3 +199,11 @@ export type MembershipCreate = {
 
 /** One turn of a bot chat; the history lives in the browser. */
 export type ChatMessage = { role: "user" | "assistant"; content: string };
+
+/** Reply of `POST /bots/{id}/chat`; `files_omitted` appears when library files did not fit. */
+export type ChatReply = { reply: string; model: string; files_omitted?: number };
+
+/** A text file in a bot's library (the content stays on the server). */
+export type BotFile = { file_id: string; filename: string; chars: number; created_at: string };
+
+export type BotFileLibrary = { items: BotFile[]; used_chars: number; budget_chars: number };

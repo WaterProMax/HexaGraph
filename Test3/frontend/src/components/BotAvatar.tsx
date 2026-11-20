@@ -5,12 +5,14 @@ export type BotAvatarProps = {
   bot: Pick<BotInstance, "bot_id" | "display_name" | "role_template" | "status">;
   size?: number;
   title?: string;
+  /** Set false when a custom tooltip already labels the avatar. */
+  nativeTitle?: boolean;
   className?: string;
   /** Optional override (e.g. an unsaved picker preview). */
   preset?: BotAvatarPreset;
 };
 
-export function BotAvatar({ bot, size = 36, title, className = "", preset }: BotAvatarProps) {
+export function BotAvatar({ bot, size = 36, title, nativeTitle = true, className = "", preset }: BotAvatarProps) {
   const presets = preset ? { [bot.bot_id]: preset } : readAvatarPresets();
   const resolved = resolveAvatar(bot, presets);
   const label = title || `${bot.display_name} · ${bot.role_template}`;
@@ -28,7 +30,7 @@ export function BotAvatar({ bot, size = 36, title, className = "", preset }: Bot
       style={style}
       data-testid="bot-avatar"
       data-bot-id={bot.bot_id}
-      title={label}
+      title={nativeTitle ? label : undefined}
       aria-label={label}
       role="img"
     >

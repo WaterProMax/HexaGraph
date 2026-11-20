@@ -15,6 +15,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type { BotInstance, ChatMessage } from "../../api/types";
 import { BotAvatar } from "../../components/BotAvatar";
+import { BotFilesPanel } from "./BotFilesPanel";
 
 const STORAGE_PREFIX = "hexagraph.botChat.v1:";
 const STORED_LIMIT = 100;
@@ -56,6 +57,7 @@ export default function BotChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
 
@@ -64,6 +66,7 @@ export default function BotChatPage() {
     setBot(null);
     setLoadError("");
     setError("");
+    setNotice("");
     setDraft("");
     setMessages(readHistory(id));
     api
@@ -103,6 +106,7 @@ export default function BotChatPage() {
     setMessages(history);
     setDraft("");
     setError("");
+    setNotice("");
     setSending(true);
     try {
       const res = await api.chatBot(id, history.slice(-40));
@@ -112,6 +116,10 @@ export default function BotChatPage() {
       ];
       setMessages(next);
       writeHistory(id, next);
+      if (res.files_omitted)
+        setNotice(
+          `有 ${res.files_omitted} 个较早的资料文件超出这个 Bot 的上限，这次没有带上`,
+        );
     } catch (err: any) {
       // 失败时把这句话放回输入框，历史里不留悬空的用户消息
       setMessages(messages);
@@ -140,6 +148,7 @@ export default function BotChatPage() {
   const clear = () => {
     setMessages([]);
     setError("");
+    setNotice("");
     writeHistory(id, []);
   };
 
@@ -243,7 +252,13 @@ export default function BotChatPage() {
             {error}
           </div>
         )}
+        {notice && (
+          <div className="bot-chat-notice" role="status">
+            {notice}
+          </div>
+        )}
         <div className="bot-chat-compose">
+          <BotFilesPanel botId={bot.bot_id} disabled={archived} />
           <textarea
             ref={composer}
             aria-label="消息"

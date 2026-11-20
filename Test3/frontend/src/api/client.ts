@@ -122,8 +122,17 @@ export const api = {
     req("/bots", { method: "POST", body: JSON.stringify(body) }),
   patchBot: (botId: string, body: import("./types").BotPatch) =>
     req(`/bots/${encodeURIComponent(botId)}`, { method: "PATCH", body: JSON.stringify(body) }),
-  chatBot: (botId: string, messages: import("./types").ChatMessage[]): Promise<{ reply: string; model: string }> =>
+  chatBot: (botId: string, messages: import("./types").ChatMessage[]): Promise<import("./types").ChatReply> =>
     req(`/bots/${encodeURIComponent(botId)}/chat`, { method: "POST", body: JSON.stringify({ messages }) }),
+  botFiles: (botId: string): Promise<import("./types").BotFileLibrary> =>
+    req(`/bots/${encodeURIComponent(botId)}/files`),
+  uploadBotFile: (
+    botId: string,
+    body: { filename: string; content: string },
+  ): Promise<import("./types").BotFileLibrary & { file: import("./types").BotFile }> =>
+    req(`/bots/${encodeURIComponent(botId)}/files`, { method: "POST", body: JSON.stringify(body) }),
+  deleteBotFile: (botId: string, fileId: string): Promise<null> =>
+    req(`/bots/${encodeURIComponent(botId)}/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
   archiveBot: (botId: string) =>
     req(`/bots/${encodeURIComponent(botId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
   skills: () => req("/skills"),

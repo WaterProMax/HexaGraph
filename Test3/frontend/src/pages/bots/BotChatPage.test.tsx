@@ -101,6 +101,25 @@ describe("BotChatPage", () => {
     ).toHaveLength(3);
   });
 
+  it("tells the user when library files did not fit in the model window", async () => {
+    stubApi(() => json({ reply: "好的", model: "m", files_omitted: 2 }));
+    renderChat();
+    fireEvent.change(await screen.findByLabelText("消息"), {
+      target: { value: "看下资料" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    const notice = await screen.findByRole("status");
+    expect(notice.textContent).toContain("2 个较早的资料文件");
+    expect(notice.textContent).toContain("没有带上");
+  });
+
+  it("has a library button next to the composer", async () => {
+    stubApi(() => json({ reply: "x", model: "m" }));
+    renderChat();
+    await screen.findByLabelText("消息");
+    expect(screen.getByRole("button", { name: "资料文件" })).toBeTruthy();
+  });
+
   it("renders assistant replies as markdown and user messages as plain text", async () => {
     stubApi(() => json({ reply: "**先写测试**\n\n- 一\n- 二", model: "m" }));
     renderChat();
