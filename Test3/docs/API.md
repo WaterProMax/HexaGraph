@@ -193,7 +193,7 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 | POST | `/api/discussion-sessions/{sid}/reviews` | 201 票 | 400 validation_error；403 forbidden / not_participant；404 proposal_not_found；409 invalid_status / self_review_forbidden / duplicate_review |
 | POST | `/api/discussion-sessions/{sid}/converge` | 200 `{action, reason, session, dissent_items}` | 403 forbidden；409 invalid_status |
 | POST | `/api/discussion-sessions/{sid}/submit-decision` | 201 `DecisionPackage` | 403 forbidden；409 invalid_status |
-| POST | `/api/discussion-sessions/{sid}/resolve` | 200 `DiscussionSession` | 400 validation_error；404 run_not_found；409 invalid_status |
+| POST | `/api/discussion-sessions/{sid}/resolve` | 200 `DiscussionSession` | 400 validation_error；403 forbidden；404 session_not_found / run_not_found；409 invalid_status |
 | POST | `/api/discussion-sessions/{sid}/run` | 200 `{running, session}`（幂等） | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
 | POST | `/api/discussion-sessions/{sid}/pause` | 200 `DiscussionSession` | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
 | POST | `/api/discussion-sessions/{sid}/resume` | 200 `DiscussionSession`（可选 `{skip_bot_ids}`） | 400 validation_error；403 forbidden；404 session_not_found；409 invalid_status |
@@ -251,6 +251,7 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - `submit-decision` 仅 leader 可提交；status 必须 converged_pending_human，且尚无 package。
 - `decision_package_digest` 只取 `session_id` / `requirement_snapshot_hash` / `proposal_ids` / `dissent_items` / `hard_gate_summary` / `body_md`，对规范化对象做一次 sha256，不对 sha256 再 hash。
 - `resolve` 接受 `decision=approved|rejected`，可选 `comment`、`run_id`；`comment` 保存到会话的 `resolution_comment`，供打回后的新会话复用。
+- `resolve` 仅会话 Leader（`leader_bot_id`）可批准或打回；非 Leader 参与者返回 403 forbidden。检查顺序：404 session_not_found → 403 forbidden → 409 invalid_status（重复 approve 的幂等返回也在 Leader 校验之后）。
 - approved 且提供 `run_id`：确认 run 存在后，把 `"DecisionPackage"` 写入基线。已有 `run_execution_state` 行时合并并保持原 profile / plan_hash / allowed_tool_refs；无行时只更新 run 的内存基线。绝不调用 schedule / execute_task，绝不把 execution_safety_ready 置 True。
 - rejected 不写入/不覆盖 DecisionPackage hash。
 - 并发两次 approve 幂等，最终 status=approved，hash 值相同。

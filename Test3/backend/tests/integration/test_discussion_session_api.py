@@ -689,3 +689,63 @@ async def test_create_session_rejects_secret_in_requirement(app) -> None:
     assert object_form.status_code == 400
     assert object_form.json()["error_category"] == "secret_in_body"
     assert await _session_count(bench) == 0
+async def _converged_with_package(app):
+    _app, bots, session_id = await _cross_reviewed(app, dissent=["风险X"])
+    async with _client(app) as client:
+        converged = await _converge(client, session_id, bots[0])
+        assert converged.status_code == 200, converged.text
+        assert converged.json()["session"]["status"] == "converged_pending_human"
+        package = await client.post(
+            f"/api/discussion-sessions/{session_id}/submit-decision",
+            json={"body_md": "# decision", "dissent_items": ["风险X"]},
+            headers=_headers(bots[0]),
+        )
+        assert package.status_code == 201, package.text
+    return app, bots, session_id
+
+
+async def _resolve(client: AsyncClient, session_id: str, actor: str, decision: str):
+    return await client.post(
+        f"/api/discussion-sessions/{session_id}/resolve",
+        json={"decision": decision},
+        headers=_headers(actor),
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_leader_cannot_resolve_decision(app) -> None:
+    _app, bots, session_id = await _converged_with_package(app)
+    leader, alice, _bob, _outsider = bots
+    async with _client(app) as client:
+        for decision in ("approved", "rejected"):
+            res = await _resolve(client, session_id, alice, decision)
+            assert res.status_code == 403, res.text
+            assert res.json()["error_category"] == "forbidden"
+        fetched = await client.get(
+            f"/api/discussion-sessions/{session_id}", headers=_headers(leader)
+        )
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.json()["status"] == "converged_pending_human"
+    assert fetched.json()["resolution_comment"] is None
+
+    async with _client(app) as client:
+        approved = await _resolve(client, session_id, leader, "approved")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved"
+
+    async with _client(app) as client:
+        repeated = await _resolve(client, session_id, leader, "approved")
+        non_leader_repeat = await _resolve(client, session_id, alice, "approved")
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["status"] == "approved"
+    assert non_leader_repeat.status_code == 403
+    assert non_leader_repeat.json()["error_category"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing_session_is_404_before_forbidden(app) -> None:
+    _bench, _p1, bots, _session_id = await _grouped_session(app)
+    async with _client(app) as client:
+        res = await _resolve(client, "missing-session", bots[1], "approved")
+    assert res.status_code == 404
+    assert res.json()["error_category"] == "session_not_found"

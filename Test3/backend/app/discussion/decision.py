@@ -146,6 +146,7 @@ async def resolve_decision(
             decision,
             comment=comment,
             run_id=run_id,
+            actor_bot_id=actor_bot_id,
             bench=bench,
             session=session,
         )
@@ -157,6 +158,7 @@ async def _resolve_once(
     *,
     comment: str | None,
     run_id: str | None,
+    actor_bot_id: str,
     bench,
     session: AsyncSession,
 ) -> DiscussionSession:
@@ -164,6 +166,8 @@ async def _resolve_once(
         raise InvalidDecision(decision)
     store = DiscussionSessionStore(session)
     record = await store.get(session_id)
+    if actor_bot_id != record.leader_bot_id:
+        raise Forbidden("only the session leader can resolve a decision")
     if record.status == "approved" and decision == "approved":
         return record
     if record.status != "converged_pending_human" or record.decision_package is None:

@@ -177,6 +177,46 @@ async def test_non_leader_and_double_submit_are_rejected(bench) -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_leader_cannot_resolve(bench) -> None:
+    _project, leader, alice, _bob, session_id = await _converged(bench)
+    package = await _package(bench, session_id, leader)
+    for decision in ("approved", "rejected"):
+        async with bench.db_session() as session:
+            with pytest.raises(Forbidden):
+                await resolve_decision(
+                    session_id, decision, actor_bot_id=alice, bench=bench, session=session
+                )
+            await session.rollback()
+    async with bench.db_session() as session:
+        stored = await DiscussionSessionStore(session).get(session_id)
+    assert stored.status == "converged_pending_human"
+    assert stored.resolution_comment is None
+    assert stored.decision_package == package
+
+
+@pytest.mark.asyncio
+async def test_non_leader_cannot_repeat_approval(bench) -> None:
+    _project, leader, alice, _bob, session_id = await _converged(bench)
+    await _package(bench, session_id, leader)
+    async with bench.db_session() as session:
+        approved = await resolve_decision(
+            session_id, "approved", actor_bot_id=leader, bench=bench, session=session
+        )
+        await session.commit()
+    assert approved.status == "approved"
+    async with bench.db_session() as session:
+        with pytest.raises(Forbidden):
+            await resolve_decision(
+                session_id, "approved", actor_bot_id=alice, bench=bench, session=session
+            )
+        await session.rollback()
+    async with bench.db_session() as session:
+        stored = await DiscussionSessionStore(session).get(session_id)
+    assert stored.status == "approved"
+    assert stored.resolution_comment is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_approved_sets_run_hash_without_scheduling(bench, monkeypatch: pytest.MonkeyPatch) -> None:
     project, leader, _alice, _bob, session_id = await _converged(bench)
     package = await _package(bench, session_id, leader)

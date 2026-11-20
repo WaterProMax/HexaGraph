@@ -216,6 +216,22 @@ describe("SpecApprovalDialog", () => {
     expect(props.onApproved).not.toHaveBeenCalled();
   });
 
+  it("shows a forbidden message and keeps the dialog open on 403", async () => {
+    apiMock.resolveDiscussion.mockRejectedValue(
+      new ApiError("只有会话 Leader 可以批准或打回", { status: 403, category: "forbidden" }),
+    );
+    const props = renderDialog({ actorBotId: "bot-a" });
+
+    fireEvent.click(screen.getByRole("button", { name: "通过，进入任务拆解" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("只有会话 Leader 可以批准或打回");
+    expect(props.onClose).not.toHaveBeenCalled();
+    expect(props.onApproved).not.toHaveBeenCalled();
+    expect(props.onRestarted).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
   it("renders the summary chips, dissent items and score table", () => {
     renderDialog();
 

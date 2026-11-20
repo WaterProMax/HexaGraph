@@ -469,6 +469,9 @@ async def resolve_session_decision(session_id: str, request: Request) -> Any:
         except SessionNotFound:
             await session.rollback()
             return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            await session.rollback()
+            return _json_error(403, "forbidden", str(exc))
         except InvalidStatus as exc:
             await session.rollback()
             return _json_error(409, "invalid_status", str(exc))
