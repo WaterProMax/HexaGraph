@@ -44,11 +44,13 @@ from app.errors import (
 from app.events.bus import BUS, rebuild_task_states
 from app.execution.baseline import hash_artifact, write_approved_baseline_hash
 from app.execution.dag import dag_blocked_tasks, edges_from_tasks
+from app.execution.generation import GenerationGuard
 from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
 from app.execution.isolated import WriteSpec, execute_task_granted
 from app.execution.isolation import preflight_isolation
+from app.execution.run_lock import RunLockRegistry
 from app.execution.run_profile import (
     PROFILE_CONFLICT,
     PROFILE_GRANTED,
@@ -201,7 +203,8 @@ class Workbench:
         self.schedule_interval = 5.0
         self._merge_locks: dict[str, asyncio.Lock] = {}
         self._gate_locks: dict[str, asyncio.Lock] = {}
-        self._schedule_locks: dict[str, asyncio.Lock] = {}
+        self._run_locks = RunLockRegistry()
+        self._generations = GenerationGuard()
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
         self.import_timeout_s = DEFAULT_IMPORT_TIMEOUT_S
         self.clock = time.time
@@ -619,11 +622,8 @@ class Workbench:
         return lock
 
     def _schedule_lock_for(self, run: RunState) -> asyncio.Lock:
-        lock = self._schedule_locks.get(run.id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._schedule_locks[run.id] = lock
-        return lock
+        # P5: scheduling and task writes share one per-run lock.
+        return self._run_locks.lock_for(run.id)
 
     @contextmanager
     def _usage_scope(self, run: RunState, task: dict[str, Any] | None = None):
@@ -2260,7 +2260,8 @@ class Workbench:
                     status_code=409,
                 )
         # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
-        async with self._schedule_lock_for(run):
+        # P5: 调度与任务写路径共用同一把 per-run 锁。
+        async with self._run_locks.write_scope(run.id):
             return await self._schedule_once_locked(run, allowed=allowed)
 
     async def _schedule_once_locked(self, run: RunState, *, allowed: set[str] | None = None) -> list[str]:
@@ -2315,6 +2316,12 @@ class Workbench:
         return started
 
     async def execute_task(self, run: RunState, code: str) -> dict[str, Any]:
+        # P5: all real task writes for a run go through one lock.  Nested calls
+        # from the schedule loop re-enter instead of deadlocking.
+        async with self._run_locks.write_scope(run.id):
+            return await self._execute_task_locked(run, code)
+
+    async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
         self._require_execution_safety(run, code)
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
@@ -2422,6 +2429,7 @@ class Workbench:
         grant: ExecutionGrant,
     ) -> dict[str, Any]:
         """granted_v1 branch: write only inside an isolated per-task worktree."""
+        generation_id = self._generations.new_id(run.id)
         command = [str(part) for part in (spec.get("command") or [])]
         # F-08 re-check at the wrapper boundary, before any worktree or write.
         authorize_granted_command(
@@ -2470,6 +2478,11 @@ class Workbench:
             task["last_error"] = "isolation_preflight_failed"
             self.emit(run, "task.isolation_blocked", code, {"reason": exc.reason, "backend": exc.backend})
             return {"state": task["state"], "kind": "BLOCKED", "isolation_backend": exc.backend, "reason": exc.reason}
+        if not self._generations.is_current(run.id, generation_id):
+            # P5: pause/terminate/replan bumped the generation.  A late tool or
+            # LLM reply must not write evidence, state or files.
+            self.emit(run, "task.late_result_ignored", code, {"reason": "stale generation"})
+            return {"state": task["state"], "kind": "ignored", "reason": "stale_generation"}
         task.setdefault("evidence", []).append(result.evidence)
         self.emit(run, "task.evidence", code, {"path": result.evidence_path, "ok": result.ok})
         if result.ok:
@@ -2895,6 +2908,8 @@ class Workbench:
             raise ValidationFailed("终止运行需二次确认")
         if action == "pause":
             run.paused = True
+            # P5: invalidate in-flight generations so late replies are dropped.
+            self._generations.bump(run.id)
         elif action == "resume":
             # Resuming a retired DeepSeek-only run would let the loop call the retired
             # provider; keep it read-only. Pause/terminate stay available.
@@ -2903,6 +2918,7 @@ class Workbench:
         elif action == "terminate":
             run.status = "terminated"
             run.paused = True
+            self._generations.bump(run.id)
             if run.artifacts.get("design_input_status") == "importing":
                 generation = int(run.artifacts.get("design_input_generation") or 0)
                 self._fail_import(run, generation, "整理已取消。供应商可能仍会计费。")
