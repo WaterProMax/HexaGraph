@@ -107,4 +107,31 @@
 - 同一项目至多一个 `is_leader=1`：`uq_project_one_leader ... WHERE is_leader = 1` 部分唯一索引真正生效；并发写入时先以 no-op `UPDATE` 取 SQLite 写锁，`IntegrityError` 按索引/列名映射为 `leader_already_set` 或 `membership_exists`。
 - 同一 Bot 可加入多个项目；`DELETE` 只删除该项目 join 行，不删除 `bots` 行或 pin 历史。
 - 归档 Bot 加入成员返回 403 `bot_archived`；缺失关系 404 `membership_not_found`。
-- 未创建 T05 的 `run_bot_pin_snapshots`，未进入记忆/讨论/DAG/前端工作台。
+- 未创建 T05 的 `run_bot_pin_snapshots`，未进入记忆/讨论/DAG/前端工作台。## T05 · call_agent / Gateway 使用 Bot pin 快照
+
+- 时间：2026-11-20 10:26 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_bot_pin_snapshot.py -v`
+- 退出码：0
+- 计数：7 passed
+- 回归：`tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 27 passed，退出码 0
+- 附加回归：`tests/unit/test_error_taxonomy.py tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 26 passed，退出码 0
+
+### 触及文件
+
+- `app/bots/snapshot.py`（NEW）
+- `alembic/versions/0007_run_bot_pin_snapshots.py`（NEW）
+- `tests/unit/test_bot_pin_snapshot.py`（NEW）
+- `app/agents/runtime.py`（MODIFY：`call_agent` 新增 `bot_id` / `run_id`，仅 bot_id 非空时读取冻结快照）
+- `app/llm/gateway.py`（MODIFY：`complete` / `_complete_with_retry` 接受 `model` / `provider_ref`；model 覆盖槽位默认值；provider_ref 只记录不转发）
+- `app/storage/models.py`（MODIFY：`RunBotPinSnapshotRow`）
+- `docs/plans/P2-report.md`（MODIFY）
+
+### 实现要点
+
+- `freeze_bot_pins` 按 `(run_id, bot_id)` 写入当时 `latest_pin` 的 `revision/model/provider_ref/skill_bindings`；已存在则跳过，并用 `INSERT OR IGNORE` 保证并发下也绝不覆盖。
+- `get_frozen_pin` 缺失时抛 `BotPinError("pin_snapshot_missing")`，不回退 latest pin。
+- `get_frozen_skill` 只按冻结绑定中的 `pinned_version` 读取 `skill_definitions`；未绑定抛 `skill_not_bound`，版本行缺失抛 `skill_version_missing`，不使用更高版本。
+- `call_agent(bot_id=...)` 必须同时给 `run_id`，否则 `run_id_required`；使用 `gateway.data_dir/test3.db` 读取快照，并把冻结的 model/provider_ref 传给 Gateway。
+- `bot_id=None` 时不导入/调用快照读取路径，保持原槽位与 scripted 行为。
+- Gateway 不把 `provider_ref` 传给 provider（避免未知关键字）；scripted/replay/DashScope/通用 OpenAI-compatible 路径未改，未启用 `model_live`，无品牌黑名单。
+- 未创建/修改 T06 的 OpenAPI 快照与 `docs/API.md`。

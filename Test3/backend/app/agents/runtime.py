@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from app.bots.snapshot import BotPinError, get_frozen_pin
 from app.errors import AgentOutputError
 from app.llm.gateway import Gateway
 from app.schemas import common as common_schemas
@@ -67,10 +68,19 @@ async def call_agent(
     registry: RoleRegistry,
     gateway: Gateway,
     schema_name: str | None = None,
+    bot_id: str | None = None,
+    run_id: str | None = None,
 ) -> BaseModel:
     role = registry.get(name)
     messages = render_prompt(role, inputs)
     schema_cls = SCHEMA_MAP.get(schema_name or role.output_schema)
+    pin_kwargs: dict[str, Any] = {}
+    if bot_id is not None:
+        if not run_id:
+            raise BotPinError("run_id_required", "bot_id requires run_id")
+        db_path = gateway.data_dir / "test3.db" if gateway.data_dir is not None else None
+        pin = await get_frozen_pin(run_id, bot_id, db_path=db_path)
+        pin_kwargs = {"model": pin["model"], "provider_ref": pin["provider_ref"]}
     last_error = ""
     truncated = False
     for attempt in range(2):
@@ -81,6 +91,7 @@ async def call_agent(
             role=name,
             temperature=role.temperature,
             schema=schema,
+            **pin_kwargs,
         )
         truncated = (getattr(result, "finish_reason", "") or "") == "length"
         payload = result.parsed

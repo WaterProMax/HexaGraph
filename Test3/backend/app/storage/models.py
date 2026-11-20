@@ -293,6 +293,16 @@ class ProjectMembershipRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class RunBotPinSnapshotRow(Base):
+    """Run-scoped frozen bot pin; immutable once written."""
+
+    __tablename__ = "run_bot_pin_snapshots"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class RunExecutionStateRow(Base):
     """SQLite authority for a run's execution profile and approved hashes.
 
