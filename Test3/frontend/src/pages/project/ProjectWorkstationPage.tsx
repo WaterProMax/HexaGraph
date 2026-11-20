@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
-import type { DefectRecord, GrantStatus, ReviewBallot, RunTask } from "../../api/types";
+import type { BotInstance, DefectRecord, GrantStatus, ReviewBallot, RunTask } from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
 import { LEFT_PANEL_ID, WorkstationSplitter } from "../../components/WorkstationSplitter";
 import { useWorkstationLayout } from "../../workstationLayout";
 import { DefectList } from "./DefectList";
 import { DiscussionReviewPanel } from "./DiscussionReviewPanel";
 import { GrantStatusBanner } from "./GrantStatusBanner";
+import { ManageMembersDialog } from "./ManageMembersDialog";
+import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
+import { TeamStrip, type TeamMember } from "./TeamStrip";
 
 export type WorkstationTab = "details" | "monitor" | "activity" | "graph";
 
@@ -26,6 +29,13 @@ export type ProjectWorkstationProps = {
   ballots?: ReviewBallot[];
   dissentItems?: string[];
   defects?: DefectRecord[];
+  team?: {
+    members: TeamMember[];
+    actorBotId: string;
+    onActorChange: (botId: string) => void;
+    onManage: () => void;
+  };
+  memoryPanel?: ReactNode;
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
@@ -63,6 +73,8 @@ export function ProjectWorkstation({
   ballots = [],
   dissentItems = [],
   defects = [],
+  team,
+  memoryPanel,
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
   const [tab, setTab] = useState<WorkstationTab>(initialTab);
@@ -110,6 +122,14 @@ export function ProjectWorkstation({
         <p className="mono">{projectId}</p>
       </div>
       <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
+      {team && (
+        <TeamStrip
+          members={team.members}
+          actorBotId={team.actorBotId}
+          onActorChange={team.onActorChange}
+          onManage={team.onManage}
+        />
+      )}
       {loadState === "empty" || tasks.length === 0 ? (
         <div className="well muted" data-testid="ws-empty" style={{ padding: "14px 16px" }}>
           这个项目还没有可展示的任务。先在项目里创建一次运行。
@@ -219,6 +239,7 @@ export function ProjectWorkstation({
                   </div>
                 ))}
               </div>
+              {memoryPanel && <div style={{ marginTop: 16 }}>{memoryPanel}</div>}
               <div style={{ marginTop: 16 }}>
                 <DiscussionReviewPanel ballots={ballots} dissentItems={dissentItems} />
               </div>
@@ -278,10 +299,23 @@ export function ProjectWorkstation({
 
 export type ProjectWorkstationPageProps = { projectId?: string; actorBotId?: string; grantErrorCategory?: string | null };
 
+const ACTOR_STORAGE_KEY = "hexagraph.actorBotId.v1";
+
 export default function ProjectWorkstationPage({ projectId = "", actorBotId, grantErrorCategory = null }: ProjectWorkstationPageProps) {
   const params = useParams();
   const id = projectId || params.projectId || "";
   const dirtyRef = useMemo(() => ({ current: false }), []);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [allBots, setAllBots] = useState<BotInstance[]>([]);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [actor, setActor] = useState<string>(() => {
+    if (actorBotId) return actorBotId;
+    try {
+      return window.localStorage.getItem(ACTOR_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [errorText, setErrorText] = useState("");
   const [tasks, setTasks] = useState<WorkstationTask[]>([]);
@@ -320,30 +354,57 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
       } catch {
         setGrantStatus(undefined);
       }
-      let actor = actorBotId;
-      if (!actor) {
-        // Discussion/defect reads need an explicit actor; the project leader is
-        // the natural default. A missing membership simply hides those panels.
+      let memberRows: TeamMember[] = [];
+      try {
+        const [memberRes, botRes] = await Promise.all([api.memberships(String(id)), api.bots()]);
+        const bots: BotInstance[] = Array.isArray(botRes?.items) ? botRes.items : [];
+        const botMap = new Map(bots.map((bot) => [bot.bot_id, bot]));
+        memberRows = (Array.isArray(memberRes?.items) ? memberRes.items : []).flatMap((member: any) => {
+          const bot = botMap.get(member.bot_id);
+          if (!bot) return [];
+          return [
+            {
+              bot_id: member.bot_id,
+              display_name: bot.display_name,
+              role_template: bot.role_template,
+              status: bot.status,
+              role_in_project: member.role_in_project,
+              is_leader: Boolean(member.is_leader),
+            },
+          ];
+        });
+        setTeamMembers(memberRows);
+        setAllBots(bots);
+      } catch {
+        setTeamMembers([]);
+      }
+      // Discussion/defect reads need an explicit actor. Honour the saved
+      // identity when it is still a member, otherwise fall back to the leader.
+      const effectiveActor =
+        memberRows.find((member) => member.bot_id === actor)?.bot_id ||
+        memberRows.find((member) => member.is_leader)?.bot_id ||
+        memberRows[0]?.bot_id ||
+        "";
+      if (effectiveActor !== actor) {
+        setActor(effectiveActor);
         try {
-          const members = await api.memberships(String(id));
-          const items = Array.isArray(members?.items) ? members.items : [];
-          actor = items.find((member: any) => member.is_leader)?.bot_id;
+          window.localStorage.setItem(ACTOR_STORAGE_KEY, effectiveActor);
         } catch {
-          actor = undefined;
+          // ignore storage restrictions
         }
       }
-      if (actor) {
+      if (effectiveActor) {
         try {
-          const listed = await api.defects(String(latest.id), actor);
+          const listed = await api.defects(String(latest.id), effectiveActor);
           setDefects(Array.isArray(listed?.items) ? listed.items : []);
         } catch {
           setDefects([]);
         }
         try {
-          const sessions = await api.discussionSessions(String(id), actor);
+          const sessions = await api.discussionSessions(String(id), effectiveActor);
           const session = (Array.isArray(sessions?.items) ? sessions.items : [])[0];
           if (session?.session_id) {
-            const reviews = await api.discussionReviews(String(session.session_id), actor);
+            const reviews = await api.discussionReviews(String(session.session_id), effectiveActor);
             const items = Array.isArray(reviews?.items) ? reviews.items : [];
             setBallots(items);
             setDissentItems(
@@ -363,13 +424,14 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
         setLoadState("error");
       }
     }
-  }, [id]);
+  }, [id, actor]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   return (
+    <>
     <ProjectWorkstation
       projectId={id}
       loadState={loadState}
@@ -382,6 +444,36 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
       ballots={ballots}
       dissentItems={dissentItems}
       defects={defects}
+      team={{
+        members: teamMembers,
+        actorBotId: actor,
+        onActorChange: (botId: string) => {
+          setActor(botId);
+          try {
+            window.localStorage.setItem(ACTOR_STORAGE_KEY, botId);
+          } catch {
+            // ignore storage restrictions
+          }
+        },
+        onManage: () => setDialogOpen(true),
+      }}
+      memoryPanel={
+        <ProjectMemoryPanel
+          projectId={id}
+          actorBotId={actor}
+          isLeader={Boolean(teamMembers.find((member) => member.bot_id === actor)?.is_leader)}
+        />
+      }
     />
+    {dialogOpen && (
+      <ManageMembersDialog
+        projectId={id}
+        members={teamMembers}
+        allBots={allBots}
+        onClose={() => setDialogOpen(false)}
+        onChanged={load}
+      />
+    )}
+    </>
   );
 }

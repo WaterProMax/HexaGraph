@@ -1,7 +1,10 @@
+import { useEffect, useState } from "react";
 import { Button, Form, Input } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
+import type { BotInstance } from "../api/types";
+import { BotAvatar } from "../components/BotAvatar";
 
 export default function Projects() {
   const nav = useNavigate();
@@ -18,6 +21,36 @@ export default function Projects() {
     },
   });
   const projects: any[] = data || [];
+  const { data: botsData } = useQuery({ queryKey: ["bots"], queryFn: () => api.bots() });
+  const bots: BotInstance[] = Array.isArray(botsData?.items) ? botsData.items : [];
+  const [memberMap, setMemberMap] = useState<Record<string, any[]>>({});
+  const projectIds = projects.map((project) => project.id).join(",");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectIds) {
+      setMemberMap({});
+      return;
+    }
+    Promise.all(
+      projects.map(async (project) => {
+        try {
+          const res = await api.memberships(String(project.id));
+          return [String(project.id), Array.isArray(res?.items) ? res.items : []] as const;
+        } catch {
+          return [String(project.id), []] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setMemberMap(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectIds]);
+
+  const botById = new Map(bots.map((bot: BotInstance) => [bot.bot_id, bot]));
   return (
     <div className="page">
       <div className="page-head">
@@ -50,9 +83,23 @@ export default function Projects() {
       ) : (
         <div className="grid-list">
           {projects.map((item) => (
-            <div className="list-card" key={item.id}>
+            <div className="list-card project-card" key={item.id}>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{item.name}</div>
+                <div className="project-card-top">
+                  <div style={{ fontWeight: 500 }}>{item.name}</div>
+                  <div className="project-member-stack" aria-label={`${item.name} 成员`}>
+                    {(memberMap[item.id] || []).length === 0 && <span className="muted">尚未加入 Bot</span>}
+                    {(memberMap[item.id] || []).map((member: any) => {
+                      const bot = botById.get(member.bot_id);
+                      return bot ? <BotAvatar key={member.bot_id} bot={bot} size={22} /> : null;
+                    })}
+                    {(() => {
+                      const leader = (memberMap[item.id] || []).find((member: any) => member.is_leader);
+                      const leaderBot = leader ? botById.get(leader.bot_id) : undefined;
+                      return leaderBot ? <span className="hint">Leader · {leaderBot.display_name}</span> : null;
+                    })()}
+                  </div>
+                </div>
                 <div className="mono muted">
                   {item.id.slice(0, 8)}
                   {item.profile ? ` · ${item.profile}` : ""}

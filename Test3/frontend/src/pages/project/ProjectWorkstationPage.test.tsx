@@ -181,3 +181,27 @@ describe("P6-T04 grant, review and defect wiring", () => {
     expect(screen.getByTestId("detail-task-code").textContent).toBe("T-02");
   });
 });
+
+describe("P6-R03 team strip and shared memory", () => {
+  const teamMembers = [
+    { bot_id: "bot-a", display_name: "Leader A", role_template: "leader", status: "active" as const, role_in_project: "lead", is_leader: true },
+    { bot_id: "bot-b", display_name: "周明", role_template: "pm", status: "active" as const, role_in_project: "dev", is_leader: false },
+  ];
+
+  it("renders the team strip and opens management", () => {
+    const onManage = vi.fn();
+    renderWorkstation({
+      team: { members: teamMembers, actorBotId: "bot-b", onActorChange: vi.fn(), onManage },
+    });
+    expect(screen.getByTestId("team-strip")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("manage-members"));
+    expect(onManage).toHaveBeenCalled();
+  });
+
+  it("shows the shared memory panel in the monitor tab", () => {
+    renderWorkstation({ memoryPanel: <div data-testid="project-memory-panel">memory</div> });
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    expect(screen.getByTestId("project-memory-panel")).toBeTruthy();
+    expect(screen.getByTestId("panel-monitor")).toBeTruthy();
+  });
+});
