@@ -7,6 +7,7 @@ use the real implementation.  Escape targets live under ``tmp_path`` only.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from app.execution.isolated import execute_task_granted
 from app.execution.isolation import IsolationPreflight
 from app.execution.workspace_scope import (
     ScopedChange,
+    _write_regular,
     apply_changes,
     cleanup_worktree_copy,
     collect_changes,
@@ -150,6 +152,43 @@ async def test_symlink_changes_are_not_written_back(
     reasons = {item["path"]: item["reason"] for item in result.evidence["scope"]["discarded"]}
     assert reasons["allowed.txt"] == "symlink"
     assert reasons["added-link.txt"] == "symlink"
+
+
+@pytest.mark.asyncio
+async def test_in_scope_writeback_does_not_rewrite_out_of_scope_hardlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "wt"
+    root.mkdir()
+    allowed = root / "allowed.txt"
+    evil = root / "evil.txt"
+    allowed.write_text("shared-original", encoding="utf-8")
+    os.link(allowed, evil)
+    original_inode = os.stat(evil).st_ino
+    assert os.stat(allowed).st_ino == original_inode
+
+    def mutate(work: Path) -> None:
+        (work / "allowed.txt").write_text("in-scope-new-content", encoding="utf-8")
+
+    result, _captured = await _run(root, monkeypatch, mutate, write_set=["allowed.txt"])
+    assert result.evidence["scope"]["applied"] == ["allowed.txt"]
+    assert allowed.read_text(encoding="utf-8") == "in-scope-new-content"
+    assert evil.read_text(encoding="utf-8") == "shared-original"
+    assert os.stat(evil).st_ino == original_inode
+    assert os.stat(allowed).st_ino != os.stat(evil).st_ino
+    assert os.stat(evil).st_nlink == 1
+
+
+def test_write_regular_refuses_host_symlink_target(tmp_path: Path) -> None:
+    root = tmp_path / "wt"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("sentinel", encoding="utf-8")
+    (root / "allowed.txt").symlink_to(outside)
+    with pytest.raises(WriteDenied):
+        _write_regular(root, "allowed.txt", b"new")
+    assert outside.read_text(encoding="utf-8") == "sentinel"
+    assert (root / "allowed.txt").is_symlink()
 
 
 @pytest.mark.asyncio

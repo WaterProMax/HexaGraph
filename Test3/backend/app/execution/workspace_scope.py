@@ -6,7 +6,8 @@ only changes whose paths are inside the task's ``write_set``.  Everything else
 (including symlinks and type changes) is discarded and recorded.
 
 The host write-back never follows a symlink: every parent component is checked
-with ``lstat`` and the final component is opened with ``O_NOFOLLOW``.
+with ``lstat`` and the final component is opened with ``O_NOFOLLOW``.  An existing target is unlinked and recreated with
+``O_EXCL`` so a hard link shared with an out-of-scope name is never truncated.
 """
 
 from __future__ import annotations
@@ -149,10 +150,22 @@ def _open_parent(root: Path, rel: str) -> tuple[int, str]:
 def _write_regular(root: Path, rel: str, data: bytes) -> None:
     dir_fd, name = _open_parent(root, rel)
     try:
+        mode = 0o644
+        try:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode):
+                raise WriteDenied(f"refusing to overwrite a non-regular file: {rel}")
+            mode = stat.S_IMODE(info.st_mode)
+            # Never truncate an existing inode: an out-of-scope name may share it
+            # (hard link).  Drop only this directory entry and create a new inode.
+            os.unlink(name, dir_fd=dir_fd)
         fd = os.open(
             name,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-            0o644,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            mode,
             dir_fd=dir_fd,
         )
         try:
