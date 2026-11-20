@@ -249,6 +249,32 @@ class SkillDefinitionRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class BotRow(Base):
+    """Current bot payload; history lives in ``bot_pin_revisions``."""
+
+    __tablename__ = "bots"
+
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+Index("uq_bots_display_name_ci", func.lower(BotRow.display_name), unique=True)
+
+
+class BotPinRevisionRow(Base):
+    __tablename__ = "bot_pin_revisions"
+
+    bot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    provider_ref: Mapped[str] = mapped_column(String, nullable=False)
+    skill_bindings: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class RunExecutionStateRow(Base):
     """SQLite authority for a run's execution profile and approved hashes.
 
