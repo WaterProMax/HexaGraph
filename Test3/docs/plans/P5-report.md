@@ -48,3 +48,23 @@ T05 的完整 SHA 由本文件内容决定，无法在提交前写入自身；�
 - 并发：同一 task 两个缺陷同时写入，两行都在，详情不丢失。
 - 既有权衡：未复用、未放宽 `Workbench.accept()`；granted_v1 的 `granted_acceptance_disabled` / `granted_force_pass_disabled` 仍由 `test_p1_rev01_execution_boundary.py` 与 `test_p1_rev08_production_enable_path.py` 覆盖。
 - OpenAPI：`UPDATE_OPENAPI_SNAPSHOT=1 ... tests/integration/test_api_contract.py` → 28 passed；快照 20 insertions / 0 deletions（仅新增 P5 两条路由）。`Test3/docs/API.md` 已补 P5 章节。
+
+## T04 · 只消费下线目标态的契约测试
+
+- 时间：2026-11-20 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' -v tests/contract/test_decommission_consumption.py`
+- 退出码：0
+- 计数：5 passed
+- 数据源：只读 `Test3/docs/plans/decommission-target-state.json`（原有未跟踪文件，本卡未 `git add`）。当前 `source=p0_index_not_implemented`，测试断言该字面值，不预言路由消失、不要求本阶段补守卫。文件缺失时使用测试内最小夹具（同样 `source=p0_index_not_implemented`）。
+- 对照表：
+
+| 断言 | P0 目标态字段 | 当前结果 |
+|---|---|---|
+| 索引仍是草稿 | `source=p0_index_not_implemented` | PASSED |
+| 无专用外呼存活 | `decommission_index[].outbound_active=false` | PASSED |
+| 不阻塞 P1/P5 | `blocks_all_p1=false`、`target_acceptance_for_other_task` 非空 | PASSED |
+| 保留能力含“禁止品牌黑名单” | `retained_capabilities` | PASSED |
+| 通用 provider 不被品牌拒绝 | `app/llm/gateway.py` / `app/execution/tool_policy.py` | PASSED（无 `model_forbidden`；`deepseek.*(forbid/reject/block)` 不匹配） |
+
+- 本卡提交文件：`tests/contract/__init__.py`、`tests/contract/test_decommission_consumption.py`、本报告。不含 `frontend/src/App.tsx`，不含 runtime 下线守卫生产 diff。
+- `git diff --name-only`（本卡提交前）：仅上述测试与报告；原有 5 个未跟踪文件未纳入。
