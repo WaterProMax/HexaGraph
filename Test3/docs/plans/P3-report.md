@@ -31,4 +31,27 @@
 
 ### 契约扩展登记
 
-- `MemoryRecord.promoted_by` / `promoted_at`：T03 publish 时记录人工晋升者与时间，默认 `None`。
+- `MemoryRecord.promoted_by` / `promoted_at`：T03 publish 时记录人工晋升者与时间，默认 `None`。## T02 · 越权隔离与撤成员保留个人记忆历史
+
+- 时间：2026-11-20 10:49 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/unit/test_memory_access.py tests/integration/test_memory_member_removed.py -v`
+- 退出码：0
+- 计数：7 passed（单元 5 / 集成 2）
+- 回归：`tests/unit/test_tools_llm_agents.py tests/unit/test_p1_f08_tool_authorization.py` → 27 passed，退出码 0
+- 迁移衔接：`tests/integration/test_alembic.py tests/integration/test_p1_rev05_alembic_handoff.py tests/integration/test_events_and_db.py` → 6 passed，退出码 0
+
+### 触及文件
+
+- `app/memory/access.py`（NEW）
+- `tests/unit/test_memory_access.py`（NEW）
+- `tests/integration/test_memory_member_removed.py`（NEW）
+- `Test3/docs/plans/P3-report.md`（MODIFY）
+
+### 实现要点
+
+- `is_project_member` 直接查 P2 `ProjectMembershipRow`，没有第二套成员表。
+- `private` / `run` 仅 owner 读写；`project` 仅当前项目成员读写；`run` 默认 fail-closed，不广播给任意 Bot。
+- `MemoryAccessService.get` 显式拒绝他人 private 与非成员 project；`list_visible` 只返回 actor 可见的每个 mem 最新版本。
+- 移出成员只删除 `project_memberships` 行；私有记忆 v1/v2 仍可读，body 与移出前一致，`memory_records` 行数不变。
+- 集成测试并发读取私有历史/项目记忆与 DELETE membership，读取不会 500；最终 B1 失去项目可见性，B2 仍可读。
+- `GET /api/bots/{B1}` 在移出后仍 200。
