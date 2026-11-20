@@ -22,8 +22,11 @@ export function DefectList({ defects, onLocateTask }: DefectListProps) {
                 onClick={() => onLocateTask(defect.task_code)}
                 title="定位到任务"
               >
-                <span className="mono">{defect.task_code}</span>
-                <span>{defect.detail}</span>
+                <span className="mono defect-code">{defect.task_code}</span>
+                <span className="defect-detail">{defect.detail}</span>
+                <span className="defect-evidence" title={defect.evidence_uris.join("\n")}>
+                  证据 {defect.evidence_uris.length}
+                </span>
                 <span className={`chip status-${defect.status}`}>{defect.status}</span>
               </button>
             </li>

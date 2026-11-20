@@ -37,3 +37,11 @@ describe("DefectList", () => {
     expect(screen.getByTestId("defect-list").textContent).toContain("没有未关闭的缺陷");
   });
 });
+describe("defect cards", () => {
+  it("renders a status pill and evidence count", () => {
+    render(<DefectList defects={defects} onLocateTask={vi.fn()} />);
+    const card = screen.getByTestId("defect-T-02");
+    expect(card.textContent).toContain("open");
+    expect(card.textContent).toContain("证据 1");
+  });
+});

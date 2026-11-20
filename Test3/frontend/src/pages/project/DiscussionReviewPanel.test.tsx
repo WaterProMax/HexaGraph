@@ -42,3 +42,27 @@ describe("DiscussionReviewPanel", () => {
     expect(screen.getByTestId("discussion-review-panel").textContent).toContain("还没有评审票");
   });
 });
+describe("review cards with a bot directory", () => {
+  const reviewer = {
+    bot_id: "bot-2",
+    display_name: "周明",
+    role_template: "pm",
+    provider_ref: "dashscope",
+    model: "qwen-plus",
+    slot: "coder",
+    secret_ref: "DASHSCOPE_API_KEY",
+    tool_policy: [],
+    skill_bindings: [],
+    token_budget: 40000,
+    status: "active" as const,
+  };
+
+  it("shows the reviewer avatar and display name instead of the raw id", () => {
+    render(<DiscussionReviewPanel ballots={[ballot]} dissentItems={[]} bots={[reviewer]} />);
+    const panel = screen.getByTestId("discussion-review-panel");
+    expect(panel.textContent).toContain("周明");
+    expect(screen.getByTestId("bot-avatar").getAttribute("data-bot-id")).toBe("bot-2");
+    expect(panel.textContent).toContain("覆盖");
+    expect(panel.textContent).not.toMatch(/分差.*自动通过/);
+  });
+});

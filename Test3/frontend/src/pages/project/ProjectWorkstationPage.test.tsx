@@ -205,3 +205,25 @@ describe("P6-R03 team strip and shared memory", () => {
     expect(screen.getByTestId("panel-monitor")).toBeTruthy();
   });
 });
+
+describe("P6-R04 defect locate highlight", () => {
+  const defect = {
+    defect_id: "d-9",
+    run_id: "run-1",
+    task_code: "T-02",
+    module_id: "M1",
+    related_requirement_id: null,
+    evidence_uris: ["file://logs/t02.log"],
+    status: "open" as const,
+    detail: "缺边界用例",
+  };
+
+  it("briefly highlights the located task in the tree", () => {
+    renderWorkstation({ defects: [defect] });
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    fireEvent.click(screen.getByTestId("defect-T-02"));
+    const item = screen.getByRole("treeitem", { name: /T-02/ });
+    expect(item.className).toContain("highlight");
+    expect(screen.getByTestId("detail-task-code").textContent).toBe("T-02");
+  });
+});

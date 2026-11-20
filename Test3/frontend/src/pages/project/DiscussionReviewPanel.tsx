@@ -1,6 +1,12 @@
-import type { ReviewBallot } from "../../api/types";
+import type { BotInstance, ReviewBallot } from "../../api/types";
+import { BotAvatar } from "../../components/BotAvatar";
 
-export type DiscussionReviewPanelProps = { ballots: ReviewBallot[]; dissentItems: string[] };
+export type DiscussionReviewPanelProps = {
+  ballots: ReviewBallot[];
+  dissentItems: string[];
+  /** Optional bot directory so reviewer ids render as avatar + display name. */
+  bots?: BotInstance[];
+};
 
 const GATE_LABELS: Record<string, string> = {
   coverage: "覆盖",
@@ -8,7 +14,8 @@ const GATE_LABELS: Record<string, string> = {
   evidence_complete: "证据完整",
 };
 
-export function DiscussionReviewPanel({ ballots, dissentItems }: DiscussionReviewPanelProps) {
+export function DiscussionReviewPanel({ ballots, dissentItems, bots = [] }: DiscussionReviewPanelProps) {
+  const botById = new Map(bots.map((bot) => [bot.bot_id, bot]));
   return (
     <div className="surface review-panel" data-testid="discussion-review-panel" style={{ padding: 16 }}>
       <div className="section-title">
@@ -19,8 +26,15 @@ export function DiscussionReviewPanel({ ballots, dissentItems }: DiscussionRevie
       {ballots.length === 0 && <p className="muted">还没有评审票。</p>}
       {ballots.map((ballot) => (
         <div className="review-ballot" key={`${ballot.reviewer_bot_id}-${ballot.proposal_id}`}>
-          <div className="mono">
-            {ballot.reviewer_bot_id} → {ballot.proposal_id}
+          <div className="review-ballot-head">
+            {(() => {
+              const reviewer = botById.get(ballot.reviewer_bot_id);
+              return reviewer ? <BotAvatar bot={reviewer} size={26} /> : null;
+            })()}
+            <span className="review-reviewer">
+              {botById.get(ballot.reviewer_bot_id)?.display_name || ballot.reviewer_bot_id}
+            </span>
+            <span className="mono muted">→ {ballot.proposal_id}</span>
           </div>
           <ul className="review-gates">
             {Object.entries(ballot.hard_gate_results).map(([gate, passed]) => (

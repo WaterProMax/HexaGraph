@@ -58,6 +58,7 @@ export function GrantStatusBanner({ errorCategory, status }: GrantStatusBannerPr
   if (!copy) return null;
   return (
     <div className={`well grant-banner grant-${copy.tone}`} data-testid="grant-banner" role="status">
+      <span className={`grant-dot grant-dot-${copy.tone}`} aria-hidden="true" />
       <strong>{copy.title}</strong>
       <span style={{ marginLeft: 10 }}>{copy.detail}</span>
     </div>

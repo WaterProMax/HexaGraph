@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import type { BotInstance, DefectRecord, GrantStatus, ReviewBallot, RunTask } from "../../api/types";
@@ -36,6 +36,7 @@ export type ProjectWorkstationProps = {
     onManage: () => void;
   };
   memoryPanel?: ReactNode;
+  bots?: BotInstance[];
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
@@ -75,8 +76,21 @@ export function ProjectWorkstation({
   defects = [],
   team,
   memoryPanel,
+  bots = [],
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
+  const [highlight, setHighlight] = useState("");
+  const highlightTimer = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (highlightTimer.current !== null) window.clearTimeout(highlightTimer.current);
+  }, []);
+  const locateTask = (code: string) => {
+    setSelected(code);
+    setTab("details");
+    setHighlight(code);
+    if (highlightTimer.current !== null) window.clearTimeout(highlightTimer.current);
+    highlightTimer.current = window.setTimeout(() => setHighlight(""), 1800);
+  };
   const [tab, setTab] = useState<WorkstationTab>(initialTab);
   const [selected, setSelected] = useState<string>(tasks[0]?.code || "");
   const [note, setNote] = useState("");
@@ -150,10 +164,9 @@ export function ProjectWorkstation({
                 key={task.code}
                 role="treeitem"
                 aria-selected={task.code === selected}
-                className={`task-tree-item ${task.code === selected ? "active" : ""}`}
+                className={`task-tree-item ${task.code === selected ? "active" : ""} ${task.code === highlight ? "highlight" : ""}`}
                 onClick={() => {
-                  setSelected(task.code);
-                  setTab("details");
+                  locateTask(task.code);
                 }}
               >
                 <span className="mono">{task.code}</span>
@@ -241,16 +254,10 @@ export function ProjectWorkstation({
               </div>
               {memoryPanel && <div style={{ marginTop: 16 }}>{memoryPanel}</div>}
               <div style={{ marginTop: 16 }}>
-                <DiscussionReviewPanel ballots={ballots} dissentItems={dissentItems} />
+                <DiscussionReviewPanel ballots={ballots} dissentItems={dissentItems} bots={bots} />
               </div>
               <div style={{ marginTop: 16 }}>
-                <DefectList
-                  defects={defects}
-                  onLocateTask={(code) => {
-                    setSelected(code);
-                    setTab("details");
-                  }}
-                />
+                <DefectList defects={defects} onLocateTask={locateTask} />
               </div>
             </section>
           )}
@@ -457,6 +464,7 @@ export default function ProjectWorkstationPage({ projectId = "", actorBotId, gra
         },
         onManage: () => setDialogOpen(true),
       }}
+      bots={allBots}
       memoryPanel={
         <ProjectMemoryPanel
           projectId={id}
