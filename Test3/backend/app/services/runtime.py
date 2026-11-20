@@ -43,6 +43,7 @@ from app.errors import (
 )
 from app.events.bus import BUS, rebuild_task_states
 from app.execution.baseline import hash_artifact, write_approved_baseline_hash
+from app.execution.dag import dag_blocked_tasks, edges_from_tasks
 from app.execution.grant_policy import grant_stale_reason
 from app.execution.grant_refresh import refresh_grant_status
 from app.execution.grant_repo import GrantRepo
@@ -2243,6 +2244,21 @@ class Workbench:
         # Direct API callers get the same controlled rejection as the auto loop.
         self._reject_retired(run)
         allowed = await self._granted_scope(run, task_codes)
+        if task_codes is not None and run_execution_profile(run) == PROFILE_GRANTED:
+            # P5: a successor may not start before its predecessors succeeded.
+            # Only explicit requests are rejected; the auto loop keeps selecting
+            # ready tasks by dependency and legacy behaviour is untouched.
+            blocked = dag_blocked_tasks(
+                edges_from_tasks(run.tasks),
+                {code: task["state"] for code, task in run.tasks.items()},
+                task_codes,
+            )
+            if blocked:
+                raise GrantRejected(
+                    "dag_blocked",
+                    f"predecessors are not done: {', '.join(blocked)}",
+                    status_code=409,
+                )
         # 同一运行的调度串行化，避免并发请求把同一任务派发两次。
         async with self._schedule_lock_for(run):
             return await self._schedule_once_locked(run, allowed=allowed)
