@@ -56,4 +56,27 @@
 - 仅 `model` / `provider_ref` / `skill_bindings` 实际变化时追加 pin；只改 `display_name` 不新增 pin。
 - 归档后行与 pin 历史保留；重复归档 `BotAlreadyArchived`，归档后改绑定 `BotArchived`。
 - `secret_ref` 仅保存环境变量名；测试在环境中放入 `sk-leak` 后确认表 `payload` 不含该值。
-- 未写死任何模型品牌拒绝逻辑。
+- 未写死任何模型品牌拒绝逻辑。## T03 · 全局 Bot HTTP
+
+- 时间：2026-11-20 10:21 CST
+- 命令：`cd Test3/backend && .venv/bin/python -m pytest -o addopts='' tests/integration/test_bots_api.py tests/unit/test_bot_registry.py -v`
+- 退出码：0
+- 计数：17 passed（集成 9 / 单元 8）
+- 回归：`tests/unit/test_p1_f08_tool_authorization.py tests/unit/test_tools_llm_agents.py` → 27 passed，退出码 0
+
+### 触及文件
+
+- `app/api/routes_bots.py`（NEW）
+- `tests/integration/test_bots_api.py`（NEW）
+- `app/main.py`（MODIFY：挂载 bots router，prefix=/api）
+- `docs/plans/P2-report.md`（MODIFY）
+
+### 契约与扩展
+
+- `POST /api/bots` 服务器生成 `bot_id`；返回 201。
+- `GET /api/bots?status=active|archived`；非法 status 返回 400 `validation_error`。
+- `GET /api/bots/{bot_id}` 404 `bot_not_found`；`PATCH` 支持 `pin_revision` 只读扩展字段。
+- `POST /api/bots/{bot_id}/archive` 返回 `{"bot_id", "status": "archived"}`；重复归档 409 `bot_already_archived`。
+- `PATCH` 已归档 Bot 的 `model` / `provider_ref` / `skill_bindings` 返回 409 `bot_archived`。
+- 未注册 `POST /api/projects/{project_id}/bots`；自然 404，测试断言 `bots` 行数不变。
+- 未新增顶级 Model CRUD 路由，未改 `GET/PUT /api/config/models`，未改前端。
