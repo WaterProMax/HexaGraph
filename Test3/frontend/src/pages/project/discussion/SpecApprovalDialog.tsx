@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { matchesRejectedSpec, rejectedVersions } from "./specRevision";
 import { ApiError, api } from "../../../api/client";
 import type { DiscussionSession, ReviewBallot } from "../../../api/types";
 
@@ -8,6 +9,7 @@ export type SpecApprovalDialogProps = {
   projectId: string;
   actorBotId: string;
   session: DiscussionSession;
+  sessions?: DiscussionSession[];
   reviews: ReviewBallot[];
   onClose: () => void;
   onApproved: (updated: DiscussionSession) => void;
@@ -73,6 +75,7 @@ export function SpecApprovalDialog({
   projectId,
   actorBotId,
   session,
+  sessions = [],
   reviews,
   onClose,
   onApproved,
@@ -119,9 +122,12 @@ export function SpecApprovalDialog({
       ? session.budget.score_gap_threshold
       : null;
   const rejectCommentValid = rejectComment.trim().length > 0;
+  const rejected = rejectedVersions(session, sessions);
+  const unchanged = matchesRejectedSpec(session, rejected);
+  const priorFeedback = rejected[0]?.resolution_comment;
 
   async function approve() {
-    if (busy) return;
+    if (busy || unchanged) return;
     setError(null);
     setApproving(true);
     try {
@@ -199,10 +205,12 @@ export function SpecApprovalDialog({
         </div>
 
         <div className="disc-dialog-body">
+          {priorFeedback && <p className="disc-revision-note"><strong>上次驳回意见</strong> {priorFeedback}</p>}
+          {unchanged && <p className="disc-view-error" role="alert">本版正文与被打回版本相同，请先修改需求规格。</p>}
           <ReactMarkdown>{packageData.body_md}</ReactMarkdown>
         </div>
 
-        <details className="disc-dialog-fold">
+        <details className="disc-dialog-fold" open={dissentCount > 0}>
           <summary>未解决分歧（{dissentCount}）</summary>
           {dissentCount === 0 ? (
             <p className="disc-dialog-empty">无</p>
@@ -300,7 +308,7 @@ export function SpecApprovalDialog({
           <button
             type="button"
             className="disc-button-primary"
-            disabled={busy}
+            disabled={busy || unchanged}
             onClick={approve}
           >
             {approving ? "提交中…" : "通过，进入任务拆解"}

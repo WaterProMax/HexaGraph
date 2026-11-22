@@ -31,6 +31,18 @@ describe("readableFlowEdge", () => {
     expect(edge.className).toContain("flow-edge--inactive");
   });
 
+  it("draws derived links dashed without fading them to the inactive colour", () => {
+    const edge = readableFlowEdge({ id: "task", source: "A", target: "B", dashed: true });
+
+    expect(edge.style).toMatchObject({
+      stroke: FLOW_EDGE_COLORS.default,
+      strokeWidth: 2.5,
+      strokeDasharray: "5 4",
+      opacity: 1,
+    });
+    expect(edge.className).toContain("flow-edge--dashed");
+  });
+
   it("highlights both predecessor and successor edges and dims unrelated edges", () => {
     const incoming = readableFlowEdge({ id: "in", source: "A", target: "B", focusNodeId: "B" });
     const outgoing = readableFlowEdge({ id: "out", source: "B", target: "C", focusNodeId: "B" });

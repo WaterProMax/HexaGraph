@@ -21,8 +21,9 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, controlEnabled } from "../api/client";
+import ArchitecturePreview from "../components/ArchitecturePreview";
 import DesignSpecInput from "../components/DesignSpecInput";
 import DesignSpecPreview from "../components/DesignSpecPreview";
 import { designComposerForced } from "../components/designImportWait";
@@ -63,6 +64,8 @@ import {
 } from "./workstationControls";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
+const WORKSTATION_TABS = ["graph", "plan", "architecture", "details", "specs", "activity"] as const;
+type WorkstationTab = (typeof WORKSTATION_TABS)[number];
 
 const STATUS_META: Record<ItemStatus, { label: string }> = {
   completed: { label: "已完成" },
@@ -143,7 +146,17 @@ export default function Workstation() {
   const [controlReason, setControlReason] = useState("");
   const [gateReason, setGateReason] = useState("");
   const [supplementText, setSupplementText] = useState("");
-  const [activeTab, setActiveTab] = useState("graph");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = WORKSTATION_TABS.find((tab) => tab === searchParams.get("view")) ?? "graph";
+  function setActiveTab(tab: WorkstationTab) {
+    if (tab === activeTab) return;
+    setSearchParams((params) => {
+      const next = new URLSearchParams(params);
+      if (tab === "graph") next.delete("view");
+      else next.set("view", tab);
+      return next;
+    }, { replace: true });
+  }
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
   const [designResult, setDesignResult] = useState<any>(null);
@@ -190,7 +203,7 @@ export default function Workstation() {
     refetchInterval: 2000,
   });
 
-  const { data: artifacts } = useQuery({
+  const { data: artifacts, isPending: artifactsPending, isError: artifactsFailed } = useQuery({
     queryKey: ["arts", activeRunId],
     queryFn: () => api.artifacts(activeRunId!),
     enabled: !!activeRunId,
@@ -513,9 +526,10 @@ export default function Workstation() {
   const budgetLimit = budget?.limit ?? 0;
   const budgetPct = budgetLimit ? Math.min(100, (budgetUsed / budgetLimit) * 100) : 0;
 
-  const tabs = [
+  const tabs: Array<{ key: WorkstationTab; label: string; count?: number }> = [
     { key: "graph", label: "流程图" },
     { key: "plan", label: "任务计划", count: artifacts?.plan?.tasks?.length },
+    { key: "architecture", label: "架构图", count: artifacts?.design?.modules?.length },
     { key: "details", label: "节点详情" },
     { key: "specs", label: "规格产物" },
     { key: "activity", label: "活动", count: events.length },
@@ -1096,6 +1110,21 @@ export default function Workstation() {
                       />
                     </div>
                   </div>
+                )}
+
+                {activeTab === "architecture" && (
+                  <ArchitecturePreview
+                    key={activeRunId}
+                    design={artifacts?.design}
+                    plan={artifacts?.plan}
+                    runtimeTasks={tasks}
+                    loading={artifactsPending}
+                    failed={artifactsFailed}
+                    onSelectTask={(code) => {
+                      setSelectedId(code);
+                      setActiveTab("details");
+                    }}
+                  />
                 )}
 
                 {activeTab === "details" && (

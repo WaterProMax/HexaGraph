@@ -13,7 +13,8 @@ export interface Lane {
 }
 
 export type EdgeRoute =
-  | { kind: "forward"; lanes: Lane[] }
+  /** `lift` bows the last curve vertically; used to fan out parallel edges in one column gap. */
+  | { kind: "forward"; lanes: Lane[]; lift?: number }
   | { kind: "back"; exitX: number; corridorY: number; entryX: number };
 
 export interface LayeredEdgeInput {
@@ -30,6 +31,8 @@ export interface LayeredOptions {
   nodeGap?: number;
   /** Canvas width / height, used only to shape the grid of unconnected nodes. */
   aspect?: number;
+  /** Keep several edges between the same node pair (each gets its own route) instead of dropping them. */
+  parallelEdges?: boolean;
 }
 
 export interface LayeredLayout {
@@ -82,7 +85,11 @@ export function layoutLayered(
   const edges: LayeredEdgeInput[] = [];
   for (const edge of edgeInputs) {
     const pair = `${edge.source}\u0000${edge.target}`;
-    if (!known.has(edge.source) || !known.has(edge.target) || edge.source === edge.target || seen.has(pair)) {
+    if (!known.has(edge.source) || !known.has(edge.target) || edge.source === edge.target) {
+      dropped.push(edge.id);
+      continue;
+    }
+    if (!options.parallelEdges && seen.has(pair)) {
       dropped.push(edge.id);
       continue;
     }
@@ -122,6 +129,19 @@ export function layoutLayered(
     bottom = Math.max(...connected.map((id) => positions[id].y + H));
     right = Math.max(...connected.map((id) => positions[id].x + W));
 
+    // Forward edges without an intermediate column cannot borrow a dagre lane; when several
+    // such edges share one column gap, fan them out vertically so they stay readable.
+    const forwardPairCount = new Map<string, number>();
+    for (const edge of edges) {
+      const source = g.node(edge.source);
+      const target = g.node(edge.target);
+      if (target.x > source.x) {
+        const pair = `${edge.source}\u0000${edge.target}`;
+        forwardPairCount.set(pair, (forwardPairCount.get(pair) ?? 0) + 1);
+      }
+    }
+    const forwardPairIndex = new Map<string, number>();
+
     let backIndex = 0;
     for (const edge of edges) {
       const source = g.node(edge.source);
@@ -136,7 +156,17 @@ export function layoutLayered(
           lanes.push({ x0: column - W / 2, x1: column + W / 2, y: p.y });
         }
         lanes.sort((a, b) => a.x0 - b.x0);
-        routes[edge.id] = { kind: "forward", lanes };
+        let lift = 0;
+        if (lanes.length === 0) {
+          const pair = `${edge.source}\u0000${edge.target}`;
+          const count = forwardPairCount.get(pair) ?? 1;
+          if (count > 1) {
+            const index = forwardPairIndex.get(pair) ?? 0;
+            forwardPairIndex.set(pair, index + 1);
+            lift = (index - (count - 1) / 2) * 22;
+          }
+        }
+        routes[edge.id] = { kind: "forward", lanes, lift };
       } else {
         backIndex += 1;
         routes[edge.id] = {
@@ -194,7 +224,7 @@ export function layoutLayered(
   return { positions, routes, width: right, height: bottom, nodeWidth: W, nodeHeight: H, dropped };
 }
 
-type Segment = { type: "line" | "curve"; a: Point; b: Point };
+type Segment = { type: "line" | "curve"; a: Point; b: Point; lift?: number };
 
 function routeSegments(route: EdgeRoute, s: Point, t: Point): Segment[] {
   if (route.kind === "back") {
@@ -215,7 +245,7 @@ function routeSegments(route: EdgeRoute, s: Point, t: Point): Segment[] {
     segments.push({ type: "line", a: { x: lane.x0, y: lane.y }, b: { x: lane.x1, y: lane.y } });
     at = { x: lane.x1, y: lane.y };
   }
-  segments.push({ type: "curve", a: at, b: t });
+  segments.push({ type: "curve", a: at, b: t, lift: route.lift || undefined });
   return segments;
 }
 
@@ -230,25 +260,28 @@ function curveControls(a: Point, b: Point): [Point, Point] {
 
 const fmt = (n: number) => Math.round(n * 10) / 10;
 
+/** Polyline of straight segments with slightly rounded corners (keeps the line crisp, not curvy). */
+function roundedPolyline(pts: Point[], r: number): string {
+  let d = `M${fmt(pts[0].x)},${fmt(pts[0].y)}`;
+  for (let i = 1; i < pts.length - 1; i += 1) {
+    const prev = pts[i - 1];
+    const cur = pts[i];
+    const next = pts[i + 1];
+    const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+    const outLen = Math.hypot(next.x - cur.x, next.y - cur.y);
+    const k = Math.min(r, inLen / 2, outLen / 2);
+    const p1 = { x: cur.x - ((cur.x - prev.x) / (inLen || 1)) * k, y: cur.y - ((cur.y - prev.y) / (inLen || 1)) * k };
+    const p2 = { x: cur.x + ((next.x - cur.x) / (outLen || 1)) * k, y: cur.y + ((next.y - cur.y) / (outLen || 1)) * k };
+    d += ` L${fmt(p1.x)},${fmt(p1.y)} Q${fmt(cur.x)},${fmt(cur.y)} ${fmt(p2.x)},${fmt(p2.y)}`;
+  }
+  const last = pts[pts.length - 1];
+  return `${d} L${fmt(last.x)},${fmt(last.y)}`;
+}
+
 export function routePath(route: EdgeRoute, s: Point, t: Point): string {
   const segments = routeSegments(route, s, t);
   if (route.kind === "back") {
-    const r = 10;
-    const pts = [segments[0].a, ...segments.map((seg) => seg.b)];
-    let d = `M${fmt(pts[0].x)},${fmt(pts[0].y)}`;
-    for (let i = 1; i < pts.length - 1; i += 1) {
-      const prev = pts[i - 1];
-      const cur = pts[i];
-      const next = pts[i + 1];
-      const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y);
-      const outLen = Math.hypot(next.x - cur.x, next.y - cur.y);
-      const k = Math.min(r, inLen / 2, outLen / 2);
-      const p1 = { x: cur.x - ((cur.x - prev.x) / (inLen || 1)) * k, y: cur.y - ((cur.y - prev.y) / (inLen || 1)) * k };
-      const p2 = { x: cur.x + ((next.x - cur.x) / (outLen || 1)) * k, y: cur.y + ((next.y - cur.y) / (outLen || 1)) * k };
-      d += ` L${fmt(p1.x)},${fmt(p1.y)} Q${fmt(cur.x)},${fmt(cur.y)} ${fmt(p2.x)},${fmt(p2.y)}`;
-    }
-    const last = pts[pts.length - 1];
-    return `${d} L${fmt(last.x)},${fmt(last.y)}`;
+    return roundedPolyline([segments[0].a, ...segments.map((seg) => seg.b)], 10);
   }
   let d = `M${fmt(s.x)},${fmt(s.y)}`;
   for (const seg of segments) {
@@ -256,10 +289,42 @@ export function routePath(route: EdgeRoute, s: Point, t: Point): string {
       d += ` L${fmt(seg.b.x)},${fmt(seg.b.y)}`;
     } else {
       const [c1, c2] = curveControls(seg.a, seg.b);
+      if (seg.lift) {
+        c1.y += seg.lift;
+        c2.y += seg.lift;
+      }
       d += ` C${fmt(c1.x)},${fmt(c1.y)} ${fmt(c2.x)},${fmt(c2.y)} ${fmt(seg.b.x)},${fmt(seg.b.y)}`;
     }
   }
   return d;
+}
+
+/**
+ * 架构图专用：全直线折线。水平走列间隙、垂直换道，拐角小圆角；
+ * 相邻列（无车道）时就是一条水平直线，平行边在中间做垂直错位。
+ */
+export function routePathOrtho(route: EdgeRoute, s: Point, t: Point): string {
+  if (route.kind === "back") return routePath(route, s, t);
+  const pts: Point[] = [s];
+  let at = s;
+  for (const lane of route.lanes) {
+    pts.push({ x: lane.x0, y: at.y });
+    pts.push({ x: lane.x0, y: lane.y });
+    pts.push({ x: lane.x1, y: lane.y });
+    at = { x: lane.x1, y: lane.y };
+  }
+  const lift = route.lift ?? 0;
+  if (lift && route.lanes.length === 0) {
+    const midX = (s.x + t.x) / 2;
+    pts.push({ x: midX, y: s.y });
+    pts.push({ x: midX, y: s.y + lift });
+    pts.push({ x: t.x, y: s.y + lift });
+  } else {
+    pts.push({ x: t.x, y: at.y });
+  }
+  pts.push(t);
+  const clean = pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.y !== pts[i - 1].y);
+  return roundedPolyline(clean, 8);
 }
 
 /** Points along the drawn route, for geometry checks. */
@@ -272,6 +337,10 @@ export function sampleRoute(route: EdgeRoute, s: Point, t: Point, steps = 24): P
         out.push({ x: seg.a.x + (seg.b.x - seg.a.x) * u, y: seg.a.y + (seg.b.y - seg.a.y) * u });
       } else {
         const [c1, c2] = curveControls(seg.a, seg.b);
+        if (seg.lift) {
+          c1.y += seg.lift;
+          c2.y += seg.lift;
+        }
         const v = 1 - u;
         out.push({
           x: v * v * v * seg.a.x + 3 * v * v * u * c1.x + 3 * v * u * u * c2.x + u * u * u * seg.b.x,

@@ -26,16 +26,22 @@ export interface ViewportTarget {
 /**
  * Viewport for "show the graph": fit it when that stays readable, otherwise keep text readable
  * and start at the left edge so the user pans through the rest. Pure, so it can be tested.
+ * ``readableZoom`` is the floor; views with large nodes (the architecture diagram) may lower it.
  */
-export function computeFitViewport(bounds: FlowBounds, size: Size, padding = FIT_PADDING): ViewportTarget {
+export function computeFitViewport(
+  bounds: FlowBounds,
+  size: Size,
+  padding = FIT_PADDING,
+  readableZoom: number = FLOW_READABLE_ZOOM,
+): ViewportTarget {
   const availW = Math.max(1, size.w - padding * 2);
   const availH = Math.max(1, size.h - padding * 2);
   const fit = Math.min(availW / Math.max(1, bounds.width), availH / Math.max(1, bounds.height));
-  if (fit >= FLOW_READABLE_ZOOM) {
+  if (fit >= readableZoom) {
     const zoom = Math.min(fit, 1);
     return { zoom, x: (size.w - bounds.width * zoom) / 2, y: (size.h - bounds.height * zoom) / 2 };
   }
-  const zoom = FLOW_READABLE_ZOOM;
+  const zoom = readableZoom;
   const scaledH = bounds.height * zoom;
   return { zoom, x: padding, y: scaledH <= availH ? (size.h - scaledH) / 2 : padding };
 }
@@ -91,6 +97,7 @@ export function useFlowViewportMemory() {
 interface FitSource {
   bounds: FlowBounds;
   getSize: () => Size;
+  readableZoom?: number;
 }
 
 function useFitNow(source: FitSource) {
@@ -99,10 +106,12 @@ function useFitNow(source: FitSource) {
   latest.current = source;
   /** Returns false while the container is not measured yet. */
   return useCallback(() => {
-    const { bounds, getSize } = latest.current;
+    const { bounds, getSize, readableZoom = FLOW_READABLE_ZOOM } = latest.current;
     const size = getSize();
     if (!size.w || !size.h) return false;
-    if (bounds.width > 0 && bounds.height > 0) void setViewport(computeFitViewport(bounds, size), { duration: 200 });
+    if (bounds.width > 0 && bounds.height > 0) {
+      void setViewport(computeFitViewport(bounds, size, FIT_PADDING, readableZoom), { duration: 200 });
+    }
     return true;
   }, [setViewport]);
 }
@@ -116,11 +125,12 @@ export function FlowAutoFit({
   userMoved,
   bounds,
   getSize,
+  readableZoom,
 }: FitSource & {
   structure: string;
   userMoved: MutableRefObject<boolean>;
 }) {
-  const fitNow = useFitNow({ bounds, getSize });
+  const fitNow = useFitNow({ bounds, getSize, readableZoom });
   const lastStructure = useRef<string | null>(null);
 
   useEffect(() => {
@@ -145,8 +155,13 @@ export function FlowAutoFit({
 }
 
 /** Explicit user action: fit now and let structural changes auto-fit again. */
-export function FlowResetButton({ userMoved, bounds, getSize }: FitSource & { userMoved: MutableRefObject<boolean> }) {
-  const fitNow = useFitNow({ bounds, getSize });
+export function FlowResetButton({
+  userMoved,
+  bounds,
+  getSize,
+  readableZoom,
+}: FitSource & { userMoved: MutableRefObject<boolean> }) {
+  const fitNow = useFitNow({ bounds, getSize, readableZoom });
   return (
     <button
       type="button"

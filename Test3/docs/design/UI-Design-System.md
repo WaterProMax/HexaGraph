@@ -1,8 +1,8 @@
-# HexaGraph UI 设计规范 · Ice Glass v1.5
+# HexaGraph UI 设计规范 · Ice Glass v1.9
 
-版本：1.5 · 2026-11-20（北京时间）
+版本：1.15 · 2026-11-22（北京时间）
 适用：Test3 应用导航与整个 Workstation（左栏、顶栏、右侧标签、画布表面、详情、规格、活动、底部操作条），项目工作台页上的多 Bot 讨论与需求规格审批视图，以及任务依赖图的共享边样式。
-实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`frontend/src/flowLayout.ts`、`frontend/src/workstationLayout.ts`、`frontend/src/workstationGraph.ts`、`App.tsx`、`pages/Workstation.tsx`、`pages/project/discussion/*`。
+实现真源：`frontend/src/workstation-glass.css`、`frontend/src/flowEdgeStyle.ts`、`frontend/src/flowLayout.ts`、`frontend/src/workstationLayout.ts`、`frontend/src/workstationGraph.ts`、`frontend/src/components/ArchitecturePreview.tsx`、`App.tsx`、`pages/Workstation.tsx`、`pages/project/discussion/*`。
 过程与验证：[UI-Redesign-Log.md](UI-Redesign-Log.md)。
 
 ## 1. 设计目标与边界
@@ -11,7 +11,7 @@
 
 老师参考图只用于校准“流程图优先、细边框、清晰连线、颜色区分状态”的克制层级，不复制其产品结构或文案。保留 HexaGraph 的工作流信息与全部现有功能。
 
-v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加强共享边线；v1.3 做视觉减法：左栏改为单行进度列表，阶段用细分隔，节点与顶栏控件减重。v1.4 增加可拖分栏与分层流程图。v1.5 为项目工作台页的「多 Bot 讨论 → 需求规格审批」增加控件样式，只改视觉，不改讨论状态机、评分规则与审批条件。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。项目、模型设置及独立运行详情路由不做全面重设计。
+v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加强共享边线；v1.3 做视觉减法：左栏改为单行进度列表，阶段用细分隔，节点与顶栏控件减重。v1.4 增加可拖分栏与分层流程图。v1.5 为项目工作台页的「多 Bot 讨论 → 需求规格审批」增加控件样式，只改视觉，不改讨论状态机、评分规则与审批条件。React Flow 的节点坐标、布局算法、依赖关系和业务逻辑不变。v1.6 将项目讨论整合为单一对话区，并在侧栏展示讨论进度、评分和已确认规格。v1.12 把任务拆解嵌入架构图模块节点，并画出跨模块任务依赖虚线边。
 
 业务规则仍以仓库 Design / Architecture / ImplementationPlan 为准，本文件不定义状态机、API、审批或并发规则。
 
@@ -76,6 +76,7 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - `.nav-group` 形成“浏览”和“最近运行”两个轻玻璃分组。
 - 导航至少 42px 高。活跃项使用白底 + 深蓝文字，不能只靠极细左边线识别。
 - 最近运行保留状态点、想法摘要、阶段徽章和现有链接；摘要省略，徽章不能被挤压。
+- 品牌栏固定在顶部。展开和收起时，Bot 与项目分组按内容高度排布，共用纵向滚动区。收起时，名称提示在滚动区外显示，悬停或使用键盘聚焦图标均可查看。
 - 品牌、介绍、页脚不再靠连续水平细线切割。
 
 ### 想法输入
@@ -114,30 +115,38 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - 视口只在结构变化或点击“重置视口”时适应；缩放不低于可读下限 0.6（左对齐），拖分栏、选中和悬停不触发重新适应；节点不可拖动、Handle 不可连线。
 
 
-### 多 Bot 讨论与需求规格审批（v1.5）
+### 项目讨论工作区（v1.7）
 
-讨论视图挂在项目工作台页（`ProjectWorkstationPage`，根节点 `.page.ws-page`）的 `.ws-discussion` 容器里，仅在项目没有任何运行记录时出现；已有运行记录的项目仍是原来的任务区。样式全部写在 `workstation-glass.css` 末尾的 `disc-*` 分区，作用于 `:is(.ws, .ws-page)` 两个根之下：`.ws` 是运行工作台，`.ws-page` 是实际承载讨论视图的项目页。除此之外不选其它路由，也不覆盖 Ant Design token；`disc-*` 类名前缀只属于本功能。
+项目工作台默认打开「项目讨论」。已有运行的项目可以切换到「开发任务」。讨论样式沿用 `workstation-glass.css` 中的 `disc-*` 分区，继承 `.shell` 的令牌。
 
-`.ws-discussion` 是任务区容器：`display: grid`、间距 `--glass-space`、底部 32px 留白，与 `.ws-left` 的 12–16px 节奏一致；`.disc-view` 负责纵向排序各区块。
+- 冰蓝托盘容纳左侧对话与右侧进度、评分和产物。宽屏上对话占约三分之二，进度侧栏在 272–352px 间调整。对话区用浅色面板、24px 大圆角和轻阴影，消息区用内嵌底色区分层级。
+- 「项目讨论」标题旁展示讨论状态。暂停、继续和终止放在同一面板的标题栏。终止采用危险色次按钮，需要二次确认。
+- 用户消息右对齐，方案、评分和 Leader 发言左对齐，系统提示居中。短消息按内容收窄，普通 Bot 气泡最多 500px，评分卡最多 480px，窄屏按消息区宽度收缩。封存中的方案提供状态提示，解封后可展开正文。
+- 初始想法和补充信息都从消息流下方提交。主按钮为品牌蓝胶囊，文本框保留可见标签、键盘焦点和禁用样式。
+- 需求待确认时在对话上方显示暖杏色审批入口。需求确认后，侧栏显示规格摘要与任务编排入口，进入运行工作台查看任务与依赖。
+- 双栏底边对齐，消息区在对话面板内独立滚动。规格摘要最多四行，完整正文从「查看需求规格」打开。计划生成失败时，进度显示「生成失败，等待重试」。
+- 复审弹窗展示上次驳回意见。正文与被打回版本相同时，批准按钮禁用，正文历史仍可查看。
+- 宽屏将进度步骤纵向排列，窄屏将进度和评分放到对话下方。过长的评分人名称和方案编号单行省略，悬停可读完整值。成员较多时评分表内部可横向滚动。
 
-- **流程条** `.disc-stage-bar` / `.disc-stage-list`：一行六步等分（`repeat(6, minmax(0,1fr))`）。`.is-done` 打勾、浅绿底、副文色标签；`.is-current` 实心品牌蓝圆标 + 主文字加粗；`.is-pending` 虚线空标；相邻步骤之间用 2px 细连接线（首项不画）。`.is-terminated` 整条改暖中性底和棕橙描边，并追加居中的“讨论已终止”胶囊。窄屏（<900px）改成可换行的胶囊行，隐藏连接线，不横向溢出。
-- **想法输入** `.disc-composer`：glass panel（`--glass-surface` + `--glass-shadow` + 24px 圆角）。`textarea.disc-composer-input` 用 `--glass-field`，`:hover` 提亮、`:focus-visible` 使用 `--glass-focus`、`:disabled` 改灰底并保留可读文字；字数 `.disc-composer-count` 等宽数字右对齐；错误用浅红底、深红字的提示块（AntD Alert 局部覆写，不改全局）；成员不足时 `.disc-composer-blocked` 为暖色提示 + “去邀请”。主按钮 `.ant-btn-primary` 为 `var(--glass-accent)`，圆角 999px，覆盖 hover / active / focus-visible / disabled / loading。
-- **群聊** `.disc-chat`：时间线容器 `max-height: 60vh`、`overflow-y: auto`、`scrollbar-gutter: stable`，自身可聚焦（`:focus-visible` 蓝框）。四种气泡：
-  - 系统提示 `.disc-system`：居中、淡蓝底胶囊、辅助文字色，事件徽标用 `.disc-tag`（失败为红、普通为灰蓝）。
-  - 方案提交 `.disc-bubble-proposal`：浅白蓝底，正文封存期只显示 `.disc-bubble-note`；解封后按钮展开 `pre.disc-proposal-body`（等宽、自动换行、`max-height: 360px; overflow: auto`）。截断徽标 `.disc-badge.is-warn` 为暖黄。
-  - 评分卡 `.disc-bubble-review`：略深冰蓝底，四项维度用 `.disc-score-dims` 小格，总分成蓝色加重。
-  - Leader 发言 `.disc-bubble-leader`：冰蓝底 + 左侧 3px 品牌蓝内阴影，动作徽标 `.disc-tag.is-accent`。
-  - 所有气泡圆角 16px，`.disc-avatar` 与正文首行对齐（`margin-top: 2px`），长内容 `overflow-wrap: anywhere`。会话切换分隔线 `.disc-divider`（`role="separator"`）为居中细线 + 中间文字。
-- **评分面板** `.disc-score-panel`（右栏，360px）：轮次胶囊 `.disc-round`；`.disc-score-table` 紧凑 11px 表格、头行 10px、`font-variant-numeric: tabular-nums`、数字单元格等宽字体、缺票显示 `—` 并用辅助文字色弱化、平均分列用主文字加粗；`.disc-gap` 达标 `is-ok` 深绿、超标 `is-over` 深红（`#a3232f`，非浅灰）；硬门槛 `.disc-gate.is-ok/.is-over` 的勾叉与状态文字同色；`.disc-failure` 为失败重试/跳过区；`.disc-actions` 按钮组 `gap: 8px` 且等宽伸展；终止二次确认复用 `.disc-dialog`（`.disc-dialog-backdrop` 内收窄到 440px）。
-- **审批弹框** `.disc-dialog-mask` + `.disc-dialog.disc-approval-dialog`：遮罩 `rgba(18,45,66,.32)` 且 `backdrop-filter: blur(6px)`；弹框宽 `min(880px, calc(100vw - 32px))`、`max-height: 85vh`、24px 圆角、白底 + 柔和外阴影。标题行右侧为 32px 圆形关闭按钮。摘要标签 `.disc-summary-chip` 为胶囊（轮次 / 分差 / 硬门槛 / 分歧数）。`.disc-dialog-body` 独立滚动（`max-height: 52vh`），Markdown 标题、列表、表格、`pre`、引用都按三级文字和等宽代码排版。折叠区 `.disc-dialog-fold` 之间用 1px 分隔线，展开后各自限高滚动。底部 `.disc-dialog-actions` 左右分布：左“打回重新讨论”（次按钮），右“通过，进入任务拆解”（`var(--glass-accent)` 主按钮）；打回意见区 `.disc-reject` 用浅红底强调必填。
-- **审批横幅** `.disc-approval-banner`：暖杏色渐变 + 1px 暖描边（与 `.gate-card` 一样表示“需要人工关注”，不是错误色），左侧标题与轮次胶囊，右侧主按钮“查看并审批”。
-- **规格查看** `.disc-spec-dialog`：与审批弹框同壳，`.disc-spec-meta` 显示版本 / 摘要前 8 位 / 状态胶囊，`.disc-spec-body` 独立滚动，底部 `.disc-spec-history` 为可换行的胶囊列表，选中项蓝色描边，`--rejected` 状态用深红。
-- **已批准摘要卡** `.disc-spec-summary`：glass panel + 标题行（右侧等宽 sha 提示）+ 正文预览 + “等待任务拆解”暖色胶囊与“查看需求规格”次按钮。
-- **状态与焦点**：错误 `.disc-view-error` 浅红底深红字；连接降级提示 `.disc-connection-hint` 暖黄；`.disc-view-status` 为中性玻璃条。所有按钮、链接、输入、可展开项、弹框关闭按钮都有可见 `:focus-visible` 轮廓（2px `--glass-accent`，offset 2–3px），文字始终是深蓝灰三级，不用 opacity 压灰。
-- **断点**：`<1100px` 时 `.disc-layout` 从 `minmax(0,1fr) 360px` 切为单列 `1fr`，`.disc-side` 排在时间线之后（`order: 2`），评分维度改两列；`<900px` 流程条换行、弹框内边距收窄、底部按钮等宽伸展。页面不产生横向滚动，表格在自身容器内横向滚动。
+### 任务拆解架构图（v1.8 / v1.12 / v1.13）
 
+- 「架构图」与「任务计划」相邻。需求审批后可从项目讨论页直接打开。架构图读取设计模块、接口和计划中的任务归属，按当前运行的数据渲染。
+- **架构图标签页只放架构图**：细标题行（标题 + 模块/依赖计数）+ 占满剩余区域的画布，不设内边距大留白。自动适应允许低于 0.6 的可读下限（0.42），保证整张图在画布内可见；平移、缩放和重置沿用共享控件。
+- 模块节点内嵌任务列表：每行显示状态点、编号、标题，行内标注模块内上游（如 `←T1`）；超过 8 行折叠为「还有 N 项任务」。点选任务行直接进入任务详情。节点高度按任务行数统一计算，卡片填满布局尺寸。卡片为冰蓝玻璃渐变（白→浅冰蓝）、浅蓝描边与柔和阴影，编号为浅蓝胶囊。
+- 边全部为**直线折线**（水平走列间隙、垂直换道、拐角小圆角，相邻列即一条水平直线）；不使用曲线。
+- **同一对模块只画一条边**：任务依赖与模块契约同向时并入该边，标签合并（如 `C1 · T4←T3`，超过两项压缩为 `C2 +4`）；只有没有同向模块边的方向才补虚线任务边。两种箭头均从调用方指向依赖方。**默认只画干净线条不标字**；悬停或选中模块时，相连边显示标签并高亮，其余边淡化。列距加大到 150px，平行边在列间隙内垂直错位。线型图例以胶囊悬浮在画布左下，虚线图例仅在存在虚线边时出现。
+- **模块详情改为画布右上悬浮玻璃卡**（336px、内部滚动、可关闭），不占画布布局；画布不足 760px 时改为底部面板，图例移到左上。点选模块打开详情并高亮相连边，点击详情内依赖/任务跳转对方模块或任务详情。
+- 详情展示需求来源、模块依赖、跨模块任务依赖、接口和拆解任务（含状态点、点数、角色与依赖）。
+
+### 项目工作台「开发任务」视图（v1.14）
+
+- 左栏任务树使用浅冰蓝渐变托盘 + 玻璃面板；任务行沿用白底圆角、选中蓝色焦点环，编号等宽弱化、标题主文字。
+- 顶部分页为浅白胶囊托盘（与讨论页一致），选中为蓝色胶囊。
+- 详情 / 执行监控 / 活动 / 任务图四个面板统一为 `--glass-surface` 玻璃面板（24px 圆角、柔和阴影、微模糊）；监控卡片与任务图列表改为冰蓝描边圆角卡，输入框使用玻璃字段样式。
 
 ### 顶栏、右侧与浮动操作
+
+- 任务计划使用等宽浅白卡片，纵向间距 14px。编号、状态与角色为元信息行，标题、依赖、交付物、验收与原因逐行展示，长内容自动换行。整张卡片支持键盘选择并进入详情。
 
 - 顶栏为浅蓝玻璃带；历史运行 Select、状态与预算为胶囊。下拉浮层使用 `.glass-select-popup`，和触发器保持一致。
 - 顶栏可换行，不能为保持单行而压小字体或遮挡操作；窄屏时右侧操作组自动折行。
@@ -219,6 +228,16 @@ v1.0 仅更新左侧两列；v1.1 推广到顶栏和右侧工作台；v1.2 加�
 - [ ] 更新本规范版本、修改记录与截图；注明模拟或真实后端。
 
 ## 9. 视觉基线
+
+项目讨论使用隔离的脚本模型和真实 API 数据流。[桌面对话](screenshots/project-discussion/conversation-desktop.png)、[768px 对话](screenshots/project-discussion/conversation-768.png)、[Leader 任务编排](screenshots/project-discussion/leader-plan.png)。
+
+[审批后的对话和产物](screenshots/project-discussion/discussion-approved-desktop.png)。
+
+架构图使用同一隔离后端生成的自习室案例。[桌面架构图](screenshots/project-discussion/architecture-desktop.png)、[768px 架构图](screenshots/project-discussion/architecture-768.png)。
+
+左侧导航使用隔离预览的真实 API 响应。[项目分组滚动到底部](screenshots/project-discussion/sidebar-scroll.png)。
+
+任务计划使用隔离脚本模型生成并通过真实工具执行。布局检查覆盖 [1440px](screenshots/project-discussion/task-plan-1440.png)、[1024px](screenshots/project-discussion/task-plan-1024.png) 和 [768px](screenshots/project-discussion/task-plan-768.png)。
 
 以下截图使用隔离的模拟 SPEC 关卡数据，不是生产运行记录。
 

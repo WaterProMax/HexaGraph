@@ -54,6 +54,18 @@ cd Test3 && make dev-backend   # http://127.0.0.1:8765
 cd Test3 && make dev-frontend  # http://127.0.0.1:5173/workstation ，/api 代理到后端
 ```
 
+Windows 上没装 make 时，直接双击 `Test3/dev.bat`（自动开两个窗口启动后端与前端）。注意：后端故意不用 `--reload`——Windows 上 uvicorn 热重载杀不掉旧 worker，改代码后关窗口重启即可。
+
+讨论流程 e2e（隔离脚本后端 + 真实浏览器，一条命令，自动起停 8766/5174 服务）：
+
+```bash
+cd Test3/frontend && npm run test:e2e:discussion
+```
+
+首次运行前需 `npx playwright install chromium`（一次即可）。
+
+真实模型：`.env` 里 `TEST3_LLM_PROVIDER=dashscope` + `DASHSCOPE_API_KEY`（当前 models.yaml 指向 DeepSeek 的 OpenAI 兼容端点，key 用 DeepSeek 的）；`TEST3_LLM_PROVIDER=scripted` + `TEST3_SCRIPTED_FIXTURE=study-room` 时返回预置自习室输出，与输入想法无关。
+
 默认 `scripted` + `study-room`：在前端 Workstation（`/workstation`）或 API 创建项目并提交自习室想法后，会按 Design.md 金标准走完想法 → 讨论 → 方案 → 评审 → SPEC → 设计规格（DESIGN）→ 任务分解（PLAN）→ 编排器执行（T-01/T-02）→ 验收导出。此路径会启动 5 秒自动调度。设计规格离线主演示请用 `examples/design-specs/self-study-room.md` 和 `backend/tests/e2e/design_spec_http_server.py`（手动调度，见 `docs/Demo.md`）；不要把 `club-signup.md` 说成生成了座位任务。Workstation 左侧支持输入需求并查看分阶段任务进度，右侧通过 React Flow Twin Graph 可视化全流程及任务依赖图，并支持任务级控制（pause/resume/retry/skip/force-pass/takeover/submit-takeover）。
 
 示例想法：
