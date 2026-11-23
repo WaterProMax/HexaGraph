@@ -140,7 +140,7 @@ describe("DiscussionChat", () => {
     fireEvent.click(screen.getByText("展开方案"));
     expect(await screen.findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
-    expect(loadProposalBody).toHaveBeenCalledWith("prop-1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-1", "s1");
 
     fireEvent.click(screen.getByText("收起方案"));
     expect(screen.queryByText(/先用邮箱登录/)).toBeNull();
@@ -347,7 +347,7 @@ describe("DiscussionChat proposal sealing by round", () => {
     fireEvent.click(within(bubbles[0]).getByText("展开方案"));
     expect(await within(bubbles[0]).findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
-    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
   });
 
   it("reveals both rounds once cross review starts", async () => {
@@ -370,8 +370,8 @@ describe("DiscussionChat proposal sealing by round", () => {
     fireEvent.click(within(bubbles[1]).getByText("展开方案"));
     expect(await screen.findAllByText(/先用邮箱登录/)).toHaveLength(2);
     expect(loadProposalBody).toHaveBeenCalledTimes(2);
-    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1");
-    expect(loadProposalBody).toHaveBeenCalledWith("prop-r2");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r2", "s1");
   });
 });
 

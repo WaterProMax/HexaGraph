@@ -14,6 +14,7 @@ export type IdeaComposerProps = {
   hasLeader: boolean;
   onInvite: () => void;
   onStarted: (session: DiscussionSession) => void;
+  draft?: DiscussionSession;
 };
 
 function startErrorText(err: unknown): string {
@@ -35,10 +36,12 @@ export function IdeaComposer({
   hasLeader,
   onInvite,
   onStarted,
+  draft,
 }: IdeaComposerProps) {
   const headingId = useId();
   const busyRef = useRef(false);
-  const [idea, setIdea] = useState("");
+  const [idea, setIdea] = useState(draft?.requirement_text ?? "");
+  const createdRef = useRef(draft);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -58,7 +61,7 @@ export function IdeaComposer({
     setBusy(true);
     setError("");
     try {
-      const created = await api.createDiscussionSession(
+      const created = createdRef.current ?? await api.createDiscussionSession(
         projectId,
         {
           leader_bot_id: actorBotId,
@@ -67,6 +70,7 @@ export function IdeaComposer({
         },
         actorBotId,
       );
+      createdRef.current = created;
       await api.runDiscussion(created.session_id, actorBotId);
       onStarted(created);
     } catch (err) {
@@ -79,12 +83,6 @@ export function IdeaComposer({
 
   return (
     <section className="disc-composer glass-panel" aria-labelledby={headingId}>
-      <div className="panel-heading">
-        <h2 id={headingId}>发起讨论</h2>
-      </div>
-      <p className="disc-composer-lead">
-        Bot 先各自独立出方案并互评，由 Leader 收敛成需求规格，最后交给你审批。
-      </p>
       <form
         className="disc-composer-form"
         noValidate
@@ -94,7 +92,7 @@ export function IdeaComposer({
         }}
       >
         <label className="disc-composer-field" htmlFor={`${headingId}-idea`}>
-          <span className="disc-composer-label">你的想法</span>
+          <span id={headingId} className="disc-composer-label">你的想法</span>
           <textarea
             id={`${headingId}-idea`}
             className="disc-composer-input"
@@ -102,17 +100,11 @@ export function IdeaComposer({
             rows={3}
             maxLength={MAX_IDEA_LENGTH}
             value={idea}
-            disabled={busy}
-            placeholder="例如：做一个能查看空闲座位并预约的学习室网页。"
+            disabled={busy || Boolean(createdRef.current)}
+            placeholder="描述你想做什么、给谁用，以及需要解决的问题"
             onChange={(event) => setIdea(event.target.value)}
           />
         </label>
-        <div className="disc-composer-meta">
-          <span className="disc-composer-count">
-            {idea.length} / {MAX_IDEA_LENGTH}
-          </span>
-        </div>
-
         {blocked ? (
           <div className="disc-composer-blocked">
             <span className="disc-composer-blocked-text" role="status">
@@ -122,15 +114,14 @@ export function IdeaComposer({
               去邀请
             </Button>
           </div>
-        ) : (
-          <p className="disc-composer-hint">提交后讨论全自动进行，中途只能暂停或终止。</p>
-        )}
+        ) : null}
 
         {error && (
           <Alert className="disc-composer-error" type="error" showIcon role="alert" message={error} />
         )}
 
         <div className="disc-composer-actions">
+          <span className="disc-composer-count">{idea.length} / {MAX_IDEA_LENGTH}</span>
           <Button
             type="primary"
             htmlType="submit"

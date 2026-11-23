@@ -232,7 +232,7 @@ function ReviewBubble({ message, bots }: { message: DiscussionMessage; bots: Bot
         <header className="disc-bubble-head">
           <span className="disc-bubble-author">{reviewer.display_name}</span>
           <span className="disc-bubble-meta">
-            评分 · 方案 <span className="mono">{proposalId || "—"}</span>
+            评分 · 方案 <span className="mono disc-review-ref" title={proposalId || undefined}>{proposalId || "—"}</span>
           </span>
           <span className="disc-score-total">
             总分 <strong>{total}</strong>
@@ -294,6 +294,19 @@ export function MessageBubble({ item, bots, session, loadProposalBody }: Message
   }
 
   const { message } = item;
+  if (message.kind === "user") {
+    return (
+      <article className="disc-bubble disc-bubble-user" data-testid="disc-bubble-user">
+        <div className="disc-bubble-body">
+          <header className="disc-bubble-head">
+            <span className="disc-bubble-author">你</span>
+            <span className="disc-tag is-accent">{message.payload.event === "supplement" ? "补充信息" : "项目想法"}</span>
+          </header>
+          <p className="disc-bubble-text">{readString(message.payload, "text")}</p>
+        </div>
+      </article>
+    );
+  }
   const bot = resolveBubbleBot(bots, message.bot_id);
 
   if (message.kind === "system") {

@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import type {
   BotInstance,
   DiscussionMessage,
@@ -15,6 +16,7 @@ const apiMock = vi.hoisted(() => ({
   pauseDiscussion: vi.fn(),
   resumeDiscussion: vi.fn(),
   terminateDiscussion: vi.fn(),
+  planDiscussion: vi.fn(),
 }));
 
 vi.mock("../../../api/client", async (importOriginal) => {
@@ -158,13 +160,15 @@ function setHookState(overrides: Partial<HookState> = {}): HookState {
 
 function element() {
   return (
-    <DiscussionView
-      projectId="proj-1"
-      actorBotId="bot-a"
-      members={MEMBERS}
-      bots={BOTS}
-      onInvite={onInvite}
-    />
+    <MemoryRouter>
+      <DiscussionView
+        projectId="proj-1"
+        actorBotId="bot-a"
+        members={MEMBERS}
+        bots={BOTS}
+        onInvite={onInvite}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -193,7 +197,7 @@ describe("DiscussionView stage routing", () => {
 
     expect(stageBarStage()).toBe("idea");
     expect(screen.getByLabelText("一句话想法")).toBeTruthy();
-    expect(screen.queryByTestId("disc-chat")).toBeNull();
+    expect(screen.getByTestId("disc-chat")).toBeTruthy();
     expect(screen.queryByTestId("disc-score-panel")).toBeNull();
   });
 
@@ -311,6 +315,21 @@ describe("DiscussionView approval", () => {
 });
 
 describe("DiscussionView approved spec", () => {
+  it("shows a failed plan state and replaces it with the plan links after retry", async () => {
+    const session = makeSession({ status: "approved", decision_package: DECISION_PACKAGE });
+    apiMock.planDiscussion.mockRejectedValueOnce(new Error("模型暂不可用"))
+      .mockResolvedValueOnce({ run_id: "planned-run" });
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    expect(await screen.findByText("生成失败，等待重试")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新生成任务计划" }));
+    const link = await screen.findByRole("link", { name: "查看任务编排" });
+    expect(link.getAttribute("href")).toBe("/workstation/planned-run");
+    expect(apiMock.planDiscussion).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("生成失败，等待重试")).toBeNull();
+  });
+
   it("shows the spec preview, the waiting placeholder and opens the spec viewer", () => {
     const body = "# 需求规格\n\n" + "覆盖主流程与边界条件。".repeat(40);
     const session = makeSession({
@@ -322,10 +341,10 @@ describe("DiscussionView approved spec", () => {
 
     const summary = screen.getByTestId("disc-spec-summary");
     expect(summary.textContent).toContain("abcdef12");
-    expect(within(summary).getByText("等待任务拆解")).toBeTruthy();
+    expect(within(summary).getByText(/Leader 正在拆解/)).toBeTruthy();
     expect(summary.textContent).not.toContain("#");
     expect(summary.textContent).toContain("覆盖主流程与边界条件。");
-    expect(screen.queryByTestId("disc-chat")).toBeNull();
+    expect(screen.getByTestId("disc-chat")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "查看需求规格" }));
     expect(screen.getByTestId("disc-spec-dialog")).toBeTruthy();

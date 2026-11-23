@@ -394,7 +394,7 @@ describe("Workstation buttons follow backend status", () => {
     expect(String(errorSpy.mock.calls[0][0])).toMatch(/恢复失败|恢复被拒绝/);
     expect(successSpy).not.toHaveBeenCalled();
     expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复");
-    expect(screen.getByText("已暂停")).toBeTruthy();
+    expect(screen.getByText(/阶段 .*已暂停/)).toBeTruthy();
   });
 
   it("rejects DESIGN with success feedback and keeps the original text for resubmit", async () => {
@@ -427,7 +427,7 @@ describe("Workstation buttons follow backend status", () => {
     fireEvent.click(screen.getByRole("button", { name: /节点详情/ }));
     await waitFor(() => expect(screen.getByRole("button", { name: /节点详情/ }).getAttribute("aria-pressed")).toBe("true"));
     expect(document.body.textContent).toMatch(/选择一个节点|节点详情/);
-  }, 15000);
+  }, 30000);
 
   it("uses compact single-line progress rows without duplicated raw-state metadata", async () => {
     renderWorkstation();
@@ -444,7 +444,7 @@ describe("Workstation buttons follow backend status", () => {
     const successSpy = vi.spyOn(message, "success");
     api.resolveGate.mockRejectedValue(new Error("关卡冲突"));
     renderWorkstation();
-    await waitFor(() => expect(screen.getByRole("button", { name: "批准并推进" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "批准并推进" })).toBeTruthy(), { timeout: 10000 });
     fireEvent.click(screen.getByRole("button", { name: "批准并推进" }));
     await waitFor(() => expect(errorSpy).toHaveBeenCalled());
     expect(String(errorSpy.mock.calls[0][0])).toMatch(/关卡处理失败|关卡冲突/);

@@ -325,6 +325,17 @@ export function useDiscussionSession(projectId: string, actorBotId: string) {
         key: `divider-${segment.session.session_id}`,
         text: comment ? `第 ${round} 次讨论 · 你的意见：${comment}` : `第 ${round} 次讨论`,
       });
+      const record = segment.session;
+      // Older sessions already persist the user's input as the requirement snapshot.
+      if (!record.previous_session_id && record.requirement_text) {
+        items.push({
+          type: "message",
+          message: {
+            session_id: record.session_id, seq: 0, kind: "user", bot_id: null,
+            round: 0, payload: { text: record.requirement_text }, created_at: record.created_at,
+          },
+        });
+      }
       segment.messages.forEach((message) => items.push({ type: "message", message }));
     });
     return items;

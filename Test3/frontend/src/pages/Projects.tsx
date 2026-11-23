@@ -8,17 +8,11 @@ export default function Projects() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const [name, setName] = useState("");
-  const [idea, setIdea] = useState("");
   const close = () => nav("/bots");
   const create = useMutation({
-    mutationFn: async (values: { name: string; idea: string }) => {
-      const project = await api.createProject(values.name);
-      await api.createRun(project.id, values.idea);
-      return project;
-    },
+    mutationFn: (projectName: string) => api.createProject(projectName),
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      qc.invalidateQueries({ queryKey: ["runs"] });
       nav(`/projects/${project.id}`);
     },
   });
@@ -31,8 +25,7 @@ export default function Projects() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [nav]);
 
-  const canCreate =
-    name.trim() !== "" && idea.trim() !== "" && !create.isPending;
+  const canCreate = name.trim() !== "" && !create.isPending;
   return (
     <div className="bot-create-overlay" data-testid="project-create-overlay">
       <form
@@ -44,7 +37,7 @@ export default function Projects() {
         onSubmit={(event) => {
           event.preventDefault();
           if (canCreate)
-            create.mutate({ name: name.trim(), idea: idea.trim() });
+            create.mutate(name.trim());
         }}
       >
         <button
@@ -64,18 +57,10 @@ export default function Projects() {
             placeholder="例如：自习室空位查询小程序"
           />
         </label>
-        <label className="project-field">
-          <span>想法</span>
-          <textarea
-            rows={3}
-            value={idea}
-            onChange={(event) => setIdea(event.target.value)}
-            placeholder="一两句话的产品想法"
-          />
-        </label>
+        {create.isError && <p role="alert">项目创建失败，请重试。</p>}
         <div className="project-create-actions">
           <button type="submit" className="chip primary" disabled={!canCreate}>
-            {create.isPending ? "创建中…" : "创建并开始"}
+            {create.isPending ? "创建中…" : "创建项目"}
           </button>
         </div>
       </form>

@@ -150,7 +150,7 @@ export type DiscussionSessionCreate = {
   previous_session_id?: string;
 };
 
-export type DiscussionMessageKind = "system" | "proposal" | "review" | "leader";
+export type DiscussionMessageKind = "system" | "proposal" | "review" | "leader" | "user";
 
 /** One append-only timeline entry. Proposal bodies never appear here. */
 export type DiscussionMessage = {

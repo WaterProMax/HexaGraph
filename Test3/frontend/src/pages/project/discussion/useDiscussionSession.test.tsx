@@ -163,7 +163,7 @@ describe("useDiscussionSession", () => {
     const replayed = result.current.timeline
       .filter((item) => item.type === "message")
       .map((item) => item.message.session_id);
-    expect(replayed).toEqual(["s1", "s1", "s2", "s2"]);
+    expect(replayed).toEqual(["s1", "s1", "s1", "s2", "s2"]);
 
     expect(apiMock.discussionMessages).toHaveBeenCalledWith("s1", 0, "leader-1");
     expect(apiMock.discussionMessages).toHaveBeenCalledWith("s2", 0, "leader-1");

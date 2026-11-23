@@ -40,8 +40,10 @@ export type ProjectWorkstationProps = {
   };
   memoryPanel?: ReactNode;
   bots?: BotInstance[];
-  /** Replaces the empty-run notice and the whole task body (project without any run yet). */
+  /** The project discussion remains available alongside existing runs. */
   discussionPanel?: ReactNode;
+  onShowDiscussion?: () => void;
+  onShowTasks?: () => void;
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
@@ -84,6 +86,8 @@ export function ProjectWorkstation({
   memoryPanel,
   bots = [],
   discussionPanel,
+  onShowDiscussion,
+  onShowTasks,
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
   const [highlight, setHighlight] = useState("");
@@ -149,9 +153,17 @@ export function ProjectWorkstation({
           onManage={team.onManage}
         />
       )}
+      {runId && onShowDiscussion && onShowTasks && (
+        <nav className="disc-project-nav" aria-label="项目工作区">
+          <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
+          <button type="button" aria-pressed={!discussionPanel} onClick={onShowTasks}>开发任务</button>
+        </nav>
+      )}
       {!discussionPanel && (loadState === "empty" || tasks.length === 0) ? (
         <div className="well muted" data-testid="ws-empty" style={{ padding: "14px 16px" }}>
-          这个项目还没有可展示的任务。先在项目里创建一次运行。
+          {runId ? (
+            <>任务就绪后会显示在这里。<Link to={`/workstation/${runId}`}>打开运行工作台</Link></>
+          ) : "确认需求规格后，Leader 会生成任务计划。"}
         </div>
       ) : null}
 
@@ -342,8 +354,7 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
   const [defects, setDefects] = useState<DefectRecord[]>([]);
   const [ballots, setBallots] = useState<ReviewBallot[]>([]);
   const [dissentItems, setDissentItems] = useState<string[]>([]);
-  /** `null` until the run list is read; `false` means the project has no run yet. */
-  const [hasRun, setHasRun] = useState<boolean | null>(null);
+  const [showDiscussion, setShowDiscussion] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -363,8 +374,6 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
   }, [id]);
 
   const load = useCallback(async () => {
-    setLoadState("loading");
-    setHasRun(null);
     try {
       // Team + bots load first: a project with no run yet must still be able to invite bots.
       let memberRows: TeamMember[] = [];
@@ -396,12 +405,11 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
       const runs = await api.runs();
       const owned = (Array.isArray(runs) ? runs : []).filter((run: any) => String(run.project_id) === String(id));
       if (owned.length === 0) {
-        setHasRun(false);
+        setRunId("");
         setTasks([]);
         setLoadState("empty");
         return;
       }
-      setHasRun(true);
       const latest = owned[owned.length - 1];
       setRunId(String(latest.id));
       const raw = await api.tasks(String(latest.id));
@@ -480,14 +488,20 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         onManage: () => setDialogOpen(true),
       }}
       bots={allBots}
+      onShowDiscussion={() => setShowDiscussion(true)}
+      onShowTasks={() => {
+        setShowDiscussion(false);
+        void load();
+      }}
       discussionPanel={
-        hasRun === false ? (
+        showDiscussion ? (
           <DiscussionView
             projectId={id}
             actorBotId={actor}
             members={teamMembers}
             bots={allBots}
             onInvite={() => setInviteOpen(true)}
+            onPlanReady={load}
           />
         ) : undefined
       }
