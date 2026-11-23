@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import type {
   BotInstance,
   DiscussionMessage,
@@ -15,8 +16,7 @@ const apiMock = vi.hoisted(() => ({
   pauseDiscussion: vi.fn(),
   resumeDiscussion: vi.fn(),
   terminateDiscussion: vi.fn(),
-  createDiscussionPlan: vi.fn(() => new Promise(() => {})),
-  supplementDiscussion: vi.fn(),
+  planDiscussion: vi.fn(),
 }));
 
 vi.mock("../../../api/client", async (importOriginal) => {
@@ -160,13 +160,15 @@ function setHookState(overrides: Partial<HookState> = {}): HookState {
 
 function element() {
   return (
-    <DiscussionView
-      projectId="proj-1"
-      actorBotId="bot-a"
-      members={MEMBERS}
-      bots={BOTS}
-      onInvite={onInvite}
-    />
+    <MemoryRouter>
+      <DiscussionView
+        projectId="proj-1"
+        actorBotId="bot-a"
+        members={MEMBERS}
+        bots={BOTS}
+        onInvite={onInvite}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -184,9 +186,6 @@ beforeEach(() => {
   apiMock.pauseDiscussion.mockResolvedValue(makeSession({ paused: true }));
   apiMock.resumeDiscussion.mockResolvedValue(makeSession());
   apiMock.terminateDiscussion.mockResolvedValue(makeSession({ status: "terminated" }));
-  // Plan creation never settles by default, so approved views stay in the planning state.
-  apiMock.createDiscussionPlan.mockImplementation(() => new Promise(() => {}));
-  apiMock.supplementDiscussion.mockResolvedValue(makeSession({ session_id: "s2" }));
 });
 
 afterEach(cleanup);
@@ -198,7 +197,7 @@ describe("DiscussionView stage routing", () => {
 
     expect(stageBarStage()).toBe("idea");
     expect(screen.getByLabelText("一句话想法")).toBeTruthy();
-    expect(screen.queryByTestId("disc-chat")).toBeNull();
+    expect(screen.getByTestId("disc-chat")).toBeTruthy();
     expect(screen.queryByTestId("disc-score-panel")).toBeNull();
   });
 
@@ -313,29 +312,25 @@ describe("DiscussionView approval", () => {
     rerender(element());
     expect(screen.getByTestId("disc-approval-dialog")).toBeTruthy();
   });
-
-  it("sends the supplement for the pending session and refreshes the view", async () => {
-    approvalState();
-    renderView();
-
-    const field = screen.getByLabelText("补充信息") as HTMLTextAreaElement;
-    fireEvent.change(field, { target: { value: "  第一版以学生手动上报为准  " } });
-    fireEvent.click(screen.getByRole("button", { name: "发送补充" }));
-
-    await waitFor(() =>
-      expect(apiMock.supplementDiscussion).toHaveBeenCalledWith(
-        "s1",
-        "第一版以学生手动上报为准",
-        "bot-a",
-      ),
-    );
-    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(field.value).toBe(""));
-  });
 });
 
 describe("DiscussionView approved spec", () => {
-  it("shows the spec preview, the planning placeholder and opens the spec viewer", () => {
+  it("shows a failed plan state and replaces it with the plan links after retry", async () => {
+    const session = makeSession({ status: "approved", decision_package: DECISION_PACKAGE });
+    apiMock.planDiscussion.mockRejectedValueOnce(new Error("模型暂不可用"))
+      .mockResolvedValueOnce({ run_id: "planned-run" });
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    expect(await screen.findByText("生成失败，等待重试")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重新生成任务计划" }));
+    const link = await screen.findByRole("link", { name: "查看任务编排" });
+    expect(link.getAttribute("href")).toBe("/workstation/planned-run");
+    expect(apiMock.planDiscussion).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("生成失败，等待重试")).toBeNull();
+  });
+
+  it("shows the spec preview, the waiting placeholder and opens the spec viewer", () => {
     const body = "# 需求规格\n\n" + "覆盖主流程与边界条件。".repeat(40);
     const session = makeSession({
       status: "approved",
@@ -346,65 +341,13 @@ describe("DiscussionView approved spec", () => {
 
     const summary = screen.getByTestId("disc-spec-summary");
     expect(summary.textContent).toContain("abcdef12");
-    expect(within(summary).getByRole("status").textContent).toBe("正在拆解任务…");
-    expect(apiMock.createDiscussionPlan).toHaveBeenCalledWith("s1", "bot-a");
+    expect(within(summary).getByText(/Leader 正在拆解/)).toBeTruthy();
     expect(summary.textContent).not.toContain("#");
     expect(summary.textContent).toContain("覆盖主流程与边界条件。");
-    // The timeline stays readable after approval so earlier proposals can be re-opened.
     expect(screen.getByTestId("disc-chat")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "查看需求规格" }));
     expect(screen.getByTestId("disc-spec-dialog")).toBeTruthy();
-  });
-
-  it("links to the created run and its architecture view once the plan exists", async () => {
-    apiMock.createDiscussionPlan.mockResolvedValue({ run_id: "run-42" });
-    const session = makeSession({
-      status: "approved",
-      leader_bot_id: "bot-a",
-      decision_package: DECISION_PACKAGE,
-    });
-    setHookState({ session, sessions: [session] });
-    renderView();
-
-    const summary = screen.getByTestId("disc-spec-summary");
-    await waitFor(() =>
-      expect(within(summary).getByRole("link", { name: "查看任务编排" })).toBeTruthy(),
-    );
-
-    const planLink = within(summary).getByRole("link", { name: "查看任务编排" });
-    const architectureLink = within(summary).getByRole("link", { name: "查看架构图" });
-    expect(planLink.getAttribute("href")).toBe("/workstation/run-42");
-    expect(architectureLink.getAttribute("href")).toBe("/workstation/run-42?view=architecture");
-    expect(within(summary).queryByText("正在拆解任务…")).toBeNull();
-    expect(apiMock.createDiscussionPlan).toHaveBeenCalledTimes(1);
-    expect(apiMock.createDiscussionPlan).toHaveBeenCalledWith("s1", "bot-a");
-    // The existing spec button survives next to the new links.
-    expect(within(summary).getByRole("button", { name: "查看需求规格" })).toBeTruthy();
-  });
-
-  it("keeps the waiting placeholder and surfaces the error when planning fails", async () => {
-    apiMock.createDiscussionPlan.mockRejectedValue(new Error("只有 Leader 可以创建任务编排"));
-    const session = makeSession({ status: "approved", decision_package: DECISION_PACKAGE });
-    setHookState({ session, sessions: [session] });
-    renderView();
-
-    await waitFor(() =>
-      expect(screen.getByTestId("disc-action-error").textContent).toBe("只有 Leader 可以创建任务编排"),
-    );
-    const summary = screen.getByTestId("disc-spec-summary");
-    expect(within(summary).getByRole("status").textContent).toBe("等待任务拆解");
-    expect(within(summary).queryByRole("link", { name: "查看任务编排" })).toBeNull();
-  });
-
-  it("does not start a plan run for a non-leader actor", () => {
-    const session = makeSession({ status: "approved", leader_bot_id: "bot-b" });
-    setHookState({ session, sessions: [session] });
-    renderView();
-
-    expect(apiMock.createDiscussionPlan).not.toHaveBeenCalled();
-    const summary = screen.getByTestId("disc-spec-summary");
-    expect(within(summary).getByRole("status").textContent).toBe("等待任务拆解");
   });
 });
 

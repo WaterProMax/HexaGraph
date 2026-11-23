@@ -18,6 +18,8 @@ export type StageBarProps = {
   stage: DiscussionStage;
   /** Current session round, used for the subtitle on the independent / revise / review steps. */
   round?: number;
+  planReady?: boolean;
+  planFailed?: boolean;
 };
 
 function stageSubtitle(stage: DiscussionStage, round: number): string | null {
@@ -37,7 +39,7 @@ function stageSubtitle(stage: DiscussionStage, round: number): string | null {
  * Discussion progress bar. `deriveStage` decides the stage; this component only
  * maps it to the six fixed steps and marks done / current / terminated.
  */
-export function StageBar({ stage, round }: StageBarProps) {
+export function StageBar({ stage, round, planReady = false, planFailed = false }: StageBarProps) {
   const terminated = stage === "terminated";
   const currentIndex = terminated ? -1 : STAGE_STEP[stage];
   const lastIndex = STEPS.length - 1;
@@ -49,11 +51,13 @@ export function StageBar({ stage, round }: StageBarProps) {
       data-testid="disc-stage-bar"
       data-stage={stage}
     >
+      <h2 className="disc-stage-heading">讨论进度</h2>
       <ol className="disc-stage-list" aria-label="讨论流程">
         {STEPS.map((label, index) => {
-          const done = index < currentIndex;
-          const current = index === currentIndex;
-          const waiting = stage === "approved" && index === lastIndex;
+          const lastStep = stage === "approved" && index === lastIndex;
+          const done = index < currentIndex || (lastStep && planReady);
+          const current = index === currentIndex && !done;
+          const waiting = lastStep && !planReady;
           const state = done ? "done" : current ? "current" : "pending";
           return (
             <li
@@ -61,7 +65,7 @@ export function StageBar({ stage, round }: StageBarProps) {
               className={`disc-stage-step is-${state}`}
               data-status={state}
               aria-current={current ? "step" : undefined}
-              title={done ? `${label}（已完成）` : waiting ? `${label}（等待任务拆解）` : label}
+              title={done ? `${label}（已完成）` : label}
             >
               <span className="disc-stage-mark" aria-hidden="true">
                 {done ? "✓" : index + 1}
@@ -72,7 +76,7 @@ export function StageBar({ stage, round }: StageBarProps) {
                   {subtitle}
                 </span>
               )}
-              {waiting && <span className="disc-stage-note">等待任务拆解</span>}
+              {waiting && <span className="disc-stage-note">{planFailed ? "生成失败，等待重试" : "生成任务与依赖"}</span>}
             </li>
           );
         })}

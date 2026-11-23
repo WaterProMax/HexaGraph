@@ -165,8 +165,7 @@ export type DiscussionMessage = {
 
 export type DiscussionTimelineItem =
   | { type: "message"; message: DiscussionMessage }
-  | { type: "divider"; key: string; text: string }
-  | { type: "user"; key: string; text: string };
+  | { type: "divider"; key: string; text: string };
 
 /** One proposal as returned by `GET /discussion-sessions/{sid}/proposals`. */
 export type DiscussionProposal = {

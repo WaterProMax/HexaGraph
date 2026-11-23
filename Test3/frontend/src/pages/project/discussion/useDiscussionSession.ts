@@ -325,14 +325,15 @@ export function useDiscussionSession(projectId: string, actorBotId: string) {
         key: `divider-${segment.session.session_id}`,
         text: comment ? `第 ${round} 次讨论 · 你的意见：${comment}` : `第 ${round} 次讨论`,
       });
-      // Only the chain's first session carries the original idea; later sessions
-      // receive their supplement as a real `kind: "user"` backend message.
-      const requirement = index === 0 ? (segment.session.requirement_text || "").trim() : "";
-      if (requirement) {
+      const record = segment.session;
+      // Older sessions already persist the user's input as the requirement snapshot.
+      if (!record.previous_session_id && record.requirement_text) {
         items.push({
-          type: "user",
-          key: `user-${segment.session.session_id}`,
-          text: requirement,
+          type: "message",
+          message: {
+            session_id: record.session_id, seq: 0, kind: "user", bot_id: null,
+            round: 0, payload: { text: record.requirement_text }, created_at: record.created_at,
+          },
         });
       }
       segment.messages.forEach((message) => items.push({ type: "message", message }));

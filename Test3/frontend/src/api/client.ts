@@ -55,9 +55,8 @@ function parseApiError(status: number, text: string): ApiError {
 
 async function req(path: string, init?: RequestInit) {
   const res = await fetch(BASE + path, {
-    ...init,
-    // Spread init first so an actor-only header map cannot drop Content-Type.
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    ...init,
   });
   if (!res.ok) {
     throw parseApiError(res.status, await res.text());
@@ -157,7 +156,7 @@ export const api = {
   discussionSession: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}`, { headers: botHeader(botId) }),
   discussionProposals: (sessionId: string, botId: string): Promise<{ items: import("./types").DiscussionProposal[] }> =>
-    req(`/discussion-sessions/${sessionId}/proposals`, { headers: botHeader(botId) }),
+    req(`/discussion-sessions/${sessionId}/proposals?include_history=true`, { headers: botHeader(botId) }),
   discussionReviews: (sessionId: string, botId: string): Promise<{ items: import("./types").ReviewBallot[] }> =>
     req(`/discussion-sessions/${sessionId}/reviews`, { headers: botHeader(botId) }),
   resolveDiscussion: (
@@ -169,24 +168,6 @@ export const api = {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify(body),
-    }),
-  /** Materialises the approved spec into a run + task plan; idempotent per session. */
-  createDiscussionPlan: (sessionId: string, botId: string): Promise<{ run_id: string }> =>
-    req(`/discussion-sessions/${sessionId}/plan`, {
-      method: "POST",
-      headers: botHeader(botId),
-      body: JSON.stringify({}),
-    }),
-  /** Ends the pending session and starts a linked one from the appended requirement text. */
-  supplementDiscussion: (
-    sessionId: string,
-    text: string,
-    botId: string,
-  ): Promise<import("./types").DiscussionSession> =>
-    req(`/discussion-sessions/${sessionId}/supplement`, {
-      method: "POST",
-      headers: botHeader(botId),
-      body: JSON.stringify({ text }),
     }),
   createDiscussionSession: (
     projectId: string,
@@ -236,6 +217,17 @@ export const api = {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify({ confirm: true }),
+    }),
+  supplementDiscussion: (sessionId: string, text: string, botId: string): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/supplement`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...botHeader(botId) },
+      body: JSON.stringify({ text }),
+    }),
+  planDiscussion: (sessionId: string, botId: string): Promise<{ run_id: string }> =>
+    req(`/discussion-sessions/${sessionId}/plan`, {
+      method: "POST",
+      headers: botHeader(botId),
     }),
   discussionEventsUrl: (sessionId: string, botId: string): string =>
     `/api/discussion-sessions/${sessionId}/events?bot_id=${encodeURIComponent(botId)}`,

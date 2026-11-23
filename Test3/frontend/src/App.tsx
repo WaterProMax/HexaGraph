@@ -76,7 +76,7 @@ export default function App() {
 
 function ProjectWorkstationRoute() {
   const { projectId } = useParams();
-  return <ProjectWorkstationPage projectId={projectId || ""} />;
+  return <ProjectWorkstationPage key={projectId} projectId={projectId || ""} />;
 }
 
 function RunShell() {

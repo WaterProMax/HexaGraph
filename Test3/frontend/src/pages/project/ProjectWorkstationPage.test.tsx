@@ -134,7 +134,8 @@ describe("ProjectWorkstationPage container", () => {
         <ProjectWorkstationPage projectId="proj-1" />
       </MemoryRouter>,
     );
-    expect(await screen.findByText("实现登录")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "开发任务" }));
+    expect(await screen.findByRole("treeitem", { name: /实现登录/ })).toBeTruthy();
     expect(calls).toContain("/api/runs/run-1/tasks");
     expect(calls).not.toContain("/api/runs/run-0/tasks");
   });
@@ -271,7 +272,7 @@ describe("discussion panel wiring", () => {
     expect(screen.queryByTestId("tab-details")).toBeNull();
   });
 
-  it("keeps the task area and hides the discussion view when a run exists", async () => {
+  it("keeps discussion available alongside the tasks of an existing run", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -289,7 +290,9 @@ describe("discussion panel wiring", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("实现登录")).toBeTruthy();
+    expect(await screen.findByTestId("disc-stage-bar")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "开发任务" }));
+    expect(await screen.findByRole("treeitem", { name: /实现登录/ })).toBeTruthy();
     expect(screen.getByTestId("task-tree")).toBeTruthy();
     expect(screen.queryByTestId("disc-stage-bar")).toBeNull();
     expect(screen.queryByLabelText("一句话想法")).toBeNull();

@@ -1,4 +1,5 @@
 import { Tag } from "antd";
+import { taskWaitReason } from "../taskWaitReason";
 
 interface Props {
   plan: any;
@@ -22,20 +23,9 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 function waitReason(card: any, runtime: any, byCode: Map<string, any>): string {
-  const deps: string[] = card?.depends_on || [];
-  const unmet = deps.filter((code) => {
-    const state = byCode.get(code)?.state ?? "pending";
-    return state !== "done" && state !== "skipped" && state !== "cancelled";
-  });
-  const state = runtime?.state ?? "pending";
-  if (state === "ready") return "依赖已满足，等待调度";
-  if (state === "running" || state === "verifying") return "";
-  if (state === "blocked") return runtime?.last_error || "上游失败，已阻塞下游";
-  if (state === "failed") return runtime?.last_error || "执行失败，等待重试";
-  if (state === "needs_human") return runtime?.last_error || "需要人工裁决";
-  if (state === "pending" && unmet.length > 0) return `等待依赖：${unmet.join("、")}`;
-  if (state === "pending") return "尚未物化为运行任务";
-  return "";
+  if (!runtime) return "等待确认任务计划";
+  if (runtime.state === "needs_human") return runtime.last_error || "需要人工裁决";
+  return taskWaitReason(runtime, { dependsOn: card?.depends_on || [] }, byCode);
 }
 
 export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: Props) {
@@ -53,7 +43,7 @@ export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: P
   }
 
   return (
-    <div data-testid="task-plan-preview">
+    <div className="task-plan-preview" data-testid="task-plan-preview">
       <div className="section-title">
         <span>任务计划</span>
         <span className="hint">
@@ -67,7 +57,7 @@ export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: P
         </div>
       )}
       {total === 0 && <div className="well muted" style={{ padding: 12 }}>任务图为空，不能开始执行</div>}
-      <div className="phase-items">
+      <div className="task-plan-list">
         {cards.map((card: any) => {
           const runtime = byCode.get(card.code);
           const state = runtime?.state ?? "pending";
@@ -76,11 +66,11 @@ export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: P
             <button
               type="button"
               key={card.code}
-              className="row"
+              className="task-plan-card"
               onClick={() => onSelect?.(card.code)}
               data-state={state}
             >
-              <span className={`dot ${state === "done" ? "completed" : state === "ready" || state === "running" ? "in_progress" : state === "pending" ? "pending" : "error"}`} />
+              <span className={`dot ${state === "done" ? "completed" : ["ready", "running", "verifying"].includes(state) ? "in_progress" : ["pending", "skipped", "cancelled", "stale"].includes(state) ? "pending" : "error"}`} />
               <span className="row-main">
                 <span className="row-meta">
                   <span className="code">{card.code}</span>
@@ -92,15 +82,14 @@ export default function TaskPlanPreview({ plan, tasks, provenance, onSelect }: P
                 </span>
                 <span className="row-sub">
                   依赖 {(card.depends_on || []).join("、") || "无"} · 来源 {(card.sources || []).join("、") || "-"} · 交付物{" "}
-                  {(card.outputs || []).join("、") || "-"}
+                  {(card.outputs?.length ? card.outputs : card.write_set || []).join("、") || "-"}
                 </span>
                 {(card.acceptance || []).length > 0 && (
                   <span className="row-sub" title="验收条件">
                     验收 {(card.acceptance || []).map((a: any) => (a.cmd || []).join(" ")).join("；")}
                   </span>
                 )}
-                {reason && <span className="row-sub">等待原因：{reason}</span>}
-                {runtime?.last_error && <span className="row-sub">错误：{runtime.last_error}</span>}
+                {reason && <span className="task-plan-reason">{state === "failed" ? "失败原因" : "当前状态"} · {reason}</span>}
               </span>
             </button>
           );
