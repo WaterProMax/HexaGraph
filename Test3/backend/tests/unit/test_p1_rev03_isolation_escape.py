@@ -17,7 +17,7 @@ import pytest
 
 from app.execution.evidence import cleanup_evidence_dir
 from app.execution.isolated import execute_task_granted
-from app.execution.isolation import IsolationPreflight
+from app.execution.isolation import IsolationPreflight, preflight_isolation
 from app.schemas.execution_grant import ExecutionGrant
 
 
@@ -103,6 +103,9 @@ async def test_evidence_symlink_cannot_redirect_writes(
 
 @pytest.mark.asyncio
 async def test_whitelisted_pytest_cannot_write_absolute_outside_path(tmp_path: Path) -> None:
+    preflight = preflight_isolation()
+    if not preflight.available:
+        pytest.skip(f"requires isolation backend: {preflight.reason}")
     root = tmp_path / "wt"
     (root / "tests").mkdir(parents=True)
     outside = tmp_path / "escaped.txt"

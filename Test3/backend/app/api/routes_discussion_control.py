@@ -9,14 +9,25 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from app.discussion import driver
+from app.bots.registry import BotNotFound
+from app.discussion import driver, planning
+from app.discussion.decision import _resolve_lock
+from app.discussion.messages import LOG
 from app.discussion.session_store import DiscussionSessionStore, SessionNotFound
+from app.errors import ValidationFailed, user_message_for_category
+from app.leader.steward import DiscussionSteward, InvalidParticipant, LeaderNotInProject
+from app.memory.organizer import contains_secret
+from app.storage.models import ProjectMembershipRow
 
 router = APIRouter()
 
 
 class ResumeBody(BaseModel):
     skip_bot_ids: list[str] = Field(default_factory=list)
+
+
+class SupplementBody(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
 
 
 def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
@@ -143,6 +154,65 @@ async def terminate_discussion(session_id: str, request: Request) -> Any:
         return _json_error(409, "invalid_status", record.status)
     updated = await driver.terminate_session(bench, session_id)
     return updated.model_dump()
+
+
+@router.post("/discussion-sessions/{session_id}/supplement", status_code=201)
+async def supplement_discussion(session_id: str, body: SupplementBody, request: Request) -> Any:
+    actor, record, error = await _leader_session(request)
+    if error is not None:
+        return error
+    assert record is not None
+    text = body.text.strip()
+    if not text:
+        return _json_error(400, "validation_error", "请填写补充信息")
+    if contains_secret(text):
+        return _json_error(400, "secret_in_body", "请删除补充信息中的密钥后重试")
+    bench = request.app.state.workbench
+    # The original snapshot and approvals stay immutable. A linked session
+    # evaluates the new snapshot from the beginning using the same rules.
+    async with _resolve_lock(bench), bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        record = await store.get_locked(session_id)
+        if record.status in driver.TERMINAL_STATUSES:
+            return _json_error(409, "invalid_status", record.status)
+        requirements = f"{record.requirement_text}\n\n用户补充（以较新的说明为准）\n{text}"
+        try:
+            updated = await DiscussionSteward(session).create_session(
+                record.project_id, actor, record.participant_bot_ids, requirements, record.budget,
+                requirement_text=requirements, previous_session_id=session_id,
+            )
+        except (InvalidParticipant, LeaderNotInProject):
+            return _json_error(409, "membership_changed", "项目成员已变更，请检查讨论团队")
+        await store.save(record.model_copy(update={"status": "terminated", "paused": False}))
+        await LOG.append(session, updated.session_id, "user", payload={"text": text, "event": "supplement"})
+        await session.commit()
+    await driver.terminate_session(bench, session_id)
+    await driver.run_session(bench, updated.session_id)
+    return updated.model_dump()
+
+
+@router.post("/discussion-sessions/{session_id}/plan")
+async def plan_discussion(session_id: str, request: Request) -> Any:
+    actor, record, error = await _leader_session(request)
+    if error is not None:
+        return error
+    assert record is not None
+    if record.status != "approved" or record.decision_package is None:
+        return _json_error(409, "invalid_status", "需先确认需求规格")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        member = await session.get(ProjectMembershipRow, (record.project_id, actor))
+        if member is None or not member.is_leader:
+            return _json_error(403, "forbidden", "只有项目 Leader 可以生成任务计划")
+    try:
+        run_id = await planning.prepare_run(bench, record)
+    except BotNotFound:
+        return _json_error(409, "leader_not_found", "找不到负责规划的 Leader")
+    except driver.BotFailed as exc:
+        return _json_error(502, exc.category, user_message_for_category(exc.category))
+    except ValidationFailed as exc:
+        return _json_error(422, "plan_validation_failed", str(exc))
+    return {"run_id": run_id}
 
 
 __all__ = ["router"]

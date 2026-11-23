@@ -62,6 +62,11 @@ class ScriptedProvider:
     def push(self, item: Any) -> None:
         self.queue.append(item)
 
+    def next_item(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+        if not self.queue:
+            raise RuntimeError(f"scripted queue empty for slot={slot}")
+        return self.queue.pop(0)
+
     async def complete(
         self,
         slot: str,
@@ -73,9 +78,7 @@ class ScriptedProvider:
     ) -> LLMResult:
         self.calls.append({"slot": slot, "messages": messages, "schema": schema, "tools": tools})
         validate_tool_protocol(messages, tools)
-        if not self.queue:
-            raise RuntimeError(f"scripted queue empty for slot={slot}")
-        item = self.queue.pop(0)
+        item = self.next_item(slot, messages, **kwargs)
         if isinstance(item, Exception):
             raise item
         if isinstance(item, LLMResult):

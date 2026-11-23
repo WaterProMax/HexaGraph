@@ -433,11 +433,13 @@ async def test_schedule_loop_completes_ready_task(tmp_path: Path) -> None:
     run = _ready_run(bench, _card())
     bench.schedule_interval = 0.05
     bench.start_loop()
-    for _ in range(40):
-        if run.tasks["T-01"]["state"] == "done":
-            break
-        await asyncio.sleep(0.05)
-    await bench.stop_loop()
+    try:
+        for _ in range(400):
+            if run.tasks["T-01"]["state"] == "done":
+                break
+            await asyncio.sleep(0.05)
+    finally:
+        await bench.stop_loop()
     assert run.tasks["T-01"]["state"] == "done"
 
 

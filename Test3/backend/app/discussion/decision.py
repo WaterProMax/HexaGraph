@@ -173,6 +173,12 @@ async def _resolve_once(
     if record.status != "converged_pending_human" or record.decision_package is None:
         raise InvalidStatus(record.status)
     package = record.decision_package
+    if decision == "approved":
+        body = package.body_md.split()
+        async for previous in store.predecessors(record):
+            rejected = previous.decision_package
+            if previous.status == "rejected" and rejected is not None and rejected.body_md.split() == body:
+                raise InvalidStatus("本版正文与被打回版本相同，请先根据驳回意见修改规格")
     run = None
     if decision == "approved" and run_id is not None:
         run = bench.runs.get(run_id)

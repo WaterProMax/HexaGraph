@@ -16,7 +16,11 @@ from typing import Any, Callable
 
 from app.agents.runtime import RoleRegistry, call_agent, run_tool_agent
 from app.change.classify import classify_cr, evaluation_pass
+from app.discussion import planning as discussion_planning
+from app.discussion.driver import BotFailed
 from app.discussion.engine import run_discussion
+from app.discussion.models import DiscussionSession
+from app.discussion.session_store import DiscussionSessionStore
 from app.docs.acceptance import acceptance_pass
 from app.docs.checks import (
     check_design,
@@ -67,6 +71,7 @@ from app.execution.run_profile import (
     run_approved_baseline_hashes,
     run_execution_profile,
     set_approved_baseline_hashes,
+    store_approved_baseline_hash,
 )
 from app.execution.run_profile import (
     set_run_execution_profile as _apply_run_execution_profile,
@@ -211,6 +216,7 @@ class Workbench:
         self.schedule_interval = 5.0
         self._merge_locks: dict[str, asyncio.Lock] = {}
         self._gate_locks: dict[str, asyncio.Lock] = {}
+        self._discussion_plan_locks: dict[str, asyncio.Lock] = {}
         self._run_locks = RunLockRegistry()
         self._generations = GenerationGuard()
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
@@ -429,6 +435,16 @@ class Workbench:
             self._restore_execution_profile(run, data)
             self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
+            release = run_dir / "release"
+            if (
+                run.engine.current == "done"
+                and run.status == "waiting"
+                and any(g.get("kind") == "验收确认" and g.get("status") == "approved" for g in run.gates)
+                and (release / "acceptance.json").is_file()
+            ):
+                run.status = "done"
+                run.pending_human = False
+                run.artifacts["release_dir"] = str(release)
             repo = run_dir / "repo"
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
@@ -674,6 +690,32 @@ class Workbench:
         run.artifacts["idea_raw"] = idea
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
+
+    def create_discussion_plan_run(
+        self, record: DiscussionSession, output: discussion_planning.LeaderPlan, run_id: str
+    ) -> None:
+        package = record.decision_package
+        assert package is not None
+        run = RunState(
+            id=run_id, project_id=record.project_id, idea=record.requirement_text,
+            limits=copy.deepcopy(self.limits), execution_profile=PROFILE_LEGACY,
+        )
+        run.engine.current = "6"
+        run.artifacts.update(
+            idea_raw=record.requirement_text,
+            discussion_session_id=record.session_id,
+            decision_package=package.model_dump(),
+            spec=output.spec.model_dump(),
+            design=output.design.model_dump(),
+            plan=output.plan.model_dump(),
+            plan_errors=[],
+            provenance=self._provenance(),
+        )
+        store_approved_baseline_hash(run, "DecisionPackage", package.sha256)
+        store_approved_baseline_hash(run, "SPEC", hash_artifact(run.artifacts["spec"]))
+        run.artifacts["baseline_SPEC"] = "1.0"
+        self._gate(run, "PLAN基线确认", {"plan": run.artifacts["plan"], "design": run.artifacts["design"]})
+        self.runs[run.id] = run
 
     # --- ExecutionGrant domain (P1) ---------------------------------------------
     async def _ensure_db(self) -> None:
@@ -1836,6 +1878,9 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
+            if run.artifacts.get("discussion_session_id"):
+                self._record_approved_baseline(run, "DESIGN", run.artifacts["design"])
+                self._freeze(run, "DESIGN")
             self._record_approved_baseline(run, "PLAN", run.artifacts.get("plan") or {})
             await self._refresh_grant_statuses(run)
             self._freeze(run, "PLAN")
@@ -1894,6 +1939,7 @@ class Workbench:
         self._freeze(run, "BUILD")
         self._export_release(run)
         run.status = "done"
+        self._persist_snapshot(run)
         return {
             "status": "done",
             "pass": passed,
@@ -2155,6 +2201,23 @@ class Workbench:
         with self._usage_scope(run):
             spec = SpecDoc.model_validate(run.artifacts["spec"])
             design = DesignDoc.model_validate(run.artifacts["design"])
+            discussion_id = run.artifacts.get("discussion_session_id")
+            if discussion_id:
+                rewrite = run.artifacts.pop("plan_rewrite", None)
+                async with self.db_session() as session:
+                    record = await DiscussionSessionStore(session).get(discussion_id)
+                try:
+                    graph = await discussion_planning.generate(
+                        self, record, spec=spec, design=design, rewrite=rewrite,
+                    )
+                except (BotFailed, ValidationFailed) as exc:
+                    message = user_message_for_category(exc.category) if isinstance(exc, BotFailed) else str(exc)
+                    return self._doc_check_failed(run, retry="plan", errors=[message])
+                run.artifacts["plan"] = graph.model_dump()
+                run.artifacts["plan_errors"] = []
+                return self._gate(
+                    run, "PLAN基线确认", {"plan": graph.model_dump(), "design": run.artifacts["design"]},
+                )
             inputs: dict[str, Any] = {"spec": spec.model_dump(), "design": design.model_dump()}
             if run.artifacts.get("plan_rewrite"):
                 inputs["rewrite"] = run.artifacts.pop("plan_rewrite")
@@ -2654,6 +2717,7 @@ class Workbench:
                         rollback_merge(repo, str(merged["before"]))
                         regression_fail = str(regression["reason"] or "regression failed")
                     else:
+                        task["last_error"] = ""
                         self._set_state(run, task, "accepted")
                         task["locked_by"] = ""
                         task["takeover_submit"] = False
@@ -2774,6 +2838,8 @@ class Workbench:
         task["signatures"].append(sig)
         task["prev_output"] = output
         extra = {"kind": kind}
+        task["last_error"] = output or kind
+        extra["error"] = task["last_error"]
         if kind == "代码缺陷":
             task["repair_rounds"] = int(task.get("repair_rounds") or 0) + 1
             limit = int((run.limits.get("orchestrator") or {}).get("max_repair_rounds") or 6)

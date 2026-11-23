@@ -743,6 +743,51 @@ async def test_non_leader_cannot_resolve_decision(app) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+async def test_resolved_session_retains_unsealed_proposal_bodies(app, decision) -> None:
+    _app, (leader, alice, _bob, outsider), session_id = await _converged_with_package(app)
+    path = f"/api/discussion-sessions/{session_id}/proposals?include_history=true"
+    async with _client(app) as client:
+        assert (await _resolve(client, session_id, leader, decision)).status_code == 200
+        for actor in (leader, alice):
+            response = await client.get(path, headers=_headers(actor))
+            assert response.status_code == 200, response.text
+            items = response.json()["items"]
+            assert len(items) == 2 and all(item["body_md"] for item in items)
+        assert (await client.get(path, headers=_headers(outsider))).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_rejected_body_cannot_be_approved_unchanged(app) -> None:
+    _app, (leader, alice, bob, _outsider), previous_id = await _converged_with_package(app)
+    bench = app.state.workbench
+    async with _client(app) as client:
+        rejected = await _resolve(client, previous_id, leader, "rejected")
+        assert rejected.status_code == 200, rejected.text
+        created = await _create_session(
+            client, rejected.json()["project_id"], leader, [alice, bob],
+            previous_session_id=previous_id,
+        )
+        session_id = created.json()["session_id"]
+        async with bench.db_session() as db:
+            store = DiscussionSessionStore(db)
+            record = await store.get_locked(session_id)
+            await store.save(record.model_copy(update={"status": "converged_pending_human"}))
+            await db.commit()
+        deployed = await client.post(
+            f"/api/discussion-sessions/{session_id}/submit-decision",
+            json={"body_md": "#  decision\n", "dissent_items": []},
+            headers=_headers(leader),
+        )
+        assert deployed.status_code == 201, deployed.text
+        result = await _resolve(client, session_id, leader, "approved")
+        assert result.status_code == 409, result.text
+        assert "正文与被打回版本相同" in result.json()["detail"]
+        current = await client.get(f"/api/discussion-sessions/{session_id}", headers=_headers(leader))
+        assert current.json()["status"] == "converged_pending_human"
+
+
+@pytest.mark.asyncio
 async def test_resolve_missing_session_is_404_before_forbidden(app) -> None:
     _bench, _p1, bots, _session_id = await _grouped_session(app)
     async with _client(app) as client:

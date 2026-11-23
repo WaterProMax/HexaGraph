@@ -42,9 +42,9 @@ async def lifespan(app: FastAPI):
 
                 provider.queue.extend(scripted_full_queue())
             elif settings.test3_scripted_fixture == "discussion-e2e":
-                from app.fixtures.discussion_e2e import scripted_discussion_queue
+                from app.fixtures.discussion_e2e import DiscussionDemoProvider
 
-                provider.queue.extend(scripted_discussion_queue())
+                provider = DiscussionDemoProvider()
     gateway = Gateway(models, provider, data_dir=settings.data_dir())
     app.state.workbench = Workbench(gateway, RoleRegistry(roles), settings.data_dir())
     app.state.settings = settings

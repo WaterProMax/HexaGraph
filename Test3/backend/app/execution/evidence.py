@@ -34,8 +34,10 @@ FILE_MODE = 0o600
 
 _SAFE_NAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
-_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
-_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+# Windows 没有 O_NOFOLLOW（Python 未定义）；此时符号链接防护由下方的 lstat/S_ISLNK 检查兜底。
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
+_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
 
 
 def create_evidence_dir() -> Path:

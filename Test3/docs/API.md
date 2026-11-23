@@ -336,6 +336,17 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 - `rejected` 自动为每个 task_code 建一条 open 缺陷；缺陷不会自动 resolved。缺陷把任务置为 `failed`（可经既有 `retry` 修复），不打开 force-pass。
 - 本路径与遗留整 run 验收 `POST /api/runs/{run_id}/accept` 完全独立；granted_v1 上的 `granted_acceptance_disabled`、`granted_force_pass_disabled` 保持不变。
 
+## 项目对话补充与 Leader 任务编排
+
+项目对话与任务编排使用以下 Leader 写接口。两者要求 `X-Bot-Id`。
+
+| 方法 | 路径 | 请求 | 成功 | 失败 |
+|---|---|---|---|---|
+| POST | `/api/discussion-sessions/{session_id}/supplement` | `{text}`，1–2000 字符 | 201，关联上一会话的新讨论 | 400 空白或密钥内容，403 非 Leader，409 已结束或成员变更 |
+| POST | `/api/discussion-sessions/{session_id}/plan` | 无请求体 | 200 `{run_id}`，进入 PLAN 确认 | 403 非项目 Leader，409 需求未批准，422 计划校验失败，502 模型失败 |
+
+补充信息写入新讨论的需求快照。需求批准后由 Leader 生成规格、设计和任务计划，已有运行可重复查询返回同一个 `run_id`。
+
 ## P6 前端使用的只读查询
 
 P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 新增的只读 GET 如下，除 `events` 可用 `?bot_id=` 外全部要求 `X-Bot-Id`：

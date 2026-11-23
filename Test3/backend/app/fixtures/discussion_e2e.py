@@ -1,21 +1,15 @@
-"""Deterministic ScriptedProvider queue for the discussion Playwright E2E case.
-
-The queue is consumed in driver order: two proposals (one per participant),
-then two cross reviews (each bot reviews the other bot only), then one Leader
-synthesis.  A project with two active bots therefore spends exactly five calls
-per discussion session; the E2E rejects the first spec and runs a second
-session, so the queue contains the block twice.
-
-Proposal/review payloads are intentionally interchangeable: the driver drafts
-the two proposals concurrently, so FIFO order between the two proposal items is
-an implementation detail.  The Leader item must stay last in each block because
-the driver only calls it after convergence.
-"""
+"""Deterministic self-study room responses for the isolated browser demo."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
+
+from app.llm.providers import ScriptedProvider
+
+from .discussion_demo_files import TASK_FILES
+
+EXPIRY_RULE = "座位数据超过 30 分钟未更新时标为「已过期」，不计入可用座位。"
 
 LEADER_PROPOSAL = """### 1. 目标用户与痛点
 期末周找不到座位的学生，跑楼找空位浪费时间。
@@ -97,19 +91,105 @@ def _review() -> dict[str, Any]:
     }
 
 
-def _leader_output() -> str:
+def _leader_output(*, revised: bool) -> str:
     verdict = {"ok": True, "reason": "六段齐全，验收可判定。", "dissent_items": []}
-    return LEADER_SPEC + "\n```json\n" + json.dumps(verdict, ensure_ascii=False) + "\n```\n"
-
-
-def scripted_discussion_queue() -> list[Any]:
-    """Two identical five-call blocks: first session and the post-rejection session."""
-    queue: list[Any] = []
-    for _ in range(2):
-        queue.extend(
-            [LEADER_PROPOSAL, MEMBER_PROPOSAL, _review(), _review(), _leader_output()]
+    spec = LEADER_SPEC
+    if revised:
+        spec = spec.replace(
+            "## 非功能需求",
+            f"给定最后一次上报超过 30 分钟，当学生查询楼层，则显示过期状态并排除该条余位。\n\n"
+            f"## 本次修订\n{EXPIRY_RULE}\n\n## 非功能需求",
         )
-    return queue
+    return spec + "\n```json\n" + json.dumps(verdict, ensure_ascii=False) + "\n```\n"
 
 
-__all__ = ["scripted_discussion_queue"]
+class DiscussionDemoProvider(ScriptedProvider):
+    def next_item(self, slot: str, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+        operation = kwargs.get("discussion_operation")
+        material = "\n".join(
+            message["content"] for message in messages
+            if message["role"] == "user" and isinstance(message.get("content"), str)
+        )
+        revised = "座位数据的过期规则" in material or EXPIRY_RULE in material
+        if operation == "proposal":
+            body = LEADER_PROPOSAL if slot == "flagship" else MEMBER_PROPOSAL
+            return body + ("\n" + EXPIRY_RULE if revised else "")
+        if operation == "review":
+            return _review()
+        if operation == "synthesis":
+            return _leader_output(revised=revised)
+        if operation in {"plan", "plan_rewrite"}:
+            result = _plan(revised=revised)
+            return result["plan"] if operation == "plan_rewrite" else result
+        if not operation and kwargs.get("role") in {"coder", "tester", "code_reviewer"}:
+            _, marker, payload = material.partition('<资料 name="task_card">\n')
+            if marker:
+                card = json.loads(payload.split("\n</资料>", 1)[0])
+                file = TASK_FILES.get(card.get("code"))
+                if file and file[0] in card.get("write_set", []):
+                    path, content = file
+                    if kwargs["role"] == "code_reviewer":
+                        return {"verdict": "pass", "issues": []}
+                    if messages[-1]["role"] == "tool":
+                        result = json.loads(messages[-1]["content"])
+                        return {"done": result.get("ok", False), "summary": f"演示交付物 {path}"}
+                    return {"tool_calls": [{"name": "write_file", "arguments": {"path": path, "content": content}}]}
+        return super().next_item(slot, messages, **kwargs)
+
+
+def _plan(*, revised: bool) -> dict[str, Any]:
+    inputs = [
+        ("F-01", "查看剩余座位", "列表显示座位数与更新时间"),
+        ("F-02", "上报剩余座位", "同一账号的上报间隔至少 10 分钟"),
+    ]
+    features = [
+        {
+            "code": code, "kind": "功能", "title": title, "scenario": "S1",
+            "priority": "P0", "impact": "支持学生查找空位",
+            "acceptance": [criterion], "sources": ["已批准的需求规格"],
+        }
+        for code, title, criterion in inputs
+    ]
+    if revised:
+        features[0]["acceptance"].append(EXPIRY_RULE)
+    tasks = [
+        {
+            "code": f"T{index}", "title": title, "kind": kind, "module": module,
+            "sources": ["F-01", "F-02"], "description": title,
+            "write_set": [TASK_FILES[f"T{index}"][0]], "outputs": [TASK_FILES[f"T{index}"][0]],
+            "acceptance": [{
+                "cmd": ["python", "-m", "pytest"],
+                "pass_criteria": "全部通过", "from_criterion": "座位查询及上报",
+            }],
+            "depends_on": dependencies, "points": 2,
+            "priority": "P0", "role": "tester" if kind == "test" else "coder",
+        }
+        for index, (title, kind, module, dependencies) in enumerate([
+            ("实现座位查询和上报", "impl", "M3", []),
+            ("验证查询、上报限频和过期状态" if revised else "验证查询与上报限频",
+             "test", "M3", ["T1"]),
+            ("接通查询和上报接口", "integration", "M2", ["T1"]),
+            ("展示楼层余位和上报表单", "impl", "M1", ["T3"]),
+        ], start=1)
+    ]
+    return {
+        "spec": {"scenarios": [{"code": "S1"}], "features": features},
+        "design": {
+            "modules": [
+                {"code": "M1", "name": "座位查询界面", "responsibility": "展示楼层余位与更新时间，收集座位上报",
+                 "sources": ["F-01", "F-02"], "depends_on": ["M2"]},
+                {"code": "M2", "name": "查询与上报 API", "responsibility": "校验请求并返回统一响应",
+                 "sources": ["F-01", "F-02"], "depends_on": ["M3"], "provides": ["C1"]},
+                {"code": "M3", "name": "座位数据服务", "responsibility": "记录座位数与上报时间，执行上报限频",
+                 "sources": ["F-01", "F-02"], "provides": ["C2"]},
+            ],
+            "interfaces": [
+                {"code": "C1", "provider": "M2", "consumers": ["M1"]},
+                {"code": "C2", "provider": "M3", "consumers": ["M2"]},
+            ],
+        },
+        "plan": {"tasks": tasks},
+    }
+
+
+__all__ = ["DiscussionDemoProvider"]

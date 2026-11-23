@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,15 @@ async def test_accept_pass_exports_release_pack(tmp_path: Path) -> None:
     for name in ("SPEC.json", "DESIGN.json", "PLAN.json", "acceptance.json", "trace.json"):
         assert (release / name).exists()
     assert (release / "code" / "tests" / "test_feature.py").exists()
+    snapshot = json.loads((bench.data_dir / "runs" / run.id / "snapshot.json").read_text(encoding="utf-8"))
+    assert snapshot["status"] == "done"
+    assert snapshot["artifacts"]["release_dir"] == str(release)
+    snapshot["status"] = "waiting"
+    snapshot["artifacts"].pop("release_dir")
+    (bench.data_dir / "runs" / run.id / "snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+    restored, _ = _bench(tmp_path)
+    assert restored.runs[run.id].status == "done"
+    assert restored.runs[run.id].artifacts["release_dir"] == str(release)
 
 
 @pytest.mark.asyncio

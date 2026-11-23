@@ -612,7 +612,7 @@ async def test_terminate_stops_the_driver_and_emits_one_message(app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_overlong_proposals_are_rewritten_then_truncated(app) -> None:
+async def test_overlong_proposals_are_rewritten_then_truncated(app, monkeypatch) -> None:
     bench = app.state.workbench
     provider = app.state.provider
     client, bots, _project_id, session_id = await _setup(
@@ -620,13 +620,18 @@ async def test_overlong_proposals_are_rewritten_then_truncated(app) -> None:
     )
     compressed = _proposal(LEADER_BODY + " 压缩版")
     too_long = _proposal(ALICE_BODY) + "x" * 6100
-    try:
-        provider.push(_proposal(LEADER_BODY) + "y" * 6100)
-        provider.push(compressed)
-        provider.push(too_long)
-        provider.push(too_long)
-        provider.push(_proposal(ALICE_BODY + " 正常版"))
+    replies = {
+        "Leader": iter([_proposal(LEADER_BODY) + "y" * 6100, compressed]),
+        "Bob": iter([too_long, too_long]),
+        "Alice": iter([_proposal(ALICE_BODY + " 正常版")]),
+    }
 
+    def reply_to_bot(_slot, messages, **_kwargs):
+        name = messages[0]["content"].split("，", 1)[0].removeprefix("你是 ")
+        return next(replies[name])
+
+    monkeypatch.setattr(provider, "next_item", reply_to_bot)
+    try:
         await driver.step(bench, session_id)
         await driver.step(bench, session_id)
     finally:

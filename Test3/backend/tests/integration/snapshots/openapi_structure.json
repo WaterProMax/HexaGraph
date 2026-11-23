@@ -97,7 +97,8 @@
     "GET /api/discussion-sessions/{session_id}/proposals": {
       "body": null,
       "params": [
-        "path:session_id*"
+        "path:session_id*",
+        "query:include_history"
       ],
       "responses": [
         "200",
@@ -482,6 +483,16 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/plan": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/discussion-sessions/{session_id}/proposals": {
       "body": null,
       "params": [
@@ -544,6 +555,16 @@
     },
     "POST /api/discussion-sessions/{session_id}/submit-decision": {
       "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "201",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/supplement": {
+      "body": "SupplementBody",
       "params": [
         "path:session_id*"
       ],
@@ -865,6 +886,14 @@
         "task_codes": "anyOf"
       },
       "required": []
+    },
+    "SupplementBody": {
+      "properties": {
+        "text": "string"
+      },
+      "required": [
+        "text"
+      ]
     },
     "ValidationError": {
       "properties": {

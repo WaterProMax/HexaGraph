@@ -98,6 +98,20 @@ class DiscussionSessionStore:
             raise SessionNotFound(session_id)
         return await self.get(session_id)
 
+    async def predecessors(self, record: DiscussionSession):
+        previous_id = record.previous_session_id
+        visited = {record.session_id}
+        while previous_id and previous_id not in visited:
+            visited.add(previous_id)
+            try:
+                previous = await self.get(previous_id)
+            except SessionNotFound:
+                return
+            if previous.project_id != record.project_id:
+                return
+            yield previous
+            previous_id = previous.previous_session_id
+
     async def list_all(self) -> list[DiscussionSession]:
         rows = list((await self.session.execute(select(DiscussionSessionRow))).scalars())
         records = [_to_session(row) for row in rows]

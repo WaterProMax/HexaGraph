@@ -284,14 +284,14 @@ async def create_proposal(session_id: str, request: Request) -> Any:
 
 
 @router.get("/discussion-sessions/{session_id}/proposals")
-async def get_proposals(session_id: str, request: Request) -> Any:
+async def get_proposals(session_id: str, request: Request, include_history: bool = False) -> Any:
     bench = request.app.state.workbench
     actor, error = _actor(request)
     if error is not None:
         return error
     async with bench.db_session() as session:
         try:
-            items = await list_proposals(session_id, actor, session=session)
+            items = await list_proposals(session_id, actor, session=session, include_history=include_history)
         except SessionNotFound:
             return _json_error(404, "session_not_found", f"session not found: {session_id}")
         except NotParticipant as exc:

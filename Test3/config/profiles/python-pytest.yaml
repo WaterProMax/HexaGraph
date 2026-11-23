@@ -40,5 +40,13 @@ env_allowlist:
   - PYTHONPATH
   - TMPDIR
   - TZ
+  # Windows 子进程必需的系统环境：缺 SYSTEMROOT 时 asyncio/_overlapped 初始化报 WinError 10106
+  - SYSTEMROOT
+  - WINDIR
+  - SYSTEMDRIVE
+  - TEMP
+  - TMP
+  - COMSPEC
+  - PATHEXT
 output_truncate: 8000
 prepare: []

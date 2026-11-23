@@ -120,8 +120,19 @@ def check_spec(doc: SpecDoc, issues: list[Issue], sheets: list[ReviewSheet] | No
     if not any(item.priority == "P0" for item in doc.features):
         errors.append("至少要有一个 P0 功能")
     for item in doc.features:
-        if not item.priority or not item.impact or not item.scenario or not item.acceptance or not item.sources:
-            errors.append(f"{item.code} 字段不齐全")
+        missing = [
+            name
+            for name, value in (
+                ("priority", item.priority),
+                ("impact", item.impact),
+                ("scenario", item.scenario),
+                ("acceptance", item.acceptance),
+                ("sources", item.sources),
+            )
+            if not value
+        ]
+        if missing:
+            errors.append(f"{item.code} 字段不齐全（缺: {'、'.join(missing)}）")
         if item.scenario and item.scenario not in scenario_ids:
             errors.append(f"{item.code} 对应场景不存在")
     adopted = [i for i in issues if i.status == "采纳"]

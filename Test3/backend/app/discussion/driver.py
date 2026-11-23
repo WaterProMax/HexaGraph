@@ -293,14 +293,22 @@ async def _call(
     bot: BotInstance,
     messages: list[dict[str, Any]],
     *,
+    operation: str,
     json_mode: bool = False,
+    track_discussion_usage: bool = True,
+    timeout: float = BOT_TIMEOUT_SECONDS,
 ) -> Any:
-    """One bot model call, retried once; raises ``BotFailed`` after that."""
+    """One bot model call, retried once; raises ``BotFailed`` after that.
+
+    Long single-shot generations (the Leader plan: SPEC+DESIGN+PLAN in one JSON)
+    pass a larger ``timeout``; chat-style operations keep the default.
+    """
     endpoint = bot_endpoint(bench.gateway, bot.bot_id, bot.provider_ref)
     last_error: BaseException | None = None
     for _attempt in range(2):
         kwargs: dict[str, Any] = {
             "role": "bot_chat",
+            "discussion_operation": operation,
             "model": bot.model,
             "provider_ref": bot.provider_ref,
             "temperature": 0.6,
@@ -311,17 +319,18 @@ async def _call(
         try:
             result = await asyncio.wait_for(
                 bench.gateway.complete(bot.slot, messages, **kwargs),
-                timeout=BOT_TIMEOUT_SECONDS,
+                timeout=timeout,
             )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - classified below
             last_error = exc
             continue
-        entry = _metric(bench, session_id)
-        entry["tokens"] = float(entry.get("tokens", 0)) + int(
-            getattr(result, "tokens_in", 0) or 0
-        ) + int(getattr(result, "tokens_out", 0) or 0)
+        if track_discussion_usage:
+            entry = _metric(bench, session_id)
+            entry["tokens"] = float(entry.get("tokens", 0)) + int(
+                getattr(result, "tokens_in", 0) or 0
+            ) + int(getattr(result, "tokens_out", 0) or 0)
         return result
     category = (
         getattr(last_error, "category", None)
@@ -469,17 +478,19 @@ async def _step_group(bench: Any, session_id: str) -> bool:
 
 async def _prior_blocks(bench: Any, record: DiscussionSession) -> list[str]:
     blocks: list[str] = []
-    previous: DiscussionSession | None = None
-    if record.previous_session_id:
-        try:
-            previous = await _get(bench, record.previous_session_id)
-        except SessionNotFound:
-            previous = None
-    if previous is not None and previous.decision_package is not None:
-        blocks.append(_material("上一版规格", previous.decision_package.body_md))
     comment = record.resolution_comment
-    if comment is None and previous is not None:
-        comment = previous.resolution_comment
+    previous_package = None
+    if record.previous_session_id:
+        async with bench.db_session() as session:
+            async for previous in DiscussionSessionStore(session).predecessors(record):
+                if previous_package is None:
+                    previous_package = previous.decision_package
+                if not comment and previous.status == "rejected":
+                    comment = previous.resolution_comment
+                if previous_package is not None and comment:
+                    break
+    if previous_package is not None:
+        blocks.append(_material("上一版规格", previous_package.body_md))
     if comment:
         blocks.append(_material("用户意见", comment))
     return blocks
@@ -589,7 +600,7 @@ async def _proposal_once(
     bot: BotInstance,
     messages: list[dict[str, Any]],
 ) -> tuple[str, bool]:
-    result = await _call(bench, session_id, bot, messages)
+    result = await _call(bench, session_id, bot, messages, operation="proposal")
     text = (result.text or "").strip()
     truncated = False
     if len(text) > MAX_PROPOSAL_CHARS:
@@ -604,7 +615,7 @@ async def _proposal_once(
                 ),
             },
         ]
-        result = await _call(bench, session_id, bot, retry_messages)
+        result = await _call(bench, session_id, bot, retry_messages, operation="proposal")
         text = (result.text or "").strip()
         if len(text) > MAX_PROPOSAL_CHARS:
             text = text[:MAX_PROPOSAL_CHARS]
@@ -821,7 +832,7 @@ async def _review_ballot(
 ) -> ReviewBallot | None:
     current = messages
     for _attempt in range(2):
-        result = await _call(bench, session_id, bot, current, json_mode=True)
+        result = await _call(bench, session_id, bot, current, operation="review", json_mode=True)
         payload = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
         ballot = _ballot_from(payload, bot.bot_id, proposal_id)
         if ballot is not None:
@@ -1005,24 +1016,21 @@ async def _converge_round(
             bench,
             session_id,
             "budget_exhausted",
-            f"讨论预算已耗尽：{reason}",
+            "讨论预算已耗尽。",
             round_no=round_no,
+            reason=reason,
         )
         return False
     if action == "submit_human" and threshold is not None and not conditions_met:
-        latest = state.hard_gate_pass_counts[-1] if state.hard_gate_pass_counts else 0
-        unmet = max(0, REQUIRED_HARD_GATE_COUNT - latest)
-        spread_text = (
-            "无法计算" if state.score_spread is None else f"{state.score_spread:g}"
-        )
+        # 聊天文案只留结论；分差、阈值与硬门槛细节保留在消息 payload 里供活动与排查使用。
         await _system(
             bench,
             session_id,
             "forced_submit",
-            f"已达第 {round_no} 轮上限，仍未达成一致（分差 {spread_text} / "
-            f"阈值 {threshold:g}，未通过硬门槛 {unmet} 项），交由 Leader 综合。",
+            f"已达第 {round_no} 轮上限，仍未达成一致，交由 Leader 综合。",
             round_no=round_no,
             action=action,
+            reason=reason,
         )
         return True
     if action in {"submit_human", "no_improvement"}:
@@ -1030,9 +1038,10 @@ async def _converge_round(
             bench,
             session_id,
             "converged",
-            f"第 {round_no} 轮达到收敛条件，交由 Leader 综合。{reason}",
+            f"第 {round_no} 轮达到收敛条件，交由 Leader 综合。",
             round_no=round_no,
             action=action,
+            reason=reason,
         )
         return True
     if action == "revise":
@@ -1070,9 +1079,10 @@ async def _start_revision(
         bench,
         session_id,
         "round_started",
-        f"第 {started.current_round} 轮讨论开始（{reason}）。",
+        f"第 {started.current_round} 轮讨论开始。",
         round_no=started.current_round,
         round=started.current_round,
+        reason=reason,
     )
     return True
 
@@ -1221,7 +1231,8 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
                 [
                     *blocks,
                     "请综合资料写出完整需求规格 Markdown，并在最后用一个 json 围栏块"
-                    "输出自查结果。",
+                    "输出自查结果。若有用户驳回意见，请把每条修改落实到相关章节和验收标准，"
+                    "并指出对应的修改。保持原规格正文不变的版本无法获批。",
                 ]
             ),
         },
@@ -1230,7 +1241,7 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
     verdict: dict[str, Any] | None = None
     try:
         for _attempt in range(2):
-            result = await _call(bench, session_id, bot, messages)
+            result = await _call(bench, session_id, bot, messages, operation="synthesis")
             spec, verdict = _parse_leader_output(result.text or "")
             if verdict is not None:
                 break
@@ -1390,9 +1401,10 @@ async def _leader_request_revision(
         bench,
         session_id,
         "round_started",
-        f"第 {started.current_round} 轮讨论开始（Leader 要求再改一轮）。",
+        f"第 {started.current_round} 轮讨论开始，Leader 要求再改一轮。",
         round_no=started.current_round,
         round=started.current_round,
+        reason=reason,
     )
     return True
 

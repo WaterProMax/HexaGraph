@@ -208,27 +208,30 @@ async def open_cross_review(session_id: str, *, session: AsyncSession) -> Discus
 
 
 async def list_proposals(
-    session_id: str, viewer_bot_id: str, *, session: AsyncSession
+    session_id: str, viewer_bot_id: str, *, session: AsyncSession, include_history: bool = False
 ) -> list[dict]:
     store = DiscussionSessionStore(session)
     record = await store.get(session_id)
-    if viewer_bot_id not in record.participant_bot_ids:
+    if viewer_bot_id != record.leader_bot_id and viewer_bot_id not in record.participant_bot_ids:
         raise NotParticipant(viewer_bot_id)
     if record.status not in {
         "round1_independent",
         "cross_review",
         "round_n_revise",
         "converged_pending_human",
+        "approved",
+        "rejected",
+        "terminated",
+        "budget_exhausted",
     }:
         raise InvalidStatus(record.status)
     stmt = (
         select(DiscussionProposalRow)
-        .where(
-            DiscussionProposalRow.session_id == session_id,
-            DiscussionProposalRow.round == record.current_round,
-        )
-        .order_by(DiscussionProposalRow.author_bot_id)
+        .where(DiscussionProposalRow.session_id == session_id)
+        .order_by(DiscussionProposalRow.round, DiscussionProposalRow.author_bot_id)
     )
+    if not include_history:
+        stmt = stmt.where(DiscussionProposalRow.round == record.current_round)
     rows = list((await session.execute(stmt)).scalars())
     items: list[dict] = []
     for row in rows:

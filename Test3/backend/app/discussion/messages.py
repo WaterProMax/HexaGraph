@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.storage.models import DiscussionMessageRow
 
-MESSAGE_KINDS = ("system", "proposal", "review", "leader")
+MESSAGE_KINDS = ("system", "proposal", "review", "leader", "user")
 
 
 def message_item(row: DiscussionMessageRow) -> dict[str, Any]:
