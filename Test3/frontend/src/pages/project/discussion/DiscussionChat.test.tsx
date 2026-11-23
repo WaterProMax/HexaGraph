@@ -7,7 +7,7 @@ import type {
   DiscussionSessionStatus,
   DiscussionTimelineItem,
 } from "../../../api/types";
-import { DiscussionChat, timelineItemKey } from "./DiscussionChat";
+import { DiscussionChat } from "./DiscussionChat";
 import { isProposalSealed } from "./MessageBubble";
 
 const BOTS: BotInstance[] = [
@@ -88,7 +88,7 @@ function session(status: DiscussionSessionStatus, currentRound = 1): DiscussionS
 const BODY = "## 方案正文\n先用邮箱登录，再加验证码。";
 
 function loadSpy(value: string = BODY) {
-  return vi.fn(async (_sessionId: string, _proposalId: string): Promise<string> => value);
+  return vi.fn(async (_proposalId: string): Promise<string> => value);
 }
 
 afterEach(cleanup);
@@ -140,7 +140,7 @@ describe("DiscussionChat", () => {
     fireEvent.click(screen.getByText("展开方案"));
     expect(await screen.findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
-    expect(loadProposalBody).toHaveBeenCalledWith("s1", "prop-1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-1", "s1");
 
     fireEvent.click(screen.getByText("收起方案"));
     expect(screen.queryByText(/先用邮箱登录/)).toBeNull();
@@ -151,12 +151,10 @@ describe("DiscussionChat", () => {
 
   it("offers a retry when the body request fails", async () => {
     let fail = true;
-    const loadProposalBody = vi.fn(
-      async (_sessionId: string, _proposalId: string): Promise<string> => {
-        if (fail) throw new Error("boom");
-        return "恢复后的正文";
-      },
-    );
+    const loadProposalBody = vi.fn(async (_proposalId: string): Promise<string> => {
+      if (fail) throw new Error("boom");
+      return "恢复后的正文";
+    });
     render(
       <DiscussionChat
         timeline={[proposal()]}
@@ -256,64 +254,6 @@ describe("DiscussionChat", () => {
     const leader = screen.getByTestId("disc-bubble-leader");
     expect(leader.textContent).toContain("要求再改");
     expect(leader.textContent).toContain("请补充分支流程");
-    expect(screen.queryByTestId("disc-bubble-user")).toBeNull();
-  });
-
-  it("renders the original idea as the first user bubble", () => {
-    const timeline: DiscussionTimelineItem[] = [
-      { type: "divider", key: "divider-s1", text: "第 1 次讨论" },
-      { type: "user", key: "user-s1", text: "做一个座位预约工具" },
-      proposal(1),
-    ];
-    render(
-      <DiscussionChat
-        timeline={timeline}
-        bots={BOTS}
-        stage="independent"
-        session={session("round1_independent")}
-        loadProposalBody={loadSpy()}
-      />,
-    );
-
-    const chat = screen.getByTestId("disc-chat");
-    const bubbles = screen.getAllByTestId("disc-bubble-user");
-    expect(bubbles).toHaveLength(1);
-    expect(bubbles[0].className).toContain("disc-bubble-user");
-    expect(bubbles[0].textContent).toContain("做一个座位预约工具");
-    expect(chat.firstElementChild?.getAttribute("data-item-type")).toBe("divider");
-    expect(chat.children[1].getAttribute("data-item-type")).toBe("user");
-  });
-
-  it("renders a backend user message as the last user bubble", () => {
-    const timeline: DiscussionTimelineItem[] = [
-      { type: "divider", key: "divider-s1", text: "第 1 次讨论" },
-      { type: "user", key: "user-s1", text: "做一个座位预约工具" },
-      proposal(1),
-      { type: "divider", key: "divider-s2", text: "第 2 次讨论 · 你的意见：补上边界用例" },
-      {
-        type: "message",
-        message: message(1, "user", {
-          session_id: "s2",
-          bot_id: null,
-          payload: { text: "补充：需要支持离线缓存", event: "supplement" },
-        }),
-      },
-    ];
-    render(
-      <DiscussionChat
-        timeline={timeline}
-        bots={BOTS}
-        stage="review"
-        session={session("cross_review")}
-        loadProposalBody={loadSpy()}
-      />,
-    );
-
-    const bubbles = screen.getAllByTestId("disc-bubble-user");
-    expect(bubbles).toHaveLength(2);
-    expect(bubbles[0].textContent).toContain("做一个座位预约工具");
-    expect(bubbles[bubbles.length - 1].textContent).toContain("补充：需要支持离线缓存");
-    expect(screen.queryByTestId("disc-bubble-leader")).toBeNull();
   });
 
   it("falls back to a placeholder avatar for unknown bots", () => {
@@ -356,14 +296,6 @@ describe("DiscussionChat", () => {
     const divider = screen.getByTestId("disc-divider");
     expect(divider.textContent).toContain("第 2 次讨论 · 你的意见：补上边界用例");
     expect(divider.getAttribute("role")).toBe("separator");
-  });
-});
-
-describe("timelineItemKey", () => {
-  it("namespaces dividers, user items and messages", () => {
-    expect(timelineItemKey({ type: "divider", key: "s1", text: "第 1 次讨论" })).toBe("divider:s1");
-    expect(timelineItemKey({ type: "user", key: "user-s1", text: "原始想法" })).toBe("user:user-s1");
-    expect(timelineItemKey(proposal(3))).toBe("message:s1:3");
   });
 });
 
@@ -415,7 +347,7 @@ describe("DiscussionChat proposal sealing by round", () => {
     fireEvent.click(within(bubbles[0]).getByText("展开方案"));
     expect(await within(bubbles[0]).findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
-    expect(loadProposalBody).toHaveBeenCalledWith("s1", "prop-r1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
   });
 
   it("reveals both rounds once cross review starts", async () => {
@@ -438,8 +370,8 @@ describe("DiscussionChat proposal sealing by round", () => {
     fireEvent.click(within(bubbles[1]).getByText("展开方案"));
     expect(await screen.findAllByText(/先用邮箱登录/)).toHaveLength(2);
     expect(loadProposalBody).toHaveBeenCalledTimes(2);
-    expect(loadProposalBody).toHaveBeenCalledWith("s1", "prop-r1");
-    expect(loadProposalBody).toHaveBeenCalledWith("s1", "prop-r2");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
+    expect(loadProposalBody).toHaveBeenCalledWith("prop-r2", "s1");
   });
 });
 

@@ -11,7 +11,7 @@ export type MessageBubbleProps = {
   item: DiscussionTimelineItem;
   bots: BotInstance[];
   session: DiscussionSession | null;
-  loadProposalBody: (sessionId: string, proposalId: string) => Promise<string>;
+  loadProposalBody: (proposalId: string) => Promise<string>;
 };
 
 type AvatarBot = Pick<BotInstance, "bot_id" | "display_name" | "role_template" | "status">;
@@ -116,7 +116,7 @@ function ProposalBubble({
   message: DiscussionMessage;
   bot: AvatarBot;
   session: DiscussionSession | null;
-  loadProposalBody: (sessionId: string, proposalId: string) => Promise<string>;
+  loadProposalBody: (proposalId: string) => Promise<string>;
 }) {
   const proposalId = readString(message.payload, "proposal_id");
   const payloadRound = Number(message.payload?.round);
@@ -137,7 +137,7 @@ function ProposalBubble({
     setLoading(true);
     setFailed(false);
     try {
-      const text = await loadProposalBody(message.session_id, proposalId);
+      const text = await loadProposalBody(proposalId);
       setBody(typeof text === "string" ? text : "");
     } catch {
       setFailed(true);
@@ -232,7 +232,7 @@ function ReviewBubble({ message, bots }: { message: DiscussionMessage; bots: Bot
         <header className="disc-bubble-head">
           <span className="disc-bubble-author">{reviewer.display_name}</span>
           <span className="disc-bubble-meta">
-            评分 · 方案 <span className="mono">{proposalId || "—"}</span>
+            评分 · 方案 <span className="mono disc-review-ref" title={proposalId || undefined}>{proposalId || "—"}</span>
           </span>
           <span className="disc-score-total">
             总分 <strong>{total}</strong>
@@ -288,32 +288,29 @@ function LeaderBubble({ message, bot }: { message: DiscussionMessage; bot: Avata
   );
 }
 
-function UserBubble({ text }: { text: string }) {
-  return (
-    <article className="disc-bubble disc-bubble-user" data-testid="disc-bubble-user">
-      <div className="disc-bubble-body">
-        <p className="disc-bubble-text">{text}</p>
-      </div>
-    </article>
-  );
-}
-
 export function MessageBubble({ item, bots, session, loadProposalBody }: MessageBubbleProps) {
   if (item.type === "divider") {
     return <Divider text={item.text} />;
   }
-  if (item.type === "user") {
-    return <UserBubble text={item.text} />;
-  }
 
   const { message } = item;
+  if (message.kind === "user") {
+    return (
+      <article className="disc-bubble disc-bubble-user" data-testid="disc-bubble-user">
+        <div className="disc-bubble-body">
+          <header className="disc-bubble-head">
+            <span className="disc-bubble-author">你</span>
+            <span className="disc-tag is-accent">{message.payload.event === "supplement" ? "补充信息" : "项目想法"}</span>
+          </header>
+          <p className="disc-bubble-text">{readString(message.payload, "text")}</p>
+        </div>
+      </article>
+    );
+  }
   const bot = resolveBubbleBot(bots, message.bot_id);
 
   if (message.kind === "system") {
     return <SystemBubble message={message} />;
-  }
-  if (message.kind === "user") {
-    return <UserBubble text={readString(message.payload, "text")} />;
   }
   if (message.kind === "proposal") {
     return (

@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { CommentOutlined, SendOutlined } from "@ant-design/icons";
+import { Link } from "react-router-dom";
 import { api } from "../../../api/client";
 import type { BotInstance } from "../../../api/types";
 import type { TeamMember } from "../TeamStrip";
 import { ApprovalBanner } from "./ApprovalBanner";
 import { DiscussionChat } from "./DiscussionChat";
-import { IdeaComposer } from "./IdeaComposer";
-import { ScorePanel } from "./ScorePanel";
+import { IdeaComposer, MAX_IDEA_LENGTH } from "./IdeaComposer";
+import { DiscussionControls, ScorePanel } from "./ScorePanel";
 import { SpecApprovalDialog } from "./SpecApprovalDialog";
 import { SpecViewer } from "./SpecViewer";
 import { StageBar } from "./StageBar";
-import { SupplementComposer } from "./SupplementComposer";
 import { deriveStage, type DiscussionStage } from "./deriveStage";
 import { useDiscussionSession } from "./useDiscussionSession";
 
@@ -20,24 +21,18 @@ export type DiscussionViewProps = {
   members: TeamMember[];
   bots: BotInstance[];
   onInvite: () => void;
+  onPlanReady?: () => void;
 };
 
-/** Stages that show the two-column timeline + scoring layout. */
+/** Stages with a discussion control bar and score panel. */
 const CHAT_STAGES: DiscussionStage[] = [
   "independent",
   "revise",
   "review",
   "leader",
   "approval",
-  "approved",
   "terminated",
 ];
-
-/** Plan-run creation state for the approved spec summary, keyed by session id. */
-type PlanState =
-  | { sessionId: string; status: "planning" }
-  | { sessionId: string; status: "ready"; runId: string }
-  | { sessionId: string; status: "error" };
 
 export const SPEC_PREVIEW_CHARS = 240;
 export const UNSEALED_BODY_TEXT = "正文尚未解封";
@@ -45,6 +40,64 @@ export const UNSEALED_BODY_TEXT = "正文尚未解封";
 function actionErrorText(err: unknown): string {
   const message = (err as { message?: unknown } | null)?.message;
   return typeof message === "string" && message.trim() ? message : "操作失败，请稍后重试";
+}
+
+type PlanStatus = "running" | "failed" | "ready";
+
+function DiscussionPlan({ sessionId, actorBotId, onStatusChange }: {
+  sessionId: string;
+  actorBotId: string;
+  onStatusChange: (status: PlanStatus) => void;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{ runId: string; error: string } | null>(null);
+  const statusRef = useRef(onStatusChange);
+  statusRef.current = onStatusChange;
+
+  useEffect(() => {
+    let active = true;
+    setResult(null);
+    if (!actorBotId) return;
+    statusRef.current("running");
+    const generate = async () => {
+      try {
+        const plan = await api.planDiscussion(sessionId, actorBotId);
+        if (!plan?.run_id) throw new Error("后端未返回任务计划，请重试。");
+        if (active) {
+          setResult({ runId: plan.run_id, error: "" });
+          statusRef.current("ready");
+        }
+      } catch (err) {
+        if (active) {
+          setResult({ runId: "", error: actionErrorText(err) });
+          statusRef.current("failed");
+        }
+      }
+    };
+    void generate();
+    return () => { active = false; };
+  }, [sessionId, actorBotId, attempt]);
+
+  if (!actorBotId) return <p>请设置项目 Leader。</p>;
+  if (!result) return <p className="disc-spec-waiting" role="status">Leader 正在拆解任务和编排依赖…</p>;
+  if (result.error) return (
+    <div className="disc-plan-result">
+      <p role="alert" className="disc-view-error">{result.error}</p>
+      <button type="button" className="disc-button-secondary" onClick={() => setAttempt((previous) => previous + 1)}>
+        重新生成任务计划
+      </button>
+    </div>
+  );
+  return (
+    <>
+      <Link className="disc-btn disc-plan-link" to={`/workstation/${result.runId}`}>
+        查看任务编排
+      </Link>
+      <Link className="disc-btn" to={`/workstation/${result.runId}?view=architecture`}>
+        查看架构图
+      </Link>
+    </>
+  );
 }
 
 /** Plain-text preview of the markdown spec, capped at `SPEC_PREVIEW_CHARS`. */
@@ -72,6 +125,7 @@ export function DiscussionView({
   members,
   bots,
   onInvite,
+  onPlanReady,
 }: DiscussionViewProps) {
   const { loading, error, session, sessions, messages, timeline, reviews, connection, refresh } =
     useDiscussionSession(projectId, actorBotId);
@@ -81,6 +135,9 @@ export function DiscussionView({
   const [specOpen, setSpecOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [supplement, setSupplement] = useState("");
+  const [planState, setPlanState] = useState<{ sessionId: string; status: PlanStatus }>();
+  const headingId = useId();
   const actionBusyRef = useRef(false);
 
   // Auto-open the approval dialog once per approval stage; a user close must not reopen it.
@@ -100,47 +157,20 @@ export function DiscussionView({
     if (stage !== "approved") setSpecOpen(false);
   }, [stage]);
 
-  // Approved spec -> plan run. Fired once per session id by the leader only; the ref is the
-  // guard because StrictMode re-runs effects (state would still be the initial value).
-  const planStartedRef = useRef<string | null>(null);
-  const [plan, setPlan] = useState<PlanState | null>(null);
-  const approvedSession = stage === "approved" ? session : null;
-  const approvedSessionId = approvedSession?.session_id ?? "";
-  const isApprovingLeader =
-    !!approvedSessionId && actorBotId === (approvedSession?.leader_bot_id ?? "");
-  useEffect(() => {
-    if (!approvedSessionId || !isApprovingLeader) return;
-    if (planStartedRef.current === approvedSessionId) return;
-    planStartedRef.current = approvedSessionId;
-    setPlan({ sessionId: approvedSessionId, status: "planning" });
-    // Never abort on cleanup: an aborted StrictMode request would leave the plan missing.
-    void api
-      .createDiscussionPlan(approvedSessionId, actorBotId)
-      .then((result) => setPlan({ sessionId: approvedSessionId, status: "ready", runId: result.run_id }))
-      .catch((err) => {
-        setPlan({ sessionId: approvedSessionId, status: "error" });
-        setActionError(actionErrorText(err));
-      });
-  }, [approvedSessionId, isApprovingLeader, actorBotId]);
-  // A plan result only applies to the session it was created for.
-  const planForSession = plan && plan.sessionId === approvedSessionId ? plan : null;
-  const planRunId = planForSession?.status === "ready" ? planForSession.runId : null;
-  const planPlanning = planForSession?.status === "planning";
-
   const proposalCache = useRef(new Map<string, Promise<string>>());
-  // Scoped by the proposal's own session: the timeline keeps proposals from earlier linked
-  // sessions while the current session moves on, so the newest session cannot answer for them.
+  const sessionId = session?.session_id ?? "";
   const loadProposalBody = useCallback(
-    (targetSessionId: string, proposalId: string): Promise<string> => {
-      if (!targetSessionId) return Promise.resolve(UNSEALED_BODY_TEXT);
-      const key = `${targetSessionId}:${proposalId}`;
+    (proposalId: string, sourceId = sessionId): Promise<string> => {
+      if (!sourceId) return Promise.resolve(UNSEALED_BODY_TEXT);
+      const key = `${actorBotId}:${sourceId}:${proposalId}`;
       const cached = proposalCache.current.get(key);
       if (cached) return cached;
       const pending = api
-        .discussionProposals(targetSessionId, actorBotId)
+        .discussionProposals(sourceId, actorBotId)
         .then((result) => {
           const items = Array.isArray(result?.items) ? result.items : [];
           const found = items.find((item) => item?.proposal_id === proposalId);
+          if (!found?.body_md) proposalCache.current.delete(key);
           return found?.body_md ?? UNSEALED_BODY_TEXT;
         })
         .catch((err) => {
@@ -150,7 +180,7 @@ export function DiscussionView({
       proposalCache.current.set(key, pending);
       return pending;
     },
-    [actorBotId],
+    [sessionId, actorBotId],
   );
 
   const withSession = async (action: (sessionId: string) => Promise<unknown>) => {
@@ -161,6 +191,7 @@ export function DiscussionView({
     try {
       await action(session.session_id);
       refresh();
+      return true;
     } catch (err) {
       setActionError(actionErrorText(err));
     } finally {
@@ -174,16 +205,14 @@ export function DiscussionView({
     withSession((id) => api.resumeDiscussion(id, { skip_bot_ids: skipBotIds }, actorBotId));
   const terminate = () => withSession((id) => api.terminateDiscussion(id, actorBotId));
 
-  const participantBotIds = members.map((member) => member.bot_id);
-  const hasLeader = members.some((member) => member.is_leader);
+  const activeMembers = members.filter((member) => member.status === "active");
+  const participantBotIds = activeMembers.map((member) => member.bot_id);
+  const hasLeader = activeMembers.some((member) => member.is_leader);
   const specPackage = session?.decision_package ?? null;
-  // A pending approval can be supplemented: the old session ends and a linked one starts.
-  const showSupplement = stage === "approval" && !!session;
+  const canSupplement = Boolean(session && CHAT_STAGES.includes(stage) && stage !== "terminated");
 
   return (
-    <div className="disc-view" data-testid="disc-view" data-stage={stage}>
-      <StageBar stage={stage} round={session?.current_round} />
-
+    <section className="disc-view" data-testid="disc-view" data-stage={stage} aria-labelledby={headingId}>
       {loading && !session && (
         <p className="disc-view-status" role="status" data-testid="disc-loading">
           正在加载讨论…
@@ -209,98 +238,131 @@ export function DiscussionView({
         <ApprovalBanner round={session?.current_round} onOpen={() => setApprovalOpen(true)} />
       )}
 
-      {stage === "idea" && !loading && !error && (
-        <IdeaComposer
-          projectId={projectId}
-          actorBotId={actorBotId}
-          participantBotIds={participantBotIds}
-          memberCount={members.length}
-          hasLeader={hasLeader}
-          onInvite={onInvite}
-          onStarted={() => refresh()}
-        />
-      )}
-
-      {session && CHAT_STAGES.includes(stage) && (
-        <div className="disc-layout" data-testid="disc-layout">
-          <div className={"disc-conversation" + (showSupplement ? " is-with-supplement" : "")}>
-            <DiscussionChat
-              timeline={timeline}
-              bots={bots}
-              stage={stage}
-              session={session}
-              loadProposalBody={loadProposalBody}
-            />
-            {showSupplement && (
-              <SupplementComposer
-                sessionId={session.session_id}
-                actorBotId={actorBotId}
-                onSent={() => refresh()}
+      <div className="disc-layout" data-testid="disc-layout">
+        <section className="disc-conversation glass-panel" aria-labelledby={headingId}>
+          <header className="disc-conversation-head">
+            <h2 id={headingId}><CommentOutlined aria-hidden /> 项目讨论</h2>
+            <span className="disc-tag is-muted">
+              {stage === "terminated" ? "已结束" : session?.paused ? "已暂停" : stage === "approval" ? "等待确认" :
+                stage === "approved" ? "规格已确认" : stage === "idea" ? "待开始" : "讨论中"}
+            </span>
+            {session && CHAT_STAGES.includes(stage) && (
+              <DiscussionControls
+                session={session}
+                busy={actionBusy || stage === "terminated"}
+                onPause={pause}
+                onResume={resume}
+                onTerminate={terminate}
               />
             )}
-          </div>
-          <aside className="disc-side" aria-label="评分与操作">
-            {stage === "terminated" && (
-              <p className="disc-readonly-note" role="status">
-                讨论已终止，消息与评分仅保留为记录。
-              </p>
-            )}
-            <ScorePanel
-              session={session}
-              reviews={reviews}
-              messages={messages}
-              bots={bots}
-              busy={actionBusy || stage === "terminated"}
-              onPause={pause}
-              onResume={resume}
-              onTerminate={terminate}
+          </header>
+          <DiscussionChat
+            timeline={timeline}
+            bots={bots}
+            stage={stage}
+            session={session}
+            sessions={sessions}
+            loadProposalBody={loadProposalBody}
+            emptyText={stage === "idea" ? "你想让团队做什么？" : undefined}
+          />
+          {stage === "idea" && !loading && !error && (
+            <IdeaComposer
+              key={sessionId || projectId}
+              projectId={projectId}
+              actorBotId={actorBotId}
+              participantBotIds={participantBotIds}
+              memberCount={activeMembers.length}
+              hasLeader={hasLeader}
+              draft={session?.status === "draft" ? session : undefined}
+              onInvite={onInvite}
+              onStarted={refresh}
             />
-          </aside>
-        </div>
-      )}
-
-      {stage === "approved" && (
-        <section className="disc-spec-summary glass-panel" data-testid="disc-spec-summary">
-          <div className="section-title">
-            <span>需求规格已通过</span>
-            {specPackage && (
-              <span className="hint mono" title={specPackage.sha256}>
-                摘要 {specPackage.sha256.slice(0, 8)}
-              </span>
-            )}
-          </div>
-          <p className="disc-spec-summary-text">
-            {specPackage ? specPreview(specPackage.body_md) : "需求规格正文暂不可用。"}
-          </p>
-          <div className="disc-spec-summary-actions">
-            {planRunId ? (
-              <>
-                <a className="disc-button-primary" href={`/workstation/${planRunId}`}>
-                  查看任务编排
-                </a>
-                <a className="disc-button-secondary" href={`/workstation/${planRunId}?view=architecture`}>
-                  查看架构图
-                </a>
-              </>
-            ) : planPlanning ? (
-              <span className="disc-spec-waiting" role="status">
-                正在拆解任务…
-              </span>
-            ) : (
-              <span className="disc-spec-waiting" role="status">
-                等待任务拆解
-              </span>
-            )}
-            <button
-              type="button"
-              className="disc-button-secondary"
-              onClick={() => setSpecOpen(true)}
-            >
-              查看需求规格
-            </button>
-          </div>
+          )}
+          {canSupplement && (
+            <form className="disc-composer disc-supplement" onSubmit={async (event) => {
+              event.preventDefault();
+              const value = supplement.trim();
+              if (value && await withSession((id) => api.supplementDiscussion(id, value, actorBotId))) {
+                setSupplement("");
+              }
+            }}>
+              <label className="disc-composer-field">
+                <span className="disc-composer-label">补充信息</span>
+                <textarea
+                  className="disc-composer-input"
+                  rows={2}
+                  maxLength={MAX_IDEA_LENGTH}
+                  value={supplement}
+                  onChange={(event) => setSupplement(event.target.value)}
+                  placeholder="补充范围、约束或验收条件"
+                  disabled={actionBusy}
+                />
+              </label>
+              <div className="disc-composer-actions">
+                <span className="disc-composer-hint">提交后会中断当前讨论，Agent 将按补充后的需求重新讨论。</span>
+                <button type="submit" className="disc-btn disc-plan-link" disabled={actionBusy || !supplement.trim()}>
+                  <SendOutlined aria-hidden /> 发送补充
+                </button>
+              </div>
+            </form>
+          )}
         </section>
-      )}
+        <aside className="disc-side" aria-label="讨论进度和产物">
+          <StageBar
+            stage={stage}
+            round={session?.current_round}
+            planReady={planState?.sessionId === sessionId && planState.status === "ready"}
+            planFailed={planState?.sessionId === sessionId && planState.status === "failed"}
+          />
+          {session && CHAT_STAGES.includes(stage) && (
+            <>
+              {stage === "terminated" && (
+                <p className="disc-readonly-note" role="status">讨论已终止，消息和评分仍可查看。</p>
+              )}
+              <ScorePanel
+                session={session}
+                reviews={reviews}
+                messages={messages}
+                bots={bots}
+                busy={actionBusy || stage === "terminated"}
+                showControls={false}
+                onPause={pause}
+                onResume={resume}
+                onTerminate={terminate}
+              />
+            </>
+          )}
+          {stage === "approved" && (
+            <section className="disc-spec-summary glass-panel" data-testid="disc-spec-summary">
+              <div className="section-title">
+                <span>需求规格已通过</span>
+                {specPackage && (
+                  <span className="hint mono" title={specPackage.sha256}>
+                    摘要 {specPackage.sha256.slice(0, 8)}
+                  </span>
+                )}
+              </div>
+              <p className="disc-spec-summary-text">
+                {specPackage ? specPreview(specPackage.body_md) : "需求规格正文暂不可用。"}
+              </p>
+              <div className="disc-spec-summary-actions">
+                <DiscussionPlan
+                  key={sessionId}
+                  sessionId={sessionId}
+                  actorBotId={actorBotId}
+                  onStatusChange={(status) => {
+                    setPlanState({ sessionId, status });
+                    if (status === "ready") onPlanReady?.();
+                  }}
+                />
+                <button type="button" className="disc-button-secondary" onClick={() => setSpecOpen(true)}>
+                  查看需求规格
+                </button>
+              </div>
+            </section>
+          )}
+        </aside>
+      </div>
 
       {stage === "approved" && (
         <SpecViewer open={specOpen} onClose={() => setSpecOpen(false)} sessions={sessions} />
@@ -312,8 +374,8 @@ export function DiscussionView({
           projectId={projectId}
           actorBotId={actorBotId}
           session={session}
-          reviews={reviews}
           sessions={sessions}
+          reviews={reviews}
           onClose={() => setApprovalOpen(false)}
           onApproved={() => {
             setApprovalOpen(false);
@@ -325,7 +387,7 @@ export function DiscussionView({
           }}
         />
       )}
-    </div>
+    </section>
   );
 }
 

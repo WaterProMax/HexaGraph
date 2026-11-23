@@ -23,6 +23,6 @@ export function taskWaitReason(runtime: any, item: { dependsOn: string[] }, task
     if (runtime.state === "blocked") return runtime.last_error || "上游未完成，已阻塞";
     return "依赖已满足，等待调度";
   }
-  if (runtime.state === "failed") return runtime.last_error || "任务失败，等待重试或人工处理";
+  if (runtime.state === "failed") return runtime.last_error || runtime.prev_output || "任务失败，等待重试或人工处理";
   return "";
 }

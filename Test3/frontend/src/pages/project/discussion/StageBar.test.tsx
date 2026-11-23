@@ -93,7 +93,7 @@ describe("StageBar", () => {
     expect(items.filter((item) => item.textContent?.includes("✓"))).toHaveLength(5);
     expect(items[5].getAttribute("aria-current")).toBe("step");
     expect(items[5].textContent).toContain("任务拆解");
-    expect(within(items[5]).getByText("等待任务拆解")).toBeTruthy();
+    expect(within(items[5]).getByText("生成任务与依赖")).toBeTruthy();
   });
 
   it("keeps the steps and marks the discussion terminated", () => {

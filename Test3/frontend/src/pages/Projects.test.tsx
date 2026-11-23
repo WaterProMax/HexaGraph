@@ -57,24 +57,20 @@ describe("Projects create dialog", () => {
     expect(screen.queryByText("打开工作台")).toBeNull();
   });
 
-  it("keeps the create button disabled until name and idea are filled", () => {
+  it("enables creation when the project name is filled", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => json([])),
     );
     renderAt("/projects/new");
     const button = screen.getByRole("button", {
-      name: "创建并开始",
+      name: "创建项目",
     }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     fireEvent.change(
       screen.getByPlaceholderText("例如：自习室空位查询小程序"),
       { target: { value: "座位查询" } },
     );
-    expect(button.disabled).toBe(true);
-    fireEvent.change(screen.getByPlaceholderText("一两句话的产品想法"), {
-      target: { value: "查空位" },
-    });
     expect(button.disabled).toBe(false);
   });
 
@@ -87,8 +83,6 @@ describe("Projects create dialog", () => {
         calls.push({ url, method: init?.method || "GET" });
         if (url === "/api/projects" && init?.method === "POST")
           return json({ id: "proj-9", name: "座位查询" }, 201);
-        if (url === "/api/projects/proj-9/runs")
-          return json({ run: { id: "run-9" } }, 201);
         return json([]);
       }),
     );
@@ -97,13 +91,10 @@ describe("Projects create dialog", () => {
       screen.getByPlaceholderText("例如：自习室空位查询小程序"),
       { target: { value: "座位查询" } },
     );
-    fireEvent.change(screen.getByPlaceholderText("一两句话的产品想法"), {
-      target: { value: "查空位" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "创建并开始" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建项目" }));
     expect(await screen.findByTestId("project-page")).toBeTruthy();
     await waitFor(() =>
-      expect(calls.map((c) => c.url)).toContain("/api/projects/proj-9/runs"),
+      expect(calls).toEqual([{ url: "/api/projects", method: "POST" }]),
     );
   });
 
