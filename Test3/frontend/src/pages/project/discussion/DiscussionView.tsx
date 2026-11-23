@@ -9,6 +9,7 @@ import { ScorePanel } from "./ScorePanel";
 import { SpecApprovalDialog } from "./SpecApprovalDialog";
 import { SpecViewer } from "./SpecViewer";
 import { StageBar } from "./StageBar";
+import { SupplementComposer } from "./SupplementComposer";
 import { deriveStage, type DiscussionStage } from "./deriveStage";
 import { useDiscussionSession } from "./useDiscussionSession";
 
@@ -28,8 +29,15 @@ const CHAT_STAGES: DiscussionStage[] = [
   "review",
   "leader",
   "approval",
+  "approved",
   "terminated",
 ];
+
+/** Plan-run creation state for the approved spec summary, keyed by session id. */
+type PlanState =
+  | { sessionId: string; status: "planning" }
+  | { sessionId: string; status: "ready"; runId: string }
+  | { sessionId: string; status: "error" };
 
 export const SPEC_PREVIEW_CHARS = 240;
 export const UNSEALED_BODY_TEXT = "正文尚未解封";
@@ -92,16 +100,44 @@ export function DiscussionView({
     if (stage !== "approved") setSpecOpen(false);
   }, [stage]);
 
+  // Approved spec -> plan run. Fired once per session id by the leader only; the ref is the
+  // guard because StrictMode re-runs effects (state would still be the initial value).
+  const planStartedRef = useRef<string | null>(null);
+  const [plan, setPlan] = useState<PlanState | null>(null);
+  const approvedSession = stage === "approved" ? session : null;
+  const approvedSessionId = approvedSession?.session_id ?? "";
+  const isApprovingLeader =
+    !!approvedSessionId && actorBotId === (approvedSession?.leader_bot_id ?? "");
+  useEffect(() => {
+    if (!approvedSessionId || !isApprovingLeader) return;
+    if (planStartedRef.current === approvedSessionId) return;
+    planStartedRef.current = approvedSessionId;
+    setPlan({ sessionId: approvedSessionId, status: "planning" });
+    // Never abort on cleanup: an aborted StrictMode request would leave the plan missing.
+    void api
+      .createDiscussionPlan(approvedSessionId, actorBotId)
+      .then((result) => setPlan({ sessionId: approvedSessionId, status: "ready", runId: result.run_id }))
+      .catch((err) => {
+        setPlan({ sessionId: approvedSessionId, status: "error" });
+        setActionError(actionErrorText(err));
+      });
+  }, [approvedSessionId, isApprovingLeader, actorBotId]);
+  // A plan result only applies to the session it was created for.
+  const planForSession = plan && plan.sessionId === approvedSessionId ? plan : null;
+  const planRunId = planForSession?.status === "ready" ? planForSession.runId : null;
+  const planPlanning = planForSession?.status === "planning";
+
   const proposalCache = useRef(new Map<string, Promise<string>>());
-  const sessionId = session?.session_id ?? "";
+  // Scoped by the proposal's own session: the timeline keeps proposals from earlier linked
+  // sessions while the current session moves on, so the newest session cannot answer for them.
   const loadProposalBody = useCallback(
-    (proposalId: string): Promise<string> => {
-      if (!sessionId) return Promise.resolve(UNSEALED_BODY_TEXT);
-      const key = `${sessionId}:${proposalId}`;
+    (targetSessionId: string, proposalId: string): Promise<string> => {
+      if (!targetSessionId) return Promise.resolve(UNSEALED_BODY_TEXT);
+      const key = `${targetSessionId}:${proposalId}`;
       const cached = proposalCache.current.get(key);
       if (cached) return cached;
       const pending = api
-        .discussionProposals(sessionId, actorBotId)
+        .discussionProposals(targetSessionId, actorBotId)
         .then((result) => {
           const items = Array.isArray(result?.items) ? result.items : [];
           const found = items.find((item) => item?.proposal_id === proposalId);
@@ -114,7 +150,7 @@ export function DiscussionView({
       proposalCache.current.set(key, pending);
       return pending;
     },
-    [sessionId, actorBotId],
+    [actorBotId],
   );
 
   const withSession = async (action: (sessionId: string) => Promise<unknown>) => {
@@ -141,6 +177,8 @@ export function DiscussionView({
   const participantBotIds = members.map((member) => member.bot_id);
   const hasLeader = members.some((member) => member.is_leader);
   const specPackage = session?.decision_package ?? null;
+  // A pending approval can be supplemented: the old session ends and a linked one starts.
+  const showSupplement = stage === "approval" && !!session;
 
   return (
     <div className="disc-view" data-testid="disc-view" data-stage={stage}>
@@ -185,13 +223,22 @@ export function DiscussionView({
 
       {session && CHAT_STAGES.includes(stage) && (
         <div className="disc-layout" data-testid="disc-layout">
-          <DiscussionChat
-            timeline={timeline}
-            bots={bots}
-            stage={stage}
-            session={session}
-            loadProposalBody={loadProposalBody}
-          />
+          <div className={"disc-conversation" + (showSupplement ? " is-with-supplement" : "")}>
+            <DiscussionChat
+              timeline={timeline}
+              bots={bots}
+              stage={stage}
+              session={session}
+              loadProposalBody={loadProposalBody}
+            />
+            {showSupplement && (
+              <SupplementComposer
+                sessionId={session.session_id}
+                actorBotId={actorBotId}
+                onSent={() => refresh()}
+              />
+            )}
+          </div>
           <aside className="disc-side" aria-label="评分与操作">
             {stage === "terminated" && (
               <p className="disc-readonly-note" role="status">
@@ -226,9 +273,24 @@ export function DiscussionView({
             {specPackage ? specPreview(specPackage.body_md) : "需求规格正文暂不可用。"}
           </p>
           <div className="disc-spec-summary-actions">
-            <span className="disc-spec-waiting" role="status">
-              等待任务拆解
-            </span>
+            {planRunId ? (
+              <>
+                <a className="disc-button-primary" href={`/workstation/${planRunId}`}>
+                  查看任务编排
+                </a>
+                <a className="disc-button-secondary" href={`/workstation/${planRunId}?view=architecture`}>
+                  查看架构图
+                </a>
+              </>
+            ) : planPlanning ? (
+              <span className="disc-spec-waiting" role="status">
+                正在拆解任务…
+              </span>
+            ) : (
+              <span className="disc-spec-waiting" role="status">
+                等待任务拆解
+              </span>
+            )}
             <button
               type="button"
               className="disc-button-secondary"
@@ -251,6 +313,7 @@ export function DiscussionView({
           actorBotId={actorBotId}
           session={session}
           reviews={reviews}
+          sessions={sessions}
           onClose={() => setApprovalOpen(false)}
           onApproved={() => {
             setApprovalOpen(false);

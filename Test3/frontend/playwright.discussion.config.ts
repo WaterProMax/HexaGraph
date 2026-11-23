@@ -20,9 +20,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:5174',
     browserName: 'chromium',
-    // 本机默认用系统 Edge（无需下载 Playwright 自带 Chromium）；其它机器可用
-    // PLAYWRIGHT_CHANNEL 覆盖，或设为空串回退到 Playwright 自带浏览器。
-    channel: process.env.PLAYWRIGHT_CHANNEL ?? 'msedge',
+    // 默认使用 Playwright 自带 Chromium（README 已要求执行 npx playwright install chromium）；
+    // 如需系统浏览器，设置 PLAYWRIGHT_CHANNEL=msedge（或其它已安装通道）。
+    channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
     viewport: { width: 1440, height: 1000 },
     trace: 'on',
     screenshot: 'on',

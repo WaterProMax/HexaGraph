@@ -150,7 +150,7 @@ export type DiscussionSessionCreate = {
   previous_session_id?: string;
 };
 
-export type DiscussionMessageKind = "system" | "proposal" | "review" | "leader";
+export type DiscussionMessageKind = "system" | "proposal" | "review" | "leader" | "user";
 
 /** One append-only timeline entry. Proposal bodies never appear here. */
 export type DiscussionMessage = {
@@ -165,7 +165,8 @@ export type DiscussionMessage = {
 
 export type DiscussionTimelineItem =
   | { type: "message"; message: DiscussionMessage }
-  | { type: "divider"; key: string; text: string };
+  | { type: "divider"; key: string; text: string }
+  | { type: "user"; key: string; text: string };
 
 /** One proposal as returned by `GET /discussion-sessions/{sid}/proposals`. */
 export type DiscussionProposal = {

@@ -11,7 +11,7 @@ export type MessageBubbleProps = {
   item: DiscussionTimelineItem;
   bots: BotInstance[];
   session: DiscussionSession | null;
-  loadProposalBody: (proposalId: string) => Promise<string>;
+  loadProposalBody: (sessionId: string, proposalId: string) => Promise<string>;
 };
 
 type AvatarBot = Pick<BotInstance, "bot_id" | "display_name" | "role_template" | "status">;
@@ -116,7 +116,7 @@ function ProposalBubble({
   message: DiscussionMessage;
   bot: AvatarBot;
   session: DiscussionSession | null;
-  loadProposalBody: (proposalId: string) => Promise<string>;
+  loadProposalBody: (sessionId: string, proposalId: string) => Promise<string>;
 }) {
   const proposalId = readString(message.payload, "proposal_id");
   const payloadRound = Number(message.payload?.round);
@@ -137,7 +137,7 @@ function ProposalBubble({
     setLoading(true);
     setFailed(false);
     try {
-      const text = await loadProposalBody(proposalId);
+      const text = await loadProposalBody(message.session_id, proposalId);
       setBody(typeof text === "string" ? text : "");
     } catch {
       setFailed(true);
@@ -288,9 +288,22 @@ function LeaderBubble({ message, bot }: { message: DiscussionMessage; bot: Avata
   );
 }
 
+function UserBubble({ text }: { text: string }) {
+  return (
+    <article className="disc-bubble disc-bubble-user" data-testid="disc-bubble-user">
+      <div className="disc-bubble-body">
+        <p className="disc-bubble-text">{text}</p>
+      </div>
+    </article>
+  );
+}
+
 export function MessageBubble({ item, bots, session, loadProposalBody }: MessageBubbleProps) {
   if (item.type === "divider") {
     return <Divider text={item.text} />;
+  }
+  if (item.type === "user") {
+    return <UserBubble text={item.text} />;
   }
 
   const { message } = item;
@@ -298,6 +311,9 @@ export function MessageBubble({ item, bots, session, loadProposalBody }: Message
 
   if (message.kind === "system") {
     return <SystemBubble message={message} />;
+  }
+  if (message.kind === "user") {
+    return <UserBubble text={readString(message.payload, "text")} />;
   }
   if (message.kind === "proposal") {
     return (

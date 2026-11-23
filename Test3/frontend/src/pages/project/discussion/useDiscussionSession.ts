@@ -325,6 +325,16 @@ export function useDiscussionSession(projectId: string, actorBotId: string) {
         key: `divider-${segment.session.session_id}`,
         text: comment ? `第 ${round} 次讨论 · 你的意见：${comment}` : `第 ${round} 次讨论`,
       });
+      // Only the chain's first session carries the original idea; later sessions
+      // receive their supplement as a real `kind: "user"` backend message.
+      const requirement = index === 0 ? (segment.session.requirement_text || "").trim() : "";
+      if (requirement) {
+        items.push({
+          type: "user",
+          key: `user-${segment.session.session_id}`,
+          text: requirement,
+        });
+      }
       segment.messages.forEach((message) => items.push({ type: "message", message }));
     });
     return items;

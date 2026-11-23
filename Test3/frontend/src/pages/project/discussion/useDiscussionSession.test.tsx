@@ -169,6 +169,33 @@ describe("useDiscussionSession", () => {
     expect(apiMock.discussionMessages).toHaveBeenCalledWith("s2", 0, "leader-1");
   });
 
+  it("synthesizes a user bubble only for the first session's requirement", async () => {
+    const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const userItems = result.current.timeline.filter((item) => item.type === "user");
+    expect(userItems).toEqual([
+      { type: "user", key: "user-s1", text: "做一个座位预约工具" },
+    ]);
+
+    // The requirement sits right after the first divider and before its messages.
+    expect(result.current.timeline.slice(0, 3).map((item) => item.type)).toEqual([
+      "divider",
+      "user",
+      "message",
+    ]);
+  });
+
+  it("skips the synthetic bubble when the requirement is blank", async () => {
+    apiMock.discussionSessions.mockResolvedValue({
+      items: [s2, { ...s1, requirement_text: "   " }],
+    });
+    const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.timeline.filter((item) => item.type === "user")).toHaveLength(0);
+  });
+
   it("subscribes to the actor's events URL and appends messages once per seq", async () => {
     const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
     await waitFor(() => expect(result.current.loading).toBe(false));

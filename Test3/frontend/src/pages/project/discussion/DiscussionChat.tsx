@@ -12,16 +12,16 @@ export type DiscussionChatProps = {
   bots: BotInstance[];
   stage: DiscussionStage;
   session: DiscussionSession | null;
-  loadProposalBody: (proposalId: string) => Promise<string>;
+  loadProposalBody: (sessionId: string, proposalId: string) => Promise<string>;
 };
 
 /** How far (px) the user may scroll away from the bottom before we stop following. */
 export const STICK_THRESHOLD_PX = 120;
 
 export function timelineItemKey(item: DiscussionTimelineItem): string {
-  return item.type === "divider"
-    ? `divider:${item.key}`
-    : `message:${item.message.session_id}:${item.message.seq}`;
+  if (item.type === "divider") return `divider:${item.key}`;
+  if (item.type === "user") return `user:${item.key}`;
+  return `message:${item.message.session_id}:${item.message.seq}`;
 }
 
 export function DiscussionChat({ timeline, bots, session, loadProposalBody }: DiscussionChatProps) {

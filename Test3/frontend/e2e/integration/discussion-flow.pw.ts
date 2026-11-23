@@ -82,12 +82,6 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   await expect(page.getByTestId("disc-view")).toHaveAttribute("data-stage", "idea");
   const idea = page.getByLabel("一句话想法");
   await expect(idea).toBeVisible();
-  for (const width of [1600, 1280, 1024, 768]) {
-    await page.setViewportSize({ width, height: 900 });
-    expect(await page.getByTestId("disc-layout").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
-  }
-  await page.screenshot({ path: test.info().outputPath("discussion-00-768.png"), fullPage: true });
-  await page.setViewportSize({ width: 1440, height: 1000 });
 
   // 1. One-line idea → start discussion.
   await idea.fill(IDEA);
@@ -103,6 +97,14 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   await expect(chat).toContainText("第 1 轮讨论开始");
   await expect(chat.getByTestId("disc-bubble-proposal").first()).toContainText("提交了方案");
   await expect(chat.getByTestId("disc-bubble-proposal")).toHaveCount(2);
+
+  // The two-column discussion layout must not overflow horizontally at any rail width.
+  for (const width of [1600, 1280, 1024, 768]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.getByTestId("disc-layout").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  }
+  await page.screenshot({ path: test.info().outputPath("discussion-00-768.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   // 3. Approval banner + auto-opened dialog with the synthesized spec.
   const banner = page.getByTestId("disc-approval-banner");

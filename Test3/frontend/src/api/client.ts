@@ -55,8 +55,9 @@ function parseApiError(status: number, text: string): ApiError {
 
 async function req(path: string, init?: RequestInit) {
   const res = await fetch(BASE + path, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
+    // Spread init first so an actor-only header map cannot drop Content-Type.
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
   if (!res.ok) {
     throw parseApiError(res.status, await res.text());
@@ -168,6 +169,24 @@ export const api = {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify(body),
+    }),
+  /** Materialises the approved spec into a run + task plan; idempotent per session. */
+  createDiscussionPlan: (sessionId: string, botId: string): Promise<{ run_id: string }> =>
+    req(`/discussion-sessions/${sessionId}/plan`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({}),
+    }),
+  /** Ends the pending session and starts a linked one from the appended requirement text. */
+  supplementDiscussion: (
+    sessionId: string,
+    text: string,
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/supplement`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify({ text }),
     }),
   createDiscussionSession: (
     projectId: string,
