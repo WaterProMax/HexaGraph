@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { DiscussionSession } from "../../../api/types";
+import { matchesRejectedSpec, rejectedVersions } from "./specRevision";
 
 export type SpecViewerProps = {
   open: boolean;
@@ -73,6 +74,8 @@ export function SpecViewer({ open, onClose, sessions }: SpecViewerProps) {
   const selected = sessions.find((session) => session.session_id === selectedId);
   const current = selected && hasPackage(selected) ? selected : latest;
   const currentVersion = current ? sessions.findIndex((session) => session === current) + 1 : 0;
+  const rejected = current ? rejectedVersions(current, sessions) : [];
+  const priorFeedback = current?.status === "rejected" ? current.resolution_comment : rejected[0]?.resolution_comment;
 
   return (
     <div
@@ -110,6 +113,14 @@ export function SpecViewer({ open, onClose, sessions }: SpecViewerProps) {
                 )}
               </div>
               <div className="disc-spec-body">
+                {priorFeedback && (
+                  <p className="disc-revision-note">
+                    <strong>{current.status === "rejected" ? "驳回意见" : "上次驳回意见"}</strong> {priorFeedback}
+                  </p>
+                )}
+                {current.status === "approved" && matchesRejectedSpec(current, rejected) && (
+                  <p className="disc-revision-note">此历史版本的正文与被打回版本相同。</p>
+                )}
                 <ReactMarkdown>{current.decision_package.body_md}</ReactMarkdown>
               </div>
             </>

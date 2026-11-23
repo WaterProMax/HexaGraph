@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import {
   AppstoreOutlined,
   FolderOpenOutlined,
@@ -9,6 +9,7 @@ import {
   SettingOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
+import { Tooltip } from "antd";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { BotInstance } from "../api/types";
@@ -78,6 +79,25 @@ function isManagingBots(path: string): boolean {
 function isActive(currentPath: string, to: string): boolean {
   if (to === "/") return currentPath === "/";
   return currentPath === to || currentPath.startsWith(`${to}/`);
+}
+
+function SidebarTooltip({ title, description, children }: {
+  title: string;
+  description: string;
+  children: ReactElement;
+}) {
+  return (
+    <Tooltip
+      placement="right"
+      trigger={["hover", "focus"]}
+      color="#fbfdff"
+      classNames={{ root: "sidebar-rail-tooltip" }}
+      getPopupContainer={(trigger) => trigger.closest<HTMLElement>(".shell") ?? document.body}
+      title={<><strong>{title}</strong><span>{description}</span></>}
+    >
+      {children}
+    </Tooltip>
+  );
 }
 
 /**
@@ -159,7 +179,7 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
             {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
           </button>
         </div>
-        <div className="sidebar-scroll">
+        <div className="sidebar-scroll" role="group" aria-label="导航列表" tabIndex={0}>
           {navItems.length > 0 && (
             <nav
               className="nav-group"
@@ -195,25 +215,13 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
                 Bot
               </h2>
               {bots.map((bot) => {
-                const label = `${bot.display_name} · ${roleLabel(bot.role_template)}`;
+                const role = roleLabel(bot.role_template);
                 return (
-                  <Link
-                    key={bot.bot_id}
-                    to={`/bots/${bot.bot_id}/chat`}
-                    className="rail-avatar rail-tip"
-                    aria-label={label}
-                  >
-                    <BotAvatar
-                      bot={bot}
-                      size={38}
-                      title={label}
-                      nativeTitle={false}
-                    />
-                    <span className="rail-tooltip" aria-hidden="true">
-                      <strong>{bot.display_name}</strong>
-                      <span>{roleLabel(bot.role_template)}</span>
-                    </span>
-                  </Link>
+                  <SidebarTooltip key={bot.bot_id} title={bot.display_name} description={role}>
+                    <Link to={`/bots/${bot.bot_id}/chat`} className="rail-avatar" aria-label={`${bot.display_name} · ${role}`}>
+                      <BotAvatar bot={bot} size={38} nativeTitle={false} />
+                    </Link>
+                  </SidebarTooltip>
                 );
               })}
             </section>
@@ -310,23 +318,20 @@ export function AppShell({ navItems, currentPath, children }: AppShellProps) {
             )}
             {projects.map((project) => {
               const active = currentPath === `/projects/${project.id}`;
-              return (
+              const link = (
                 <Link
                   key={project.id}
                   to={`/projects/${project.id}`}
-                  className={`nav-item ${collapsed ? "rail-tip" : ""} ${active ? "active" : ""}`}
+                  className={`nav-item${active ? " active" : ""}`}
                   aria-current={active ? "page" : undefined}
                 >
                   <FolderOpenOutlined />
                   <span className="nav-text">{project.name}</span>
-                  {collapsed && (
-                    <span className="rail-tooltip" aria-hidden="true">
-                      <strong>{project.name}</strong>
-                      <span>项目</span>
-                    </span>
-                  )}
                 </Link>
               );
+              return collapsed ? (
+                <SidebarTooltip key={project.id} title={project.name} description="项目">{link}</SidebarTooltip>
+              ) : link;
             })}
           </section>
         </div>

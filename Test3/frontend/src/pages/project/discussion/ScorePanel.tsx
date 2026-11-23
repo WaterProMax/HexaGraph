@@ -14,6 +14,7 @@ export type ScorePanelProps = {
   messages: DiscussionMessage[];
   bots: BotInstance[];
   busy?: boolean;
+  showControls?: boolean;
   onPause: () => void;
   onResume: (skipBotIds?: string[]) => void;
   onTerminate: () => void;
@@ -55,23 +56,11 @@ export function ScorePanel({
   messages,
   bots,
   busy = false,
+  showControls = true,
   onPause,
   onResume,
   onTerminate,
 }: ScorePanelProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!confirmOpen) return;
-    dialogRef.current?.focus();
-    function handleKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setConfirmOpen(false);
-    }
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [confirmOpen]);
-
   const botName = (botId: string) => bots.find((bot) => bot.bot_id === botId)?.display_name || botId;
 
   const proposalAuthor = new Map<string, string>();
@@ -185,36 +174,40 @@ export function ScorePanel({
             <thead>
               <tr>
                 <th scope="col">方案作者</th>
-                {reviewers.map((reviewerId) => (
-                  <th scope="col" key={reviewerId}>
-                    {botName(reviewerId)}
-                  </th>
-                ))}
+                {reviewers.map((reviewerId) => {
+                  const name = botName(reviewerId);
+                  return (
+                    <th scope="col" key={reviewerId} title={name}>
+                      <span className="disc-score-reviewer">{name}</span>
+                    </th>
+                  );
+                })}
                 <th scope="col">平均总分</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.proposalId} data-proposal-id={row.proposalId}>
-                  <th scope="row">
-                    <span className="disc-score-author">
-                      {row.authorId ? botName(row.authorId) : "未知作者"}
-                    </span>
-                    <span className="disc-score-proposal mono">{row.proposalId}</span>
-                  </th>
-                  {reviewers.map((reviewerId) => {
-                    const total = row.totals.get(reviewerId);
-                    return (
-                      <td key={reviewerId} className="disc-score-cell">
-                        {typeof total === "number" ? formatScore(total) : "—"}
-                      </td>
-                    );
-                  })}
-                  <td className="disc-score-cell disc-score-average">
-                    {row.average === null ? "—" : formatAverage(row.average)}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((row) => {
+                const author = row.authorId ? botName(row.authorId) : "未知作者";
+                return (
+                  <tr key={row.proposalId} data-proposal-id={row.proposalId}>
+                    <th scope="row">
+                      <span className="disc-score-author" title={author}>{author}</span>
+                      <span className="disc-score-proposal mono" title={row.proposalId}>{row.proposalId}</span>
+                    </th>
+                    {reviewers.map((reviewerId) => {
+                      const total = row.totals.get(reviewerId);
+                      return (
+                        <td key={reviewerId} className="disc-score-cell">
+                          {typeof total === "number" ? formatScore(total) : "—"}
+                        </td>
+                      );
+                    })}
+                    <td className="disc-score-cell disc-score-average">
+                      {row.average === null ? "—" : formatAverage(row.average)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -286,6 +279,32 @@ export function ScorePanel({
         </div>
       )}
 
+      {showControls && (
+        <DiscussionControls session={session} busy={busy} onPause={onPause} onResume={onResume} onTerminate={onTerminate} />
+      )}
+    </section>
+  );
+}
+
+export default ScorePanel;
+export function DiscussionControls({ session, busy, onPause, onResume, onTerminate }: Pick<
+  ScorePanelProps, "session" | "busy" | "onPause" | "onResume" | "onTerminate"
+>) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!confirmOpen) return;
+    dialogRef.current?.focus();
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setConfirmOpen(false);
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [confirmOpen]);
+
+  return (
+    <>
       <div className="disc-actions">
         <button
           type="button"
@@ -351,8 +370,6 @@ export function ScorePanel({
           </div>
         </div>
       )}
-    </section>
+    </>
   );
 }
-
-export default ScorePanel;
