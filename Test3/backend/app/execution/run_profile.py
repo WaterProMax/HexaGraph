@@ -63,6 +63,9 @@ def set_approved_baseline_hashes(run: Any, hashes: dict[str, str]) -> None:
     normalized = {str(key): str(value) for key, value in hashes.items()}
     run.approved_baseline_hashes = normalized
     run.artifacts[BASELINE_HASHES_KEY] = normalized
+    # Direct hash writes are the internal/test fixture path; the gate path
+    # records "approved" explicitly in Workbench._record_approved_baseline.
+    run.artifacts.setdefault("baseline_provenance", "fixture")
 
 
 def store_approved_baseline_hash(run: Any, key: str, value: str) -> dict[str, str]:

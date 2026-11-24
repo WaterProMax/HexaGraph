@@ -194,6 +194,13 @@ def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _git_head(repo: Path) -> str:
+    from app.workspace.gitops import _git_sync
+
+    code, sha = _git_sync(repo, "rev-parse", "HEAD")
+    return sha.strip() if code == 0 else ""
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -202,7 +209,20 @@ def _atomic_write(path: Path, text: str) -> None:
 
 
 class Workbench:
-    def __init__(self, gateway: Gateway, registry: RoleRegistry, data_dir: Path) -> None:
+    def __init__(
+        self,
+        gateway: Gateway,
+        registry: RoleRegistry,
+        data_dir: Path,
+        *,
+        execution_policy: Any | None = None,
+    ) -> None:
+        from app.execution.simulation import DEFAULT_POLICY, SimulatedExecutor
+
+        self.execution_policy = execution_policy or DEFAULT_POLICY
+        self.simulated_executor = (
+            SimulatedExecutor() if getattr(self.execution_policy, "simulated", False) else None
+        )
         self.gateway = gateway
         self.registry = registry
         self.data_dir = data_dir
@@ -218,6 +238,7 @@ class Workbench:
         self._merge_locks: dict[str, asyncio.Lock] = {}
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._discussion_plan_locks: dict[str, asyncio.Lock] = {}
+        self._loop_rejections: dict[str, str] = {}
         self._run_locks = RunLockRegistry()
         self._generations = GenerationGuard()
         self._import_tasks: dict[str, asyncio.Task[None]] = {}
@@ -276,7 +297,21 @@ class Workbench:
                 if run.artifacts.get("plan") and run.tasks:
                     try:
                         await self.schedule_once(run)
+                        self._loop_rejections.pop(run.id, None)
+                    except GrantRejected as exc:
+                        if self._loop_rejections.get(run.id) != exc.category:
+                            self._loop_rejections[run.id] = exc.category
+                            self.emit(
+                                run,
+                                "schedule.rejected",
+                                run.id,
+                                {"category": exc.category, "detail": exc.message},
+                            )
+                        continue
                     except Exception:  # noqa: BLE001
+                        if self._loop_rejections.get(run.id) != "unexpected_error":
+                            self._loop_rejections[run.id] = "unexpected_error"
+                            self.emit(run, "schedule.rejected", run.id, {"category": "unexpected_error"})
                         continue
 
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
@@ -484,8 +519,6 @@ class Workbench:
                 continue
             if task.get("state") == "done":
                 continue
-            if task.get("evidence"):
-                continue
             task["needs_reconciliation"] = True
             task["paused"] = True
             flagged.append(code)
@@ -520,6 +553,63 @@ class Workbench:
             "tasks": items,
             "note": "manual review required; automatic replay is disabled",
         }
+
+    async def resolve_reconciliation(
+        self,
+        run: RunState,
+        code: str,
+        decision: str,
+        expected_revision: int,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Controlled, auditable resolution; never a generic ``force_success``."""
+        task = run.tasks.get(code)
+        if task is None:
+            raise ValidationFailed(f"task not found: {code}")
+        if task["revision"] != expected_revision:
+            raise RevisionConflict("revision mismatch")
+        if not task.get("needs_reconciliation"):
+            raise ValidationFailed("task is not awaiting reconciliation")
+        attempt = task.get("attempt") or {}
+        if decision == "continue_reconcile":
+            return self.reconcile_run(run)
+        if decision == "accept_evidence":
+            if attempt.get("status") != "done" or not attempt.get("commit"):
+                raise ValidationFailed("attempt has no terminal commit evidence")
+            repo = Path(str(attempt.get("repo") or ""))
+            if not (repo / ".git").exists() or _git_head(repo) != attempt["commit"]:
+                raise ValidationFailed("commit evidence does not match the workspace")
+            if dict(attempt.get("baseline_hashes") or {}) != dict(run_approved_baseline_hashes(run)):
+                raise ValidationFailed("attempt baseline no longer matches the run baseline")
+            event = "reconcile_accepted"
+        elif decision == "mark_failed_safe_retry":
+            if not reason.strip():
+                raise ValidationFailed("mark_failed_safe_retry requires a reason")
+            event = "reconcile_failed"
+        else:
+            raise ValidationFailed(f"unknown reconciliation decision: {decision}")
+        self._set_state(run, task, event, reason=reason or decision, actor=actor)
+        task["revision"] = int(task.get("revision") or 1) + 1
+        run.revision += 1
+        task["needs_reconciliation"] = False
+        task["paused"] = False
+        task.setdefault("reconciliation_history", []).append(
+            {
+                "decision": decision,
+                "actor": actor,
+                "reason": reason,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "attempt_id": attempt.get("attempt_id"),
+            }
+        )
+        self.emit(run, "task.reconciliation", code, {"decision": decision, "actor": actor}, actor)
+        if not any(item.get("needs_reconciliation") for item in run.tasks.values()):
+            run.artifacts.pop("workflow_needs_reconciliation", None)
+            run.artifacts.pop("workflow_needs_reconciliation_tasks", None)
+        self._persist_snapshot(run)
+        return self.reconcile_run(run)
 
     def _restore_execution_profile(self, run: RunState, data: dict[str, Any]) -> None:
         """Apply SQLite authority after a snapshot/events restore.
@@ -714,12 +804,19 @@ class Workbench:
     @contextmanager
     def _usage_scope(self, run: RunState, task: dict[str, Any] | None = None):
         acc = {"tokens_in": 0, "tokens_out": 0}
+        stats = getattr(getattr(self, "gateway", None), "stats", None) or {}
+        calls_before = int(stats.get("calls") or 0)
         token = USAGE_ACCUMULATOR.set(acc)
         try:
             yield acc
         finally:
             USAGE_ACCUMULATOR.reset(token)
             self._apply_usage(run, task, acc)
+            calls_after = int(stats.get("calls") or 0)
+            if calls_after > calls_before:
+                run.artifacts["model_calls"] = int(run.artifacts.get("model_calls") or 0) + (
+                    calls_after - calls_before
+                )
 
     def _apply_usage(self, run: RunState, task: dict[str, Any] | None, acc: dict[str, int]) -> None:
         delta = int(acc.get("tokens_in") or 0) + int(acc.get("tokens_out") or 0)
@@ -842,6 +939,7 @@ class Workbench:
         if run is None:
             raise ValidationFailed("run not found")
         set_approved_baseline_hashes(run, hashes)
+        run.artifacts["baseline_provenance"] = "fixture"
 
     async def persist_run_execution_state(
         self,
@@ -870,7 +968,10 @@ class Workbench:
                 await RunExecutionStateRepo(session).upsert(state)
                 await session.commit()
         run.execution_profile = profile
+        provenance = run.artifacts.get("baseline_provenance")
         set_approved_baseline_hashes(run, state.approved_baseline_hashes)
+        if provenance:
+            run.artifacts["baseline_provenance"] = provenance
         run.artifacts["execution_profile"] = profile
         self.emit(
             run,
@@ -1234,11 +1335,23 @@ class Workbench:
             "execution_safety_ready": self.execution_safety_ready,
         }
 
-    def _require_execution_authorization(self, run: RunState, action: str) -> None:
+    async def _require_execution_authorization(self, run: RunState, action: str) -> None:
         """Unified decision shared by schedule/execute/task control/accept."""
         from app.execution.authorization import decide_execution
 
-        decision = decide_execution(self, run, action)
+        discussion = None
+        session_id = (run.artifacts or {}).get("discussion_session_id")
+        if session_id:
+            async with self.db_session() as session:
+                try:
+                    discussion = await DiscussionSessionStore(session).get(str(session_id))
+                except Exception:  # noqa: BLE001
+                    raise GrantRejected(
+                        "cross_project_mismatch",
+                        "run is linked to a discussion session that does not exist",
+                        status_code=409,
+                    ) from None
+        decision = decide_execution(self, run, action, discussion=discussion)
         if not decision.allowed:
             raise GrantRejected(
                 decision.error_category or "execution_not_authorized",
@@ -1252,6 +1365,8 @@ class Workbench:
             category = "profile_conflict" if profile == PROFILE_CONFLICT else "profile_unspecified"
             raise GrantRejected(category, "run execution profile is not usable", status_code=409)
         if profile == PROFILE_GRANTED and not self.execution_safety_ready:
+            if getattr(self, "simulated_executor", None) is not None:
+                return
             # F-04 stops here on purpose: the legacy worker/auto-merge chain is
             # never reachable until F-05/F-06 install the real boundary.
             raise GrantRejected(
@@ -1275,6 +1390,61 @@ class Workbench:
         if run is not None:
             self._bind_grant_to_tasks(run, grant)
 
+    def _add_baseline_block(self, run: RunState) -> None:
+        blocks = list(run.artifacts.get("workflow_blocks") or [])
+        if "baseline_reapproval_required" not in blocks:
+            blocks.append("baseline_reapproval_required")
+            run.artifacts["workflow_blocks"] = blocks
+            if not run.paused:
+                run.paused = True
+                run.artifacts["baseline_pause_owned"] = True
+
+    def _clear_baseline_block(self, run: RunState) -> None:
+        blocks = [
+            item
+            for item in (run.artifacts.get("workflow_blocks") or [])
+            if item != "baseline_reapproval_required"
+        ]
+        run.artifacts["workflow_blocks"] = blocks
+        if not blocks and run.artifacts.pop("baseline_pause_owned", False):
+            run.paused = False
+
+    def _open_reapproval_gate(self, run: RunState, source_gate_id: str = "") -> dict[str, Any]:
+        """Create a new pending PLAN gate for a changed candidate baseline.
+
+        The already-decided source gate is never reopened or rewritten.  Human
+        approval of the new gate adopts the candidate hashes.
+        """
+        from app.execution.baseline import hash_artifact
+
+        hashes = {}
+        for key, artifact_key in (("SPEC", "spec"), ("DESIGN", "design"), ("PLAN", "plan")):
+            artifact = run.artifacts.get(artifact_key)
+            if artifact is not None:
+                hashes[key] = hash_artifact(artifact)
+        candidate = {
+            "source_gate_id": source_gate_id,
+            "revision": run.revision,
+            "hashes": hashes,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        previous = run.artifacts.get("workflow_candidate")
+        if previous:
+            run.artifacts.setdefault("workflow_candidate_history", []).append(previous)
+        run.artifacts["workflow_candidate"] = candidate
+        self._add_baseline_block(run)
+        gate = self._gate(
+            run,
+            "PLAN基线确认",
+            {
+                "candidate": True,
+                "source_gate_id": source_gate_id,
+                "plan": run.artifacts.get("plan"),
+                "design": run.artifacts.get("design"),
+            },
+        )["gate"]
+        return gate
+
     def _record_gate_approval(self, run: RunState, gate: dict[str, Any], actor: str) -> None:
         """Append an immutable approval record bound to project/run/session."""
         record = {
@@ -1290,6 +1460,7 @@ class Workbench:
         run.artifacts.setdefault("approvals", []).append(record)
 
     def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
+        run.artifacts["baseline_provenance"] = "approved"
         digest = write_approved_baseline_hash(run, key, value)
         self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
         return digest
@@ -1319,8 +1490,12 @@ class Workbench:
         if records and records[-1].get("keys") == keys and run.paused:
             return keys
         records.append(invalidation_record(keys, reason))
-        run.paused = True
+        self._add_baseline_block(run)
         self.emit(run, "baseline.invalidated", run.id, {"keys": keys, "reason": reason})
+        if not any(
+            gate.get("kind") == "PLAN基线确认" and gate.get("status") == "pending" for gate in run.gates
+        ):
+            self._open_reapproval_gate(run)
         await self._mark_grants_stale(run, reason)
         self._persist_snapshot(run)
         return keys
@@ -2011,6 +2186,25 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
+            candidate = bool((gate.get("payload") or {}).get("candidate")) or bool(
+                run.artifacts.get("workflow_candidate")
+            )
+            if candidate:
+                # Adopt the changed candidate baseline: record every current
+                # artifact hash, keep old approvals/invalidations as history.
+                for key, artifact_key in (("SPEC", "spec"), ("DESIGN", "design"), ("PLAN", "plan")):
+                    if run.artifacts.get(artifact_key) is not None:
+                        self._record_approved_baseline(run, key, run.artifacts[artifact_key])
+                        self._freeze(run, key)
+                self._record_gate_approval(run, gate, actor)
+                adopted = run.artifacts.pop("workflow_candidate", None)
+                if adopted:
+                    adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
+                    run.artifacts.setdefault("workflow_adopted_candidates", []).append(adopted)
+                self._clear_baseline_block(run)
+                await self._refresh_grant_statuses(run)
+                self._materialize_tasks(run)
+                return {"status": "executing", "stage": run.engine.current}
             if run.artifacts.get("discussion_session_id"):
                 self._record_approved_baseline(run, "DESIGN", run.artifacts["design"])
                 self._freeze(run, "DESIGN")
@@ -2511,7 +2705,7 @@ class Workbench:
                     f"manual reconciliation required: {', '.join(flagged)}",
                     status_code=409,
                 )
-        self._require_execution_authorization(run, "schedule")
+        await self._require_execution_authorization(run, "schedule")
         allowed = await self._granted_scope(run, task_codes)
         if task_codes is not None and run_execution_profile(run) == PROFILE_GRANTED:
             # P5: a successor may not start before its predecessors succeeded.
@@ -2588,11 +2782,58 @@ class Workbench:
         # P5: all real task writes for a run go through one lock.  Nested calls
         # from the schedule loop re-enter instead of deadlocking.
         async with self._run_locks.write_scope(run.id):
-            return await self._execute_task_locked(run, code)
+            result = await self._execute_task_locked(run, code)
+            self._finish_attempt(run, code)
+            return result
+
+    def _begin_attempt(self, run: RunState, task: dict[str, Any], code: str) -> None:
+        task["attempt"] = {
+            "attempt_id": str(uuid.uuid4()),
+            "intent": "execute",
+            "status": "started",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "baseline_hashes": dict(run_approved_baseline_hashes(run)),
+            "repo": str(self.data_dir / "runs" / run.id / "repo"),
+            "commit": "",
+            "task_code": code,
+        }
+        self._persist_snapshot(run)
+
+    def _finish_attempt(self, run: RunState, code: str) -> None:
+        task = run.tasks.get(code) or {}
+        attempt = task.get("attempt")
+        if not isinstance(attempt, dict):
+            return
+        attempt["ended_at"] = datetime.now(timezone.utc).isoformat()
+        state = str(task.get("state") or "")
+        attempt["status"] = "done" if state == "done" else ("failed" if state in {"failed", "needs_human"} else "unknown")
+        repo = Path(attempt.get("repo") or "")
+        if attempt["status"] == "done" and (repo / ".git").exists():
+            try:
+                attempt["commit"] = _git_head(repo)
+            except Exception:  # noqa: BLE001
+                attempt["commit"] = ""
+        self._persist_snapshot(run)
+
+    async def _execute_simulated_task(
+        self, run: RunState, task: dict[str, Any], code: str, card: TaskCard
+    ) -> dict[str, Any]:
+        """Side-effect-free result: no worktree, files, git, subprocess or network."""
+        task["revision"] = int(task.get("revision") or 1) + 1
+        if task["state"] == "ready":
+            self._set_state(run, task, "scheduled")
+        evidence = self.simulated_executor.execute(run, task, card)
+        task.setdefault("evidence", []).append(evidence)
+        self.emit(run, "task.evidence", code, {"path": "", "ok": True, "simulated": True})
+        if can_transition(task["state"], "code_finished"):
+            self._set_state(run, task, "code_finished")
+        if can_transition(task["state"], "accepted"):
+            self._set_state(run, task, "accepted")
+        return {"state": task["state"], "kind": "simulated", "evidence": evidence}
 
     async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
         await self._invalidate_if_drifted(run)
-        self._require_execution_authorization(run, "execute")
+        await self._require_execution_authorization(run, "execute")
         self._require_execution_safety(run, code)
         task = run.tasks[code]
         if task.get("needs_reconciliation"):
@@ -2607,6 +2848,10 @@ class Workbench:
             return {"state": task["state"], "kind": "已终止"}
         if task.get("locked_by") and not task.get("takeover_submit"):
             return {"state": task["state"], "kind": "locked"}
+        if getattr(self, "simulated_executor", None) is not None:
+            self._begin_attempt(run, task, code)
+            return await self._execute_simulated_task(run, task, code, card)
+        self._begin_attempt(run, task, code)
         # Real execution boundary: granted_v1 is validated before any revision
         # bump, state transition, worktree or command.  No Grant / missing spec
         # can never fall through to the legacy agent/commit/merge chain.
@@ -3094,6 +3339,13 @@ class Workbench:
                 self._set_state(run, task, "cancel")
         run.artifacts["plan"] = graph.model_dump()
         self._materialize_tasks(run)
+        if run_approved_baseline_hashes(run) or run.artifacts.get("approvals"):
+            source = next(
+                (item.get("id") for item in reversed(run.gates) if item.get("kind") == "重排提案"),
+                "",
+            )
+            self._open_reapproval_gate(run, str(source or ""))
+            self._persist_snapshot(run)
         return {"status": "replanned", "tasks": list(run.tasks)}
 
     async def control_task(
@@ -3122,7 +3374,7 @@ class Workbench:
                     "task was interrupted without complete evidence; needs manual reconciliation",
                     status_code=409,
                 )
-            self._require_execution_authorization(run, "execute")
+            await self._require_execution_authorization(run, "execute")
             self._require_execution_safety(run, code)
         if run_execution_profile(run) == PROFILE_GRANTED:
             # Same boundary as execute_task: retry is authorized before state
@@ -3262,6 +3514,7 @@ class Workbench:
         return project_workflow_projection(
             discussion=discussion,
             run=run,
+            grants=(getattr(self, "_grant_cache", {}) or {}).get(getattr(run, "id", ""), []) if run is not None else [],
             model_mode=evidence.get("model_mode", "not_run"),
             execution_mode=evidence.get("execution_mode", "not_run"),
             evidence=evidence,
@@ -3279,7 +3532,7 @@ class Workbench:
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
         await self._invalidate_if_drifted(run)
-        self._require_execution_authorization(run, "accept")
+        await self._require_execution_authorization(run, "accept")
         self._require_execution_safety(run)
         if run_execution_profile(run) == PROFILE_GRANTED:
             raise GrantRejected(
@@ -3348,6 +3601,10 @@ class Workbench:
                 continue
 
     async def _verify_spec_item(self, repo: Path, related: list[dict[str, Any]]) -> tuple[bool, str, str]:
+        if getattr(self, "simulated_executor", None) is not None:
+            ok = bool(related) and all(self.simulated_executor.verify(task) for task in related)
+            evidence = f"simulated://{related[0]['code']}" if related else ""
+            return ok, evidence, "" if ok else "模拟执行证据缺失"
         outputs: list[str] = []
         ok = True
         reason = ""
@@ -3462,6 +3719,13 @@ class Workbench:
         await self._apply_incremental_docs(run, cr)
         if cr.get("status") != "rewrite_failed":
             cr["status"] = "applied"
+            if run_approved_baseline_hashes(run) or run.artifacts.get("approvals"):
+                source = next(
+                    (item.get("id") for item in reversed(run.gates) if item.get("kind") == "变更决定"),
+                    "",
+                )
+                self._open_reapproval_gate(run, str(source or ""))
+                self._persist_snapshot(run)
         return cr
 
     def _affected_codes(self, cr: dict[str, Any]) -> set[str]:

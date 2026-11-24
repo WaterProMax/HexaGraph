@@ -44,8 +44,13 @@ class ExecutionDecision:
 
 
 def is_simulated(bench: Any) -> bool:
-    provider = getattr(getattr(bench, "gateway", None), "provider", None)
-    return isinstance(provider, (ScriptedProvider, ReplayProvider))
+    """Side-effect-free executor injected by the host (never by provider type)."""
+    return getattr(bench, "simulated_executor", None) is not None
+
+
+def local_execution_test_authorized(bench: Any) -> bool:
+    policy = getattr(bench, "execution_policy", None)
+    return bool(getattr(policy, "local_execution_authorized", False))
 
 
 def decide_execution(
@@ -58,6 +63,21 @@ def decide_execution(
 ) -> ExecutionDecision:
     evidence = evidence_for_run(bench, run)
     simulated = is_simulated(bench)
+    from app.workflow.invalidation import baseline_drift
+
+    drift = baseline_drift(run)
+    if drift:
+        return ExecutionDecision(
+            allowed=False,
+            error_category="baseline_stale",
+            detail=f"approved baseline changed: {', '.join(drift)}; re-approval required",
+            status_code=409,
+            blocked_reason="baseline_stale",
+            simulated=simulated,
+            model_mode=evidence["model_mode"],
+            execution_mode=evidence["execution_mode"],
+            evidence_level=evidence["level"],
+        )
     try:
         assert_phase_admission(action, discussion=discussion, run=run)
     except WorkflowRejected as exc:
@@ -74,16 +94,16 @@ def decide_execution(
         )
 
     profile = run_execution_profile(run)
-    from app.workflow.invalidation import baseline_drift
+    from app.workflow.invalidation import baseline_provenance
 
-    drift = baseline_drift(run)
-    if drift:
+    provenance = baseline_provenance(run)
+    if provenance == "unknown":
         return ExecutionDecision(
             allowed=False,
-            error_category="baseline_stale",
-            detail=f"approved baseline changed: {', '.join(drift)}; re-approval required",
+            error_category="baseline_unverifiable",
+            detail="run has baseline hashes but no verifiable human approval; explicit re-approval required",
             status_code=409,
-            blocked_reason="baseline_stale",
+            blocked_reason="baseline_unverifiable",
             simulated=simulated,
             model_mode=evidence["model_mode"],
             execution_mode=evidence["execution_mode"],
@@ -117,14 +137,15 @@ def decide_execution(
             )
         return ExecutionDecision(allowed=True, **base)
     if profile == PROFILE_LEGACY:
-        if simulated:
+        if simulated or local_execution_test_authorized(bench):
             return ExecutionDecision(allowed=True, **base)
         return ExecutionDecision(
             allowed=False,
             error_category="profile_not_granted_v1",
             detail=(
                 "real execution requires granted_v1, an active grant, matching baselines "
-                "and the server-owned safety gate; legacy runs are simulation-only"
+                "and the server-owned safety gate; scripted model output alone does not "
+                "authorize workspace writes, commands or merges"
             ),
             status_code=403,
             blocked_reason="profile_not_granted_v1",

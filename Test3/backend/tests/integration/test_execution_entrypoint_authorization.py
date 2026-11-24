@@ -39,6 +39,7 @@ def _approved_run(app):
     run = bench.create_run(project["id"], "idea")
     run.artifacts["spec"] = {"features": [], "nonfunc": [], "scenarios": [], "chapters": []}
     run.artifacts["plan"] = {"tasks": [], "work_packages": []}
+    run.artifacts["baseline_provenance"] = "fixture"
     run.gates.append(
         {"id": "G-P", "kind": "PLAN基线确认", "status": "approved", "payload": {}}
     )
@@ -74,20 +75,15 @@ async def test_schedule_task_control_and_accept_reject_real_legacy(tmp_path) -> 
 
 
 @pytest.mark.asyncio
-async def test_scripted_schedule_remains_available_without_grant(tmp_path, monkeypatch) -> None:
+async def test_scripted_model_without_executor_policy_is_rejected(tmp_path) -> None:
     app = _app(tmp_path, ScriptedProvider([]))
     run = _approved_run(app)
     bench = app.state.workbench
 
-    async def fake_execute(run_state, code):
-        run_state.tasks[code]["state"] = "done"
-        return {"state": "done"}
-
-    monkeypatch.setattr(bench, "execute_task", fake_execute)
-
     async with _client(app) as client:
         res = await client.post(f"/api/runs/{run.id}/schedule", json={"task_codes": ["T-01"]})
 
-    assert res.status_code == 200, res.text
-    assert res.json()["started"] == ["T-01"]
+    assert res.status_code == 403, res.text
+    assert res.json()["error_category"] == "profile_not_granted_v1"
+    assert run.tasks["T-01"]["state"] == "ready"
     assert bench.execution_safety_ready is False

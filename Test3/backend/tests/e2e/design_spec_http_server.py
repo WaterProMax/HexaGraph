@@ -18,6 +18,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.agents.runtime import RoleRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
@@ -57,7 +58,12 @@ def create_offline_app(data_dir: Path):
     data_dir.mkdir(parents=True, exist_ok=True)
     provider = ScriptedProvider(build_offline_queue())
     gateway = Gateway(load_models(), provider, data_dir=data_dir)
-    workbench = Workbench(gateway, RoleRegistry(load_roles()), data_dir)
+    workbench = Workbench(
+        gateway,
+        RoleRegistry(load_roles()),
+        data_dir,
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
+    )
     workbench.schedule_mode = "manual"
     app = create_app()
     app.state.workbench = workbench

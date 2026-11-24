@@ -77,7 +77,17 @@ def _spec_approved(discussion: Any, run: Any, plan_gate: dict[str, Any] | None) 
     return bool(plan_gate)
 
 
-def _run_stage(run: Any, *, blocked: list[dict[str, str]]) -> str:
+def _active_grant_covers(grants: list[Any], tasks: dict[str, Any]) -> bool:
+    active = [grant for grant in grants if getattr(grant, 'status', '') == 'active']
+    if not active:
+        return False
+    codes = set(tasks)
+    if not codes:
+        return True
+    return any(codes.issubset(set(getattr(grant, 'task_codes', []) or [])) for grant in active)
+
+
+def _run_stage(run: Any, *, blocked: list[dict[str, str]], grants: list[Any] | None = None) -> str:
     plan_gate = _last_gate(run, PLAN_GATE_KIND)
     acceptance_gate = _last_gate(run, ACCEPTANCE_GATE_KIND)
     hashes = _hashes(run)
@@ -118,10 +128,10 @@ def _run_stage(run: Any, *, blocked: list[dict[str, str]]) -> str:
     if states and all(state in _FINISHED_TASK_STATES for state in states):
         return "verifying"
     if tasks:
-        # Tasks exist but have not started.  A granted run still needs an active
-        # grant; a simulated legacy run may proceed without one.
+        # Tasks exist but have not started.  An active grant covering the task
+        # set is authorized; otherwise the run is waiting for authorization.
         if plan_approved:
-            return "authorization_pending"
+            return "plan_approved" if _active_grant_covers(grants or [], tasks) else "authorization_pending"
         return "plan_approved"
     if plan_approved:
         return "plan_approved"
@@ -151,6 +161,7 @@ def project_workflow_projection(
     evidence: dict[str, Any] | None = None,
 ) -> WorkflowProjection:
     blocked: list[dict[str, str]] = []
+    grants_list = list(grants or [])
     project_id = str(
         getattr(run, "project_id", "") or getattr(discussion, "project_id", "") or ""
     )
@@ -204,7 +215,7 @@ def project_workflow_projection(
         if code:
             blocked.append(_blocked(code, f"discussion session is {getattr(discussion, 'status', '')}"))
     elif run is not None:
-        stage = _run_stage(run, blocked=blocked)
+        stage = _run_stage(run, blocked=blocked, grants=grants_list)
         if discussion is not None and stage in {"discussing", "spec_pending"} and not plan_gate:
             stage = discussion_stage(getattr(discussion, "status", ""))
     else:

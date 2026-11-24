@@ -210,7 +210,9 @@ async def test_reverification_resolves_defect_without_deleting_history(app) -> N
             headers={"X-Bot-Id": "bot-reviewer"},
         )
     assert accepted.status_code == 201, accepted.text
-    assert accepted.json()["evidence"]["level"] == "scripted"
+    assert accepted.json()["run_evidence"]["level"] == "scripted"
+    assert accepted.json()["decision"] == "accepted"
+    assert accepted.json()["evidence_uris"] == [EVIDENCE]
     async with app.state.workbench.db_session() as session:
         defects = (await session.execute(select(DefectRow))).scalars().all()
     assert len(defects) == 1

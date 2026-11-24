@@ -32,7 +32,7 @@ def _scripted_done_run(bench):
     project = bench.create_project("evidence-api")
     run = bench.create_run(project["id"], "idea")
     run.artifacts["plan"] = {"tasks": [], "work_packages": []}
-    run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}, "evidence": []}
+    run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}, "evidence": [{"kind": "simulated", "summary": "ok", "path": ""}]}
     run.artifacts["acceptance"] = {"features": [], "nonfunc": [], "matrix": []}
     run.gates.append(
         {"id": "G-A", "kind": "验收确认", "status": "approved", "payload": {"pass": True}}
@@ -62,4 +62,4 @@ async def test_module_acceptance_listing_carries_evidence_level(app) -> None:
             f"/api/runs/{run.id}/module-acceptances", headers={"X-Bot-Id": "bot-1"}
         )
     assert res.status_code == 200, res.text
-    assert res.json()["evidence"]["level"] == "scripted"
+    assert res.json()["run_evidence"]["level"] == "scripted"

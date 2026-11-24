@@ -791,6 +791,17 @@
         "422"
       ]
     },
+    "POST /api/runs/{run_id}/reconcile/{task_code}": {
+      "body": "ReconciliationBody",
+      "params": [
+        "path:run_id*",
+        "path:task_code*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/runs/{run_id}/resume": {
       "body": null,
       "params": [
@@ -923,6 +934,17 @@
         "detail": "array"
       },
       "required": []
+    },
+    "ReconciliationBody": {
+      "properties": {
+        "decision": "string",
+        "expected_revision": "integer",
+        "reason": "string"
+      },
+      "required": [
+        "decision",
+        "expected_revision"
+      ]
     },
     "ScheduleRequest": {
       "properties": {

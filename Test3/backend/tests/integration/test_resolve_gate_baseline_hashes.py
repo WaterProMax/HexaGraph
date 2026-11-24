@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry
 from app.execution.baseline import hash_artifact
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
@@ -46,9 +47,14 @@ def _card(code: str) -> TaskCard:
 @pytest.fixture
 async def app(tmp_path):
     app = create_app()
-    app.state.workbench = Workbench(
-        Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path
+    bench = Workbench(
+        Gateway(load_models(), ScriptedProvider()),
+        RoleRegistry(load_roles()),
+        tmp_path,
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
     )
+    bench.execution_safety_ready = True
+    app.state.workbench = bench
     try:
         yield app
     finally:

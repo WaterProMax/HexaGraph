@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.agents.runtime import RoleRegistry
 from app.execution.authorization import decide_execution
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.services.runtime import Workbench
@@ -25,6 +26,7 @@ def _run(bench: Workbench, *, plan_status: str = "approved"):
     project = bench.create_project("authz")
     run = bench.create_run(project["id"], "idea")
     run.artifacts["plan"] = {"tasks": [], "work_packages": []}
+    run.artifacts["baseline_provenance"] = "fixture"
     run.gates.append({"id": "G-P", "kind": "PLAN基线确认", "status": plan_status, "payload": {}})
     if plan_status == "approved":
         run.approved_baseline_hashes = {"PLAN": "p" * 64}
@@ -41,7 +43,7 @@ def test_pending_plan_blocks_schedule_in_every_mode(tmp_path: Path) -> None:
         assert decision.blocked_reason == "plan_not_approved"
 
 
-def test_real_legacy_is_rejected_but_scripted_legacy_is_simulated(tmp_path: Path) -> None:
+def test_scripted_provider_does_not_authorize_legacy_execution(tmp_path: Path) -> None:
     real_bench = _bench(tmp_path / "real", _RealProvider())
     real_run = _run(real_bench)
     denied = decide_execution(real_bench, real_run, "schedule")
@@ -51,10 +53,20 @@ def test_real_legacy_is_rejected_but_scripted_legacy_is_simulated(tmp_path: Path
 
     fake_bench = _bench(tmp_path / "scripted", ScriptedProvider([]))
     fake_run = _run(fake_bench)
-    allowed = decide_execution(fake_bench, fake_run, "schedule")
+    also_denied = decide_execution(fake_bench, fake_run, "schedule")
+    assert also_denied.allowed is False
+    assert also_denied.error_category == "profile_not_granted_v1"
+
+    simulated_bench = Workbench(
+        Gateway(load_models(), ScriptedProvider([])),
+        RoleRegistry(load_roles()),
+        tmp_path / "simulated",
+        execution_policy=ExecutionPolicy(simulated=True),
+    )
+    simulated_run = _run(simulated_bench)
+    allowed = decide_execution(simulated_bench, simulated_run, "schedule")
     assert allowed.allowed is True
     assert allowed.simulated is True
-    assert allowed.evidence_level == "scripted"
 
 
 def test_unspecified_profile_fails_closed(tmp_path: Path) -> None:
@@ -84,15 +96,26 @@ def test_granted_real_requires_safety_gate(tmp_path: Path) -> None:
     assert allowed.simulated is False
 
 
-def test_granted_scripted_may_reach_schedule_but_stays_simulated(tmp_path: Path) -> None:
+def test_granted_scripted_still_needs_safety_or_simulated_executor(tmp_path: Path) -> None:
     bench = _bench(tmp_path, ScriptedProvider([]))
     run = _run(bench)
     run.execution_profile = "granted_v1"
     run.artifacts["execution_profile"] = "granted_v1"
 
-    decision = decide_execution(bench, run, "schedule")
-    assert decision.allowed is True
-    assert decision.simulated is True
+    denied = decide_execution(bench, run, "schedule")
+    assert denied.allowed is False
+    assert denied.error_category == "execution_safety_not_ready"
+
+    simulated = Workbench(
+        Gateway(load_models(), ScriptedProvider([])),
+        RoleRegistry(load_roles()),
+        tmp_path / "sim",
+        execution_policy=ExecutionPolicy(simulated=True),
+    )
+    sim_run = _run(simulated)
+    sim_run.execution_profile = "granted_v1"
+    sim_run.artifacts["execution_profile"] = "granted_v1"
+    assert decide_execution(simulated, sim_run, "schedule").allowed is True
 
 
 def test_accept_uses_the_same_policy(tmp_path: Path) -> None:
@@ -102,7 +125,16 @@ def test_accept_uses_the_same_policy(tmp_path: Path) -> None:
 
     fake_bench = _bench(tmp_path / "scripted", ScriptedProvider([]))
     fake_run = _run(fake_bench)
-    assert decide_execution(fake_bench, fake_run, "accept").allowed is True
+    assert decide_execution(fake_bench, fake_run, "accept").allowed is False
+
+    simulated = Workbench(
+        Gateway(load_models(), ScriptedProvider([])),
+        RoleRegistry(load_roles()),
+        tmp_path / "sim-accept",
+        execution_policy=ExecutionPolicy(simulated=True),
+    )
+    sim_run = _run(simulated)
+    assert decide_execution(simulated, sim_run, "accept").allowed is True
 
 
 def test_cross_project_is_rejected_before_mode(tmp_path: Path) -> None:

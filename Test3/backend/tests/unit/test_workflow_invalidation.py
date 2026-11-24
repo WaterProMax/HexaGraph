@@ -16,7 +16,7 @@ from app.llm.providers import ScriptedProvider
 from app.schemas.execution_grant import ExecutionGrant
 from app.services.runtime import Workbench
 from app.settings import load_models, load_roles
-from app.workflow.invalidation import baseline_drift
+from app.workflow.invalidation import baseline_drift, baseline_provenance
 from app.workflow.projection import project_workflow_projection
 from tests.p1_support import install_plan, make_grant
 
@@ -29,6 +29,7 @@ def _bench(tmp_path: Path) -> Workbench:
 
 async def _prepared(tmp_path: Path, monkeypatch) -> tuple[Workbench, object]:
     bench = _bench(tmp_path)
+    bench.execution_safety_ready = True
     project = bench.create_project("invalidation")
     run = bench.create_run(project["id"], "idea")
     run.engine.current = "6"
@@ -36,6 +37,7 @@ async def _prepared(tmp_path: Path, monkeypatch) -> tuple[Workbench, object]:
     hashes = {"PLAN": hash_artifact(run.artifacts["plan"])}
     run.artifacts["approvals"] = [{"kind": "PLAN基线确认", "actor": "leader"}]
     await bench.persist_run_execution_state(run.id, "granted_v1", hashes)
+    run.artifacts["baseline_provenance"] = "approved"
     await bench.add_grant(make_grant(run.id, ["T-01"], hashes=hashes))
 
     async def boom(*_args, **_kwargs):
@@ -82,10 +84,17 @@ async def test_reapproval_allows_new_grant_but_never_revives_old_one(tmp_path, m
     with pytest.raises(GrantRejected):
         await bench.schedule_once(run)
 
-    run.gates.append({"id": "G-P2", "kind": "PLAN基线确认", "status": "pending", "payload": {}})
-    await bench.resolve_gate(run, "G-P2", "approve", {}, actor="leader")
+    gate = next(
+        item
+        for item in reversed(run.gates)
+        if item["kind"] == "PLAN基线确认" and item["status"] == "pending"
+    )
+    assert gate["payload"].get("candidate") is True
+    await bench.resolve_gate(run, gate["id"], "approve", {}, actor="leader")
     assert baseline_drift(run) == []
-    run.paused = False
+    assert run.paused is False
+    assert "workflow_candidate" not in run.artifacts
+    assert run.artifacts["workflow_adopted_candidates"]
     new_hashes = run_approved_baseline_hashes(run)
     old_grants = await bench.grants_for_run(run.id)
     assert all(grant.status == "stale" for grant in old_grants)
@@ -128,3 +137,48 @@ async def test_concurrent_schedule_after_drift_still_rejects(tmp_path, monkeypat
     results = await asyncio.gather(bench.schedule_once(run), bench.schedule_once(run), return_exceptions=True)
     assert all(isinstance(item, GrantRejected) for item in results)
     assert len(run.artifacts["workflow_invalidations"]) == 1
+
+def test_historical_hash_with_resolved_gate_is_checked(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    project = bench.create_project("historical")
+    run = bench.create_run(project["id"], "idea")
+    run.engine.current = "6"
+    install_plan(bench, run, ["T-01"])
+    plan = run.artifacts["plan"]
+    run.approved_baseline_hashes = {"PLAN": hash_artifact(plan)}
+    run.artifacts["approved_baseline_hashes"] = dict(run.approved_baseline_hashes)
+    # Upgrade-era run: resolved gate, no artifacts.approvals array.
+    run.gates.append({"id": "G-old", "kind": "PLAN基线确认", "status": "approved", "payload": {}})
+    assert baseline_provenance(run) == "approved"
+    assert baseline_drift(run) == []
+    plan["tasks"][0]["title"] = "changed"
+    assert baseline_drift(run) == ["PLAN"]
+
+
+def test_hash_only_without_provenance_is_not_trusted(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    project = bench.create_project("unverifiable")
+    run = bench.create_run(project["id"], "idea")
+    run.artifacts["plan"] = {"tasks": [], "work_packages": []}
+    run.approved_baseline_hashes = {"PLAN": "p" * 64}
+    run.execution_profile = "granted_v1"
+    run.artifacts["execution_profile"] = "granted_v1"
+
+    from app.execution.authorization import decide_execution
+
+    assert baseline_provenance(run) == "unknown"
+    decision = decide_execution(bench, run, "schedule")
+    assert decision.allowed is False
+    assert decision.error_category == "baseline_unverifiable"
+    assert baseline_drift(run) == []
+    assert "approvals" not in run.artifacts
+
+
+def test_pending_gate_does_not_count_as_approved_baseline(tmp_path: Path) -> None:
+    bench = _bench(tmp_path)
+    project = bench.create_project("pending")
+    run = bench.create_run(project["id"], "idea")
+    run.artifacts["plan"] = {"tasks": [], "work_packages": []}
+    run.gates.append({"id": "G-p", "kind": "PLAN基线确认", "status": "pending", "payload": {}})
+    assert baseline_provenance(run) == "none"
+    assert baseline_drift(run) == []

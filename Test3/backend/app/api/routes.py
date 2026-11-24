@@ -174,6 +174,28 @@ async def reconcile_run(run_id: str, request: Request) -> dict[str, Any]:
     return wb(request).reconcile_run(_run(request, run_id))
 
 
+class ReconciliationBody(BaseModel):
+    decision: str
+    expected_revision: int
+    reason: str = ""
+
+
+@router.post("/runs/{run_id}/reconcile/{task_code}")
+async def resolve_reconciliation(run_id: str, task_code: str, body: ReconciliationBody, request: Request) -> Any:
+    actor = (request.headers.get("X-Bot-Id") or "").strip()
+    if not actor:
+        raise HTTPException(400, "X-Bot-Id header is required")
+    run = _run(request, run_id)
+    try:
+        return await wb(request).resolve_reconciliation(
+            run, task_code, body.decision, body.expected_revision, actor=actor, reason=body.reason
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/runs/{run_id}/stages")
 async def stages(run_id: str, request: Request) -> dict[str, Any]:
     run = _run(request, run_id)

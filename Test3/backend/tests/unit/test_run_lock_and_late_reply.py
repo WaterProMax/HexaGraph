@@ -9,6 +9,7 @@ from app.agents.runtime import RoleRegistry
 from app.errors import GrantRejected
 from app.execution.generation import GenerationGuard
 from app.execution.run_lock import RunLockRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
@@ -121,7 +122,8 @@ def _card(code: str, depends_on: list[str] | None = None) -> TaskCard:
 
 @pytest.fixture
 async def bench(tmp_path):
-    workbench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path)
+    workbench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path, execution_policy=ExecutionPolicy(local_execution_authorized=True))
+    workbench.execution_safety_ready = True
     try:
         yield workbench
     finally:

@@ -16,16 +16,31 @@ from app.execution.run_profile import run_approved_baseline_hashes
 _ARTIFACT_KEYS = (("SPEC", "spec"), ("DESIGN", "design"), ("PLAN", "plan"))
 
 
+def baseline_provenance(run: Any) -> str:
+    artifacts = getattr(run, "artifacts", None) or {}
+    marked = artifacts.get("baseline_provenance")
+    if marked == "approved":
+        return "approved"
+    if marked == "fixture":
+        return "fixture"
+    if artifacts.get("approvals"):
+        return "approved"
+    for gate in getattr(run, "gates", None) or []:
+        if gate.get("kind") in {"SPEC基线确认", "DESIGN基线确认", "PLAN基线确认"} and gate.get("status") == "approved":
+            return "approved"
+    return "unknown" if run_approved_baseline_hashes(run) else "none"
+
+
 def baseline_drift(run: Any) -> list[str]:
     """Return approved keys whose current artifact no longer matches.
 
-    Only runs with a recorded human-gate approval are compared.  Fixtures that
-    set placeholder hashes for grant-scope tests are not real approvals, and
-    turning them into ``baseline_stale`` would be a false positive.
+    Only a verifiable human approval is used.  Fixture placeholders never drive
+    drift, and hash-only runs without any provenance become ``unknown`` (blocked
+    by authorization) rather than being silently trusted.
     """
-    artifacts = getattr(run, "artifacts", None) or {}
-    if not artifacts.get("approvals"):
+    if baseline_provenance(run) != "approved":
         return []
+    artifacts = getattr(run, "artifacts", None) or {}
     approved = run_approved_baseline_hashes(run)
     drift: list[str] = []
     for key, artifact_key in _ARTIFACT_KEYS:
@@ -56,4 +71,4 @@ def invalidation_record(keys: list[str], reason: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["baseline_drift", "invalidation_record"]
+__all__ = ["baseline_drift", "baseline_provenance", "invalidation_record"]

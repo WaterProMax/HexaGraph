@@ -8,6 +8,8 @@ note unchanged.
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import re
 from typing import Any
@@ -18,6 +20,8 @@ from app.memory.store import SecretInBody, assert_no_secrets
 from app.schemas.bot import BotInstance
 
 TIMEOUT_SECONDS = 25.0
+logger = logging.getLogger(__name__)
+
 MAX_INPUT_CHARS = 8000
 _SECRET_RE = re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9._\-]{5,}")
 
@@ -76,7 +80,9 @@ async def organize_note(gateway: Gateway, bot: BotInstance, raw: str) -> dict[st
             timeout=TIMEOUT_SECONDS,
         )
         return _clean(result.parsed)
-    except Exception:  # noqa: BLE001 - best effort, caller keeps the raw note
+    except Exception as exc:  # noqa: BLE001 - best effort, caller keeps the raw note
+        category = getattr(exc, "category", "") or exc.__class__.__name__
+        logger.warning("memory organize skipped (%s); raw note kept", category)
         return None
 
 

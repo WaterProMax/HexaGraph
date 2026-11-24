@@ -14,6 +14,7 @@ from app.discussion.models import DecisionPackage, DiscussionBudget, DiscussionS
 from app.discussion.session_store import DiscussionSessionStore
 from app.errors import ValidationFailed
 from app.execution.baseline import canonical_artifact_bytes, hash_artifact
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.services.runtime import RunState, Workbench
@@ -22,7 +23,10 @@ from app.settings import load_models, load_roles
 
 def _bench(tmp_path) -> Workbench:
     return Workbench(
-        Gateway(load_models(), ScriptedProvider([])), RoleRegistry(load_roles()), tmp_path
+        Gateway(load_models(), ScriptedProvider([])),
+        RoleRegistry(load_roles()),
+        tmp_path,
+        execution_policy=ExecutionPolicy(simulated=True),
     )
 
 

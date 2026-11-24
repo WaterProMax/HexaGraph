@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.agents.runtime import RoleRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.services.runtime import Workbench
@@ -20,7 +21,8 @@ class _DummyRealProvider:
 
 
 def _bench(tmp_path: Path, provider) -> Workbench:
-    return Workbench(Gateway(load_models(), provider), RoleRegistry(load_roles()), tmp_path)
+    policy = ExecutionPolicy(simulated=True) if isinstance(provider, ScriptedProvider) else None
+    return Workbench(Gateway(load_models(), provider), RoleRegistry(load_roles()), tmp_path, execution_policy=policy)
 
 
 def _run(bench: Workbench, *, done: bool = True):
@@ -28,7 +30,7 @@ def _run(bench: Workbench, *, done: bool = True):
     run = bench.create_run(project["id"], "idea")
     run.artifacts["plan"] = {"tasks": [], "work_packages": []}
     if done:
-        run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}}
+        run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}, "evidence": [{"kind": "simulated", "summary": "ok", "path": ""}]}
         run.artifacts["acceptance"] = {"features": [], "nonfunc": [], "matrix": []}
         run.gates.append(
             {"id": "G-A", "kind": "验收确认", "status": "approved", "payload": {"pass": True}}
@@ -71,6 +73,7 @@ def test_real_execution_requires_passed_verification(tmp_path: Path) -> None:
     provider = _DummyRealProvider()
     bench = _bench(tmp_path, provider)
     run = _run(bench, done=True)
+    run.tasks["T-01"]["evidence"] = [{"kind": "command", "summary": "pytest ok", "path": "log"}]
     bench.gateway.stats["calls"] = 1
 
     evidence = evidence_for_run(bench, run)
@@ -84,10 +87,51 @@ def test_real_execution_requires_passed_verification(tmp_path: Path) -> None:
 def test_pending_acceptance_is_unknown_not_passed(tmp_path: Path) -> None:
     bench = _bench(tmp_path, ScriptedProvider([]))
     run = _run(bench, done=False)
-    run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}}
+    run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}, "evidence": [{"kind": "simulated", "summary": "ok", "path": ""}]}
     run.gates.append({"id": "G-A", "kind": "验收确认", "status": "pending", "payload": {}})
 
     evidence = evidence_for_run(bench, run)
 
     assert evidence["verification_status"] == "unknown"
     assert evidence["level"] == "scripted"
+
+def test_manual_override_is_not_a_test_pass(tmp_path: Path) -> None:
+    bench = _bench(tmp_path, _DummyRealProvider())
+    run = _run(bench, done=False)
+    run.tasks["T-01"] = {"state": "done", "code": "T-01", "card": {}}
+    run.status = "done"
+    run.tasks["T-01"]["evidence"] = [{"kind": "command", "summary": "pytest failed", "path": "log"}]
+    run.gates.append(
+        {
+            "id": "G-A",
+            "kind": "验收确认",
+            "status": "approved",
+            "payload": {"pass": False},
+            "decision": {"reason": "人工接受风险"},
+        }
+    )
+    evidence = evidence_for_run(bench, run)
+    assert evidence["verification_status"] == "overridden"
+    assert evidence["verification_label"] == "人工覆盖（原验收未通过）"
+    assert run.status == "done"
+
+
+def test_skipped_only_run_is_not_executed(tmp_path: Path) -> None:
+    bench = _bench(tmp_path, _DummyRealProvider())
+    run = _run(bench, done=False)
+    run.tasks["T-01"] = {"state": "skipped", "code": "T-01", "card": {}}
+    evidence = evidence_for_run(bench, run)
+    assert evidence["execution_mode"] == "not_run"
+    assert evidence["level"] != "real_execution"
+
+
+def test_model_calls_do_not_leak_between_runs(tmp_path: Path) -> None:
+    bench = _bench(tmp_path, ScriptedProvider([]))
+    run_a = _run(bench, done=False)
+    run_b = _run(bench, done=False)
+    bench.gateway.stats["calls"] = 1
+    run_a.artifacts["model_calls"] = 1
+    run_b.artifacts.pop("plan", None)
+
+    assert evidence_for_run(bench, run_a)["model_mode"] == "scripted"
+    assert evidence_for_run(bench, run_b)["model_mode"] == "not_called"

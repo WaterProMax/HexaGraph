@@ -7,6 +7,7 @@ import pytest
 
 from app.agents.runtime import RoleRegistry
 from app.errors import GrantRejected
+from app.execution.simulation import ExecutionPolicy
 from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
@@ -45,7 +46,8 @@ def _card(code: str) -> TaskCard:
 
 
 def _bench(tmp_path: Path) -> tuple[Workbench, object]:
-    bench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path)
+    bench = Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path, execution_policy=ExecutionPolicy(local_execution_authorized=True))
+    bench.execution_safety_ready = True
     project = bench.create_project("grants")
     run = bench.create_run(project["id"], "idea")
     run.artifacts["plan"] = TaskGraph(tasks=[_card("T-01"), _card("T-02")]).model_dump()
@@ -85,6 +87,7 @@ async def test_subset_grant_schedules_only_requested_task(bench_run, monkeypatch
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     await bench.add_grant(_grant(["T-01", "T-02"]).model_copy(update={"run_id": run.id}))
     calls: list[str] = []
 
@@ -104,6 +107,7 @@ async def test_granted_without_grant_is_403(bench_run) -> None:
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     with pytest.raises(GrantRejected) as excinfo:
         await bench.schedule_once(run, task_codes={"T-01"})
     assert excinfo.value.category == "grant_required"
@@ -115,6 +119,7 @@ async def test_superset_is_scope_mismatch(bench_run) -> None:
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     await bench.add_grant(_grant(["T-01"]).model_copy(update={"run_id": run.id}))
     with pytest.raises(GrantRejected) as excinfo:
         await bench.schedule_once(run, task_codes={"T-01", "T-99"})
@@ -127,6 +132,7 @@ async def test_all_granted_tasks_done_and_no_body_is_empty_request(bench_run) ->
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     await bench.add_grant(_grant(["T-01"]).model_copy(update={"run_id": run.id}))
     run.tasks["T-01"]["state"] = "done"
     with pytest.raises(GrantRejected) as excinfo:
@@ -140,6 +146,7 @@ async def test_revision_bump_does_not_stale_grant(bench_run, monkeypatch) -> Non
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     await bench.add_grant(_grant(["T-01"]).model_copy(update={"run_id": run.id}))
     run.revision += 5
 
@@ -172,6 +179,7 @@ async def test_concurrent_same_task_has_one_in_flight(bench_run, monkeypatch) ->
     bench, run = bench_run
     set_run_execution_profile(run, "granted_v1")
     set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+    run.artifacts["baseline_provenance"] = "fixture"
     await bench.add_grant(_grant(["T-01"]).model_copy(update={"run_id": run.id}))
     in_flight = 0
     peak = 0

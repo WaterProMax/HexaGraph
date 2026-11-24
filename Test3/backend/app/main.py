@@ -46,7 +46,12 @@ async def lifespan(app: FastAPI):
 
                 provider = DiscussionDemoProvider()
     gateway = Gateway(models, provider, data_dir=settings.data_dir())
-    app.state.workbench = Workbench(gateway, RoleRegistry(roles), settings.data_dir())
+    app.state.workbench = Workbench(
+        gateway,
+        RoleRegistry(roles),
+        settings.data_dir(),
+        execution_policy=getattr(app.state, "execution_policy", None),
+    )
     app.state.settings = settings
     try:
         await recover_interrupted_sessions(app.state.workbench)
@@ -60,8 +65,9 @@ async def lifespan(app: FastAPI):
         await app.state.workbench.close()
 
 
-def create_app() -> FastAPI:
+def create_app(*, execution_policy=None) -> FastAPI:
     app = FastAPI(title="HexaGraph Test3", version="0.1.0", lifespan=lifespan)
+    app.state.execution_policy = execution_policy
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],

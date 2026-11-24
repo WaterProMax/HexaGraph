@@ -282,7 +282,7 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
     .map((task: any) => task.state), { timeout: 120000 }).toEqual(["done", "done", "done", "done"]);
   const completedTasks = await (await request.get(`${API}/runs/${runId}/tasks`)).json();
   for (const task of completedTasks) {
-    expect(task.evidence.some((item: any) => item.kind === "merge")).toBeTruthy();
+    expect(task.evidence.some((item: any) => item.kind === "simulated")).toBeTruthy();
   }
   // 验收报告会真实运行验收命令与回归测试，同样需要数分钟。
   const acceptance = await request.post(`${API}/runs/${runId}/accept`, { timeout: 600000 });

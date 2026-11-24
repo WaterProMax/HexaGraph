@@ -4,6 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
@@ -44,9 +45,15 @@ def _card(code: str) -> TaskCard:
 @pytest.fixture
 async def app(tmp_path):
     app = create_app()
-    app.state.workbench = Workbench(
-        Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path
+    bench = Workbench(
+        Gateway(load_models(), ScriptedProvider()),
+        RoleRegistry(load_roles()),
+        tmp_path,
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
     )
+    # Test-injected safety: granted schedules below exercise grant policy, not isolation.
+    bench.execution_safety_ready = True
+    app.state.workbench = bench
     try:
         yield app
     finally:
@@ -66,6 +73,7 @@ def _run(app, *, granted: bool):
     if granted:
         set_run_execution_profile(run, "granted_v1")
         set_approved_baseline_hashes(run, {"PLAN": "aaa"})
+        run.artifacts["baseline_provenance"] = "fixture"
     return run
 
 

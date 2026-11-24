@@ -7,6 +7,7 @@ import pytest
 
 from app.agents.runtime import RoleRegistry
 from app.errors import ValidationFailed
+from app.execution.simulation import ExecutionPolicy
 from app.fixtures.study_room import EXPECTED_STATUS, IDEA, QUESTIONS, scripted_m1_queue
 from app.fixtures.study_room import issues as study_issues
 from app.llm.gateway import Gateway
@@ -41,7 +42,12 @@ def _card(**kwargs) -> TaskCard:
 
 def _bench(tmp_path: Path, queue: list | None = None) -> tuple[Workbench, ScriptedProvider]:
     provider = ScriptedProvider(queue or [])
-    bench = Workbench(Gateway(load_models(), provider), RoleRegistry(load_roles()), tmp_path)
+    bench = Workbench(
+        Gateway(load_models(), provider),
+        RoleRegistry(load_roles()),
+        tmp_path,
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
+    )
     return bench, provider
 
 

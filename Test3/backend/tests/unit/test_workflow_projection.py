@@ -41,6 +41,7 @@ def _session(status: str, *, project_id: str = "P1", package: bool | None = None
 def _run(*, project_id: str = "P1", session_id: str | None = "S1", gates=None) -> RunState:
     run = RunState(id="R1", project_id=project_id, idea="idea")
     run.artifacts["plan"] = {"tasks": [], "work_packages": []}
+    run.artifacts["baseline_provenance"] = "fixture"
     if session_id is not None:
         run.artifacts["discussion_session_id"] = session_id
     run.gates.extend(gates or [])
@@ -165,3 +166,13 @@ def test_find_run_for_session_ignores_other_sessions() -> None:
     other.id = "R2"
     found = find_run_for_session({"R1": matching, "R2": other}, "S1")
     assert found is matching
+
+def test_active_grant_is_not_reported_as_authorization_pending() -> None:
+    from types import SimpleNamespace
+
+    run = _run(gates=[_gate("PLAN基线确认", "approved")])
+    run.approved_baseline_hashes = {"PLAN": "p" * 64}
+    run.tasks["T-01"] = {"state": "ready", "code": "T-01", "card": {}}
+    grant = SimpleNamespace(status="active", task_codes=["T-01"])
+    projection = project_workflow_projection(run=run, grants=[grant])
+    assert projection.stage == "plan_approved"

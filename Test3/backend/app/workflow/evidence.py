@@ -31,24 +31,34 @@ def _provider(bench: Any) -> Any:
     return getattr(getattr(bench, "gateway", None), "provider", None)
 
 
-def model_mode_for(bench: Any) -> str:
+def model_mode_for(bench: Any, run: Any | None = None) -> str:
     provider = _provider(bench)
+    calls = int(((getattr(run, "artifacts", None) or {}).get("model_calls") or 0)) if run is not None else 0
+    inferred = bool((getattr(run, "artifacts", None) or {}).get("plan")) if run is not None else False
     if isinstance(provider, (ScriptedProvider, ReplayProvider)):
-        return "scripted"
-    stats = getattr(getattr(bench, "gateway", None), "stats", None) or {}
-    return "real" if int(stats.get("calls") or 0) > 0 else "not_called"
+        return "scripted" if calls or inferred else "not_called"
+    return "real" if calls or inferred else "not_called"
 
 
 def execution_mode_for(bench: Any, run: Any) -> str:
-    provider = _provider(bench)
-    simulated = isinstance(provider, (ScriptedProvider, ReplayProvider))
     tasks = getattr(run, "tasks", None) or {}
-    executed = any(str((task or {}).get("state") or "") in _EXECUTED_TASK_STATES for task in tasks.values())
-    if str(getattr(run, "status", "")) == "done":
-        executed = True
-    if not executed:
+    kinds: set[str] = set()
+    has_attempt = False
+    for task in tasks.values():
+        task = task or {}
+        if task.get("attempt"):
+            has_attempt = True
+        for item in task.get("evidence") or []:
+            if isinstance(item, dict) and item.get("kind"):
+                kinds.add(str(item["kind"]))
+    if not kinds and not has_attempt:
         return "not_run"
-    return "simulated" if simulated else "real"
+    real_kinds = kinds - {"simulated"}
+    if getattr(bench, "simulated_executor", None) is not None:
+        return "simulated"
+    if kinds and not real_kinds:
+        return "simulated"
+    return "real"
 
 
 def _acceptance_gate(run: Any) -> dict[str, Any] | None:
@@ -59,8 +69,6 @@ def _acceptance_gate(run: Any) -> dict[str, Any] | None:
 
 
 def verification_status_for(run: Any) -> str:
-    if str(getattr(run, "status", "")) == "done":
-        return "passed"
     gate = _acceptance_gate(run)
     if gate is None:
         return "unknown" if getattr(run, "artifacts", {}).get("acceptance") else "not_run"
@@ -70,10 +78,16 @@ def verification_status_for(run: Any) -> str:
     if status == "rejected":
         return "failed"
     payload = gate.get("payload") or {}
-    return "passed" if bool(payload.get("pass")) else "failed"
+    if bool(payload.get("pass")):
+        return "passed"
+    # A failed acceptance approved with a written reason is a human override,
+    # never a test pass.
+    return "overridden"
 
 
-def verification_label_for(level: str) -> str:
+def verification_label_for(level: str, status: str = "") -> str:
+    if status == "overridden":
+        return "人工覆盖（原验收未通过）"
     if level == "real_execution":
         return "真实执行验收"
     if level == "scripted":
@@ -84,15 +98,19 @@ def verification_label_for(level: str) -> str:
 
 
 def evidence_for_run(bench: Any, run: Any) -> dict[str, Any]:
-    model_mode = model_mode_for(bench)
+    model_mode = model_mode_for(bench, run)
     execution_mode = execution_mode_for(bench, run)
     verification_status = verification_status_for(run)
-    if execution_mode == "real" and verification_status in {"passed", "failed"}:
+    if verification_status == "overridden":
+        level = "real_execution" if execution_mode == "real" else (
+            "scripted" if execution_mode == "simulated" else "not_run"
+        )
+    elif execution_mode == "real" and verification_status in {"passed", "failed"}:
         level = "real_execution"
     elif model_mode == "real":
         level = "real_model"
     elif model_mode == "scripted" and (
-        getattr(run, "artifacts", {}).get("plan")
+        (getattr(run, "artifacts", {}).get("plan"))
         or getattr(run, "tasks", None)
         or verification_status != "not_run"
     ):
@@ -107,7 +125,7 @@ def evidence_for_run(bench: Any, run: Any) -> dict[str, Any]:
         "model_mode": model_mode,
         "execution_mode": execution_mode,
         "verification_status": verification_status,
-        "verification_label": verification_label_for(level),
+        "verification_label": verification_label_for(level, verification_status),
         "verification": {
             "status": verification_status,
             "tool": "pytest",

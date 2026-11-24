@@ -14,6 +14,7 @@ from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.schemas.common import AcceptanceCheck, Budget
 from app.schemas.docs import TaskCard, TaskGraph
+from app.execution.simulation import ExecutionPolicy
 from app.schemas.execution_grant import ExecutionGrant
 from app.services.runtime import Workbench
 from app.settings import load_models, load_roles
@@ -24,6 +25,9 @@ def make_bench(data_dir: Path) -> Workbench:
         Gateway(load_models(), ScriptedProvider()),
         RoleRegistry(load_roles()),
         data_dir,
+        # Test fixture policy: legacy executor is authorized only inside these
+        # isolated tmp dirs. Product Workbench keeps the real default (denied).
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
     )
 
 
@@ -107,6 +111,7 @@ async def persist_granted_profile(
     writer = getattr(bench, "persist_run_execution_state", None)
     if writer is not None:
         await writer(run.id, "granted_v1", payload)
+        run.artifacts["baseline_provenance"] = "fixture"
         return
     from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
 

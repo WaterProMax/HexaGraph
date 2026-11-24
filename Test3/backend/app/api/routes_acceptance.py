@@ -100,7 +100,12 @@ async def create_module_acceptance(run_id: str, request: Request) -> Any:
 
     return JSONResponse(
         status_code=201,
-        content={**acceptance.model_dump(), "evidence": evidence_for_run(bench, run)},
+        content={
+            **acceptance.model_dump(),
+            "decision": acceptance.status,
+            "evidence_uris": acceptance.evidence_uris,
+            "run_evidence": evidence_for_run(bench, run),
+        },
     )
 
 
@@ -127,7 +132,13 @@ async def create_defect(run_id: str, request: Request) -> Any:
     from app.workflow.evidence import evidence_for_run
 
     return JSONResponse(
-        status_code=201, content={**defect.model_dump(), "evidence": evidence_for_run(bench, run)}
+        status_code=201,
+        content={
+            **defect.model_dump(),
+            "decision": defect.status,
+            "evidence_uris": defect.evidence_uris,
+            "run_evidence": evidence_for_run(bench, run),
+        },
     )
 
 
@@ -147,7 +158,7 @@ async def get_defects(run_id: str, request: Request) -> Any:
 
     return {
         "items": [item.model_dump() for item in items],
-        "evidence": evidence_for_run(bench, bench.runs[run_id]),
+        "run_evidence": evidence_for_run(bench, bench.runs[run_id]),
     }
 
 
@@ -165,5 +176,5 @@ async def get_module_acceptances(run_id: str, request: Request) -> Any:
 
     return {
         "items": [item.model_dump() for item in items],
-        "evidence": evidence_for_run(bench, bench.runs[run_id]),
+        "run_evidence": evidence_for_run(bench, bench.runs[run_id]),
     }
