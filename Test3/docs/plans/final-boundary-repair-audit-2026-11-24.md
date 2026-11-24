@@ -30,8 +30,8 @@
 ## 改后离线测试（本轮实际运行）
 
 - 命令：`cd Test3/backend && .venv/bin/python -m pytest -o "addopts=-m 'not live'" -q`
-- 结果：`886 passed, 3 skipped, 2 deselected, 1 warning in 64.92s (0:01:04)`，退出码 0。
-- 日志：`/tmp/final_boundary_post2.log`
+- 结果：`886 passed, 3 skipped, 2 deselected, 1 warning in 52.56s`，退出码 0（最终代码含 per-run 串行化小修）。
+- 日志：`/tmp/final_boundary_post3.log`；前一次同语义运行 `/tmp/final_boundary_post2.log` 为 64.92s、同为 886 passed。
 - 前端：`npm test` → `427 passed (427)`，退出码 0；`npm run build` → `✓ built in 2.77s`，退出码 0。
 - 新增测试：`test_candidate_gate_rejection.py` 8、`test_candidate_adoption_atomicity.py` 8、`test_completion_proof.py` 15、`test_reconciliation_persistence.py` 9。
 - 更新：`test_workflow_reconciliation_api.py` 的正向样例改为真实任务分支 + merge；OpenAPI 结构快照仅新增 `ReconciliationBody.attempt_id`。

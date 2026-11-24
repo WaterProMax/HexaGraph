@@ -3,7 +3,8 @@
 ## 0. 交付提交
 
 - 代码与测试：`5a64bf0`（fix(workflow): 收口候选驳回、原子采用、成果证明与和解持久化）
-- 审计与交付文档：`6d8fc6f` 及其后的本文件更新
+- 并发串行化小修：`5acf739`（candidate gate 与任务执行共用 per-run 写锁，审计暂存不会吞掉并发事件）
+- 审计与交付文档：`6d8fc6f`、`59434ba` 及其后的本文件更新
 - 交付时 HEAD 以 `git log -1 --oneline` 为准；未 push、未开/改 PR。
 
 ## 1. 开工审计
@@ -30,8 +31,8 @@
 
 改后：
 
-- 同一命令：`886 passed, 3 skipped, 2 deselected, 1 warning in 64.92s (0:01:04)`，退出码 0。
-- 日志：`/tmp/final_boundary_post2.log`
+- 同一命令（最终代码，含 per-run 串行化小修）：`886 passed, 3 skipped, 2 deselected, 1 warning in 52.56s`，退出码 0。
+- 日志：`/tmp/final_boundary_post3.log`（前一次同代码语义运行 `/tmp/final_boundary_post2.log` 为 64.92s，同为 886 passed）。
 - 前端：`npm test` → `427 passed (427)`，退出码 0；`npm run build` → `✓ built in 2.77s`，退出码 0。
 - 讨论主线 e2e：`npm run test:e2e:discussion` → `1 passed (8.2s)`，退出码 0（模拟执行器；日志 `/tmp/final_boundary_e2e.log`）。
 - 未跑：真实模型、真实容器隔离执行；产品 `execution_safety_ready` 仍为 `False`。
