@@ -178,6 +178,8 @@ class ReconciliationBody(BaseModel):
     decision: str
     expected_revision: int
     reason: str = ""
+    verified_safe_scope: str = ""
+    risk_accepted: bool = False
 
 
 @router.post("/runs/{run_id}/reconcile/{task_code}")
@@ -188,7 +190,14 @@ async def resolve_reconciliation(run_id: str, task_code: str, body: Reconciliati
     run = _run(request, run_id)
     try:
         return await wb(request).resolve_reconciliation(
-            run, task_code, body.decision, body.expected_revision, actor=actor, reason=body.reason
+            run,
+            task_code,
+            body.decision,
+            body.expected_revision,
+            actor=actor,
+            reason=body.reason,
+            verified_safe_scope=body.verified_safe_scope,
+            risk_accepted=body.risk_accepted,
         )
     except RevisionConflict as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -285,6 +294,8 @@ async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
         return _run_view(wb(request).set_run_control(_run(request, run_id), "resume"))
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/terminate")

@@ -194,6 +194,10 @@ def _iso_utc(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def key_map_letter(key: str) -> str:
+    return {"SPEC": "spec", "DESIGN": "design", "PLAN": "plan"}.get(key, "")
+
+
 def _git_head(repo: Path) -> str:
     from app.workspace.gitops import _git_sync
 
@@ -470,6 +474,7 @@ class Workbench:
             if events:
                 run.events = events
             self._restore_execution_profile(run, data)
+            self._migrate_legacy_candidate(run)
             self._ensure_tasks_from_events(run)
             self._rebuild_task_states(run)
             release = run_dir / "release"
@@ -505,19 +510,67 @@ class Workbench:
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
 
-    def _mark_unknown_executions(self, run: RunState, pending: dict[str, str]) -> None:
-        """Restored running/verifying tasks without evidence are unknown, not ready.
+    def _migrate_legacy_candidate(self, run: RunState) -> None:
+        """Old dict-shaped candidates/gates must not adopt live artifacts."""
+        pointer = (run.artifacts or {}).get("workflow_candidate")
+        if not isinstance(pointer, dict):
+            return
+        run.artifacts.pop("workflow_candidate", None)
+        for gate in run.gates:
+            payload = gate.get("payload") or {}
+            if gate.get("status") == "pending" and payload.get("candidate") and not payload.get("candidate_id"):
+                gate["status"] = "rejected"
+                gate["decision"] = {"reason": "legacy_candidate_requires_regeneration"}
 
-        They are paused and flagged so the scheduler never silently re-runs a
-        step that may already have produced external side effects.  A human
-        reconciliation (``reconcile_run``) is required.
+    def _migrate_attempt_history(self, run: RunState) -> None:
+        for task in run.tasks.values():
+            current = task.get("attempt")
+            if not isinstance(current, dict):
+                continue
+            history = task.setdefault("attempt_history", [])
+            if current.get("attempt_id") not in {item.get("attempt_id") for item in history}:
+                history.append(copy.deepcopy(current))
+
+    def _tasks_requiring_reconciliation(self, run: RunState, pending: dict[str, str]) -> list[str]:
+        codes = set(pending)
+        for code, task in run.tasks.items():
+            if task.get("needs_reconciliation"):
+                codes.add(code)
+                continue
+            entries = list(task.get("attempt_history") or [])
+            current = task.get("attempt")
+            if isinstance(current, dict) and current.get("attempt_id") not in {
+                item.get("attempt_id") for item in entries
+            }:
+                entries.append(current)
+            if not entries:
+                continue
+            state = str(task.get("state") or "")
+            statuses = {str(item.get("status") or "") for item in entries}
+            if state == "done":
+                if statuses & {"started", "unknown", "done"}:
+                    codes.add(code)
+                continue
+            if state in {"failed", "needs_human"} and statuses <= {"finished_failed"}:
+                continue
+            codes.add(code)
+        return sorted(
+            code
+            for code in codes
+            if code in run.tasks and str(run.tasks[code].get("state") or "") != "done"
+        )
+
+    def _mark_unknown_executions(self, run: RunState, pending: dict[str, str]) -> None:
+        """Any unproven attempt (even before repo/worktree work) blocks replay.
+
+        The scan uses attempt history plus the current attempt, not the restored
+        task state alone.  A human reconciliation is required.
         """
+        self._migrate_attempt_history(run)
         flagged: list[str] = []
-        for code in sorted(pending):
+        for code in self._tasks_requiring_reconciliation(run, pending):
             task = run.tasks.get(code)
             if task is None or task.get("needs_reconciliation"):
-                continue
-            if task.get("state") == "done":
                 continue
             task["needs_reconciliation"] = True
             task["paused"] = True
@@ -563,6 +616,8 @@ class Workbench:
         *,
         actor: str,
         reason: str = "",
+        verified_safe_scope: str = "",
+        risk_accepted: bool = False,
     ) -> dict[str, Any]:
         """Controlled, auditable resolution; never a generic ``force_success``."""
         task = run.tasks.get(code)
@@ -576,17 +631,43 @@ class Workbench:
         if decision == "continue_reconcile":
             return self.reconcile_run(run)
         if decision == "accept_evidence":
-            if attempt.get("status") != "done" or not attempt.get("commit"):
-                raise ValidationFailed("attempt has no terminal commit evidence")
-            repo = Path(str(attempt.get("repo") or ""))
-            if not (repo / ".git").exists() or _git_head(repo) != attempt["commit"]:
-                raise ValidationFailed("commit evidence does not match the workspace")
-            if dict(attempt.get("baseline_hashes") or {}) != dict(run_approved_baseline_hashes(run)):
-                raise ValidationFailed("attempt baseline no longer matches the run baseline")
+            attempt_id = attempt.get("attempt_id")
+            history = task.get("attempt_history") or []
+            proven = next(
+                (item for item in history if item.get("attempt_id") == attempt_id),
+                None,
+            )
+            if proven is None:
+                raise ValidationFailed("attempt_not_in_history")
+            from app.workflow.completion import verify_task_completion
+
+            report = verify_task_completion(
+                run,
+                task,
+                proven,
+                expected_repo=self.data_dir / "runs" / run.id / "repo",
+            )
+            if not report.ok:
+                task.setdefault("reconciliation_history", []).append(
+                    {
+                        "decision": "accept_evidence_rejected",
+                        "actor": actor,
+                        "reason": report.reason,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                        "attempt_id": attempt_id,
+                        "provenance": report.provenance,
+                    }
+                )
+                raise ValidationFailed(f"completion_not_proven:{report.reason}")
+            task["completion_proof"] = report.as_dict()
             event = "reconcile_accepted"
         elif decision == "mark_failed_safe_retry":
             if not reason.strip():
                 raise ValidationFailed("mark_failed_safe_retry requires a reason")
+            if not verified_safe_scope.strip():
+                raise ValidationFailed("verified_safe_scope is required")
+            if risk_accepted is not True:
+                raise ValidationFailed("risk_accepted must be true")
             event = "reconcile_failed"
         else:
             raise ValidationFailed(f"unknown reconciliation decision: {decision}")
@@ -602,6 +683,8 @@ class Workbench:
                 "reason": reason,
                 "at": datetime.now(timezone.utc).isoformat(),
                 "attempt_id": attempt.get("attempt_id"),
+                "verified_safe_scope": verified_safe_scope,
+                "risk_accepted": risk_accepted,
             }
         )
         self.emit(run, "task.reconciliation", code, {"decision": decision, "actor": actor}, actor)
@@ -1409,41 +1492,97 @@ class Workbench:
         if not blocks and run.artifacts.pop("baseline_pause_owned", False):
             run.paused = False
 
-    def _open_reapproval_gate(self, run: RunState, source_gate_id: str = "") -> dict[str, Any]:
-        """Create a new pending PLAN gate for a changed candidate baseline.
-
-        The already-decided source gate is never reopened or rewritten.  Human
-        approval of the new gate adopts the candidate hashes.
-        """
+    def _create_candidate(
+        self,
+        run: RunState,
+        documents: dict[str, Any],
+        changed_keys: list[str],
+        *,
+        source_kind: str,
+        source_gate_id: str = "",
+        mode: str = "cr",
+        affected: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Freeze an immutable candidate and supersede older pending ones."""
         from app.execution.baseline import hash_artifact
 
-        hashes = {}
-        for key, artifact_key in (("SPEC", "spec"), ("DESIGN", "design"), ("PLAN", "plan")):
-            artifact = run.artifacts.get(artifact_key)
-            if artifact is not None:
-                hashes[key] = hash_artifact(artifact)
-        candidate = {
-            "source_gate_id": source_gate_id,
-            "revision": run.revision,
-            "hashes": hashes,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+        seq = int(run.artifacts.get("candidate_seq") or 0) + 1
+        run.artifacts["candidate_seq"] = seq
+        key_map = {"spec": "SPEC", "design": "DESIGN", "plan": "PLAN"}
+        docs = {
+            key: copy.deepcopy(value)
+            for key, value in documents.items()
+            if key in key_map and value is not None
         }
-        previous = run.artifacts.get("workflow_candidate")
-        if previous:
-            run.artifacts.setdefault("workflow_candidate_history", []).append(previous)
-        run.artifacts["workflow_candidate"] = candidate
+        hashes = {key_map[key]: hash_artifact(value) for key, value in docs.items()}
+        immutable = {
+            "candidate_id": str(uuid.uuid4()),
+            "candidate_revision": seq,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "source_kind": source_kind,
+            "source_gate_id": source_gate_id,
+            "project_id": run.project_id,
+            "run_id": run.id,
+            "session_id": run.artifacts.get("discussion_session_id"),
+            "parent_approved_baseline_hashes": dict(run_approved_baseline_hashes(run)),
+            "documents": docs,
+            "hashes": hashes,
+            "changed_keys": list(changed_keys),
+            "mode": mode,
+            "affected": sorted(affected or []),
+        }
+        candidate = {**immutable, "candidate_hash": hash_artifact(immutable), "status": "pending"}
+        candidates = run.artifacts.setdefault("workflow_candidates", {})
+        for old in candidates.values():
+            if old.get("status") != "pending":
+                continue
+            old["status"] = "superseded"
+            old["superseded_by"] = candidate["candidate_id"]
+            for gate in run.gates:
+                if gate.get("status") != "pending":
+                    continue
+                if (gate.get("payload") or {}).get("candidate_id") == old["candidate_id"]:
+                    gate["status"] = "superseded"
+                    gate["decision"] = {"superseded_by": candidate["candidate_id"]}
+        candidates[candidate["candidate_id"]] = candidate
+        run.artifacts["workflow_candidate"] = candidate["candidate_id"]
         self._add_baseline_block(run)
-        gate = self._gate(
+        self._gate(
             run,
             "PLAN基线确认",
             {
                 "candidate": True,
+                "candidate_id": candidate["candidate_id"],
+                "candidate_hash": candidate["candidate_hash"],
+                "changed_keys": list(changed_keys),
                 "source_gate_id": source_gate_id,
-                "plan": run.artifacts.get("plan"),
-                "design": run.artifacts.get("design"),
+                "spec": docs.get("spec"),
+                "design": docs.get("design"),
+                "plan": docs.get("plan"),
             },
-        )["gate"]
-        return gate
+        )
+        self._persist_snapshot(run)
+        return candidate
+
+    def _open_reapproval_gate(self, run: RunState, source_gate_id: str = "") -> dict[str, Any]:
+        """Create an immutable candidate from current active artifacts + a gate."""
+        from app.workflow.invalidation import baseline_drift
+
+        keys = baseline_drift(run) or ["SPEC", "DESIGN", "PLAN"]
+        documents = {
+            "spec": run.artifacts.get("spec"),
+            "design": run.artifacts.get("design"),
+            "plan": run.artifacts.get("plan"),
+        }
+        docs = {key: value for key, value in documents.items() if value is not None}
+        changed = [key for key in keys if key_map_letter(key) in docs]
+        candidate = self._create_candidate(
+            run, docs, changed or sorted(docs), source_kind="drift", source_gate_id=source_gate_id, mode="drift"
+        )
+        for gate in reversed(run.gates):
+            if (gate.get("payload") or {}).get("candidate_id") == candidate["candidate_id"]:
+                return gate
+        raise ValidationFailed("candidate gate creation failed")
 
     def _record_gate_approval(self, run: RunState, gate: dict[str, Any], actor: str) -> None:
         """Append an immutable approval record bound to project/run/session."""
@@ -2109,10 +2248,58 @@ class Workbench:
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
         gate = next(g for g in run.gates if g["id"] == gate_id)
+        if gate.get("status") == "superseded":
+            raise RevisionConflict("candidate_superseded")
         if gate["status"] != "pending":
             raise ValidationFailed("关卡已裁决，不能重复推进")
         if expected_revision is not None and expected_revision != run.revision:
             raise RevisionConflict("revision mismatch")
+        if (
+            gate.get("kind") == "PLAN基线确认"
+            and decision == "approve"
+            and ((gate.get("payload") or {}).get("candidate") or run.artifacts.get("workflow_candidate"))
+        ):
+            # Validate every immutable binding before mutating gate/revision state.
+            if expected_revision is None:
+                raise ValidationFailed("expected_revision_required")
+            pre_payload = gate.get("payload") or {}
+            pre_id = str(pre_payload.get("candidate_id") or "")
+            pre_cand = (run.artifacts.get("workflow_candidates") or {}).get(pre_id)
+            if not isinstance(pre_cand, dict):
+                raise ValidationFailed("candidate_missing_regenerate")
+            if pre_cand.get("status") != "pending":
+                raise RevisionConflict("candidate_superseded")
+            from app.execution.baseline import hash_artifact as _hash_candidate
+
+            immutable = (
+                "candidate_id",
+                "candidate_revision",
+                "created_at",
+                "source_kind",
+                "source_gate_id",
+                "project_id",
+                "run_id",
+                "session_id",
+                "parent_approved_baseline_hashes",
+                "documents",
+                "hashes",
+                "changed_keys",
+                "mode",
+                "affected",
+            )
+            if _hash_candidate({key: pre_cand.get(key) for key in immutable}) != pre_cand.get(
+                "candidate_hash"
+            ) or pre_payload.get("candidate_hash") != pre_cand.get("candidate_hash"):
+                raise ValidationFailed("candidate_hash_mismatch")
+            if str(pre_cand.get("project_id")) != run.project_id or str(pre_cand.get("run_id")) != run.id:
+                raise ValidationFailed("candidate_binding_mismatch")
+            if pre_cand.get("session_id") and str(pre_cand.get("session_id")) != str(
+                run.artifacts.get("discussion_session_id")
+            ):
+                raise ValidationFailed("candidate_binding_mismatch")
+            if "SPEC" in (pre_cand.get("changed_keys") or []):
+                if not (payload.get("acknowledge_spec_change") is True and str(payload.get("reason") or "").strip()):
+                    raise ValidationFailed("spec_reapproval_required")
         gate["status"] = "approved" if decision == "approve" else "rejected"
         gate["decision"] = payload
         gate["resolved_by"] = actor
@@ -2186,25 +2373,87 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
-            candidate = bool((gate.get("payload") or {}).get("candidate")) or bool(
+            candidate_flag = bool((gate.get("payload") or {}).get("candidate")) or bool(
                 run.artifacts.get("workflow_candidate")
             )
-            if candidate:
-                # Adopt the changed candidate baseline: record every current
-                # artifact hash, keep old approvals/invalidations as history.
-                for key, artifact_key in (("SPEC", "spec"), ("DESIGN", "design"), ("PLAN", "plan")):
-                    if run.artifacts.get(artifact_key) is not None:
-                        self._record_approved_baseline(run, key, run.artifacts[artifact_key])
-                        self._freeze(run, key)
+            if candidate_flag:
+                if expected_revision is None:
+                    raise ValidationFailed("expected_revision_required")
+                gate_payload = gate.get("payload") or {}
+                candidate_id = str(gate_payload.get("candidate_id") or "")
+                candidates = run.artifacts.get("workflow_candidates") or {}
+                cand = candidates.get(candidate_id)
+                if not isinstance(cand, dict):
+                    raise ValidationFailed("candidate_missing_regenerate")
+                if cand.get("status") != "pending":
+                    raise RevisionConflict("candidate_superseded")
+                immutable_keys = (
+                    "candidate_id",
+                    "candidate_revision",
+                    "created_at",
+                    "source_kind",
+                    "source_gate_id",
+                    "project_id",
+                    "run_id",
+                    "session_id",
+                    "parent_approved_baseline_hashes",
+                    "documents",
+                    "hashes",
+                    "changed_keys",
+                    "mode",
+                    "affected",
+                )
+                from app.execution.baseline import hash_artifact
+
+                recomputed = hash_artifact({key: cand.get(key) for key in immutable_keys})
+                if recomputed != cand.get("candidate_hash") or gate_payload.get("candidate_hash") != cand.get(
+                    "candidate_hash"
+                ):
+                    raise ValidationFailed("candidate_hash_mismatch")
+                if str(cand.get("project_id")) != run.project_id or str(cand.get("run_id")) != run.id:
+                    raise ValidationFailed("candidate_binding_mismatch")
+                if cand.get("session_id") and str(cand.get("session_id")) != str(
+                    run.artifacts.get("discussion_session_id")
+                ):
+                    raise ValidationFailed("candidate_binding_mismatch")
+                if "SPEC" in (cand.get("changed_keys") or []):
+                    acknowledged = payload.get("acknowledge_spec_change") is True and bool(
+                        str(payload.get("reason") or "").strip()
+                    )
+                    if not acknowledged:
+                        raise ValidationFailed("spec_reapproval_required")
+                version = self._next_doc_version(run)
+                documents = cand.get("documents") or {}
+                kind_for = {"spec": "SPEC", "design": "DESIGN", "plan": "PLAN"}
+                for key, doc in documents.items():
+                    run.artifacts[key] = copy.deepcopy(doc)
+                    run.artifacts[f"{key}_{version}"] = copy.deepcopy(doc)
+                    run.artifacts[f"baseline_{kind_for[key]}"] = version
+                run.artifacts["baseline_provenance"] = "approved"
+                for key, digest in (cand.get("hashes") or {}).items():
+                    store_approved_baseline_hash(run, str(key), str(digest))
+                self._freeze(run, "PLAN")
                 self._record_gate_approval(run, gate, actor)
-                adopted = run.artifacts.pop("workflow_candidate", None)
-                if adopted:
-                    adopted["adopted_at"] = datetime.now(timezone.utc).isoformat()
-                    run.artifacts.setdefault("workflow_adopted_candidates", []).append(adopted)
+                cand["status"] = "adopted"
+                cand["adopted_at"] = datetime.now(timezone.utc).isoformat()
+                cand["adopted_gate_id"] = gate["id"]
+                run.artifacts.setdefault("workflow_adopted_candidates", []).append(copy.deepcopy(cand))
+                if run.artifacts.get("workflow_candidate") == candidate_id:
+                    run.artifacts.pop("workflow_candidate", None)
                 self._clear_baseline_block(run)
                 await self._refresh_grant_statuses(run)
-                self._materialize_tasks(run)
-                return {"status": "executing", "stage": run.engine.current}
+                if cand.get("mode") == "replan":
+                    for task in run.tasks.values():
+                        if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(
+                            task["state"], "cancel"
+                        ):
+                            self._set_state(run, task, "cancel")
+                    run.artifacts["plan"] = copy.deepcopy(documents.get("plan") or run.artifacts.get("plan"))
+                    self._materialize_tasks(run)
+                else:
+                    self._sync_affected_task_cards(run, set(cand.get("affected") or []))
+                self._persist_snapshot(run)
+                return {"status": "adopted", "candidate_id": candidate_id, "stage": run.engine.current}
             if run.artifacts.get("discussion_session_id"):
                 self._record_approved_baseline(run, "DESIGN", run.artifacts["design"])
                 self._freeze(run, "DESIGN")
@@ -2282,7 +2531,10 @@ class Workbench:
         dest = self.data_dir / "runs" / run.id / "release"
         dest.mkdir(parents=True, exist_ok=True)
         version = str(run.artifacts.get("baseline_BUILD") or "1.0")
-        if (repo / ".git").exists():
+        simulated = getattr(self, "simulated_executor", None) is not None
+        if simulated:
+            run.artifacts["build_tag"] = f"simulated-build-{version}"
+        elif (repo / ".git").exists():
             try:
                 run.artifacts["build_tag"] = tag_build(repo, version)
             except RuntimeError:
@@ -2743,6 +2995,7 @@ class Workbench:
                 if t.get("conflict_resolve")
                 and t["state"] == "ready"
                 and not t["paused"]
+                and not t.get("needs_reconciliation")
                 and not t["locked_by"]
                 and t["code"] not in started
                 and (allowed is None or t["code"] in allowed)
@@ -2761,7 +3014,11 @@ class Workbench:
                     graph,
                     states,
                     run_paused=run.paused,
-                    paused={c for c, t in run.tasks.items() if t["paused"]},
+                    paused={
+                        c
+                        for c, t in run.tasks.items()
+                        if t["paused"] or t.get("needs_reconciliation")
+                    },
                     locked={c for c, t in run.tasks.items() if t["locked_by"]},
                     running=running,
                     concurrency=int((run.limits.get("orchestrator") or {})["concurrency"]),
@@ -2787,15 +3044,30 @@ class Workbench:
             return result
 
     def _begin_attempt(self, run: RunState, task: dict[str, Any], code: str) -> None:
+        history = task.setdefault("attempt_history", [])
+        current = task.get("attempt")
+        if isinstance(current, dict) and current.get("attempt_id") not in {
+            item.get("attempt_id") for item in history
+        }:
+            history.append(copy.deepcopy(current))
+        card = task.get("card") or {}
+        repo = self.data_dir / "runs" / run.id / "repo"
         task["attempt"] = {
             "attempt_id": str(uuid.uuid4()),
             "intent": "execute",
             "status": "started",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "baseline_hashes": dict(run_approved_baseline_hashes(run)),
-            "repo": str(self.data_dir / "runs" / run.id / "repo"),
+            "repo": str(repo),
+            "repo_identity": str(repo.resolve()),
+            "worktree": str(self.data_dir / "runs" / run.id / "wt" / code),
+            "branch": f"task/{code}",
+            "write_set": list(card.get("write_set") or []),
+            "target_branch": "HEAD",
             "commit": "",
             "task_code": code,
+            "run_id": run.id,
+            "project_id": run.project_id,
         }
         self._persist_snapshot(run)
 
@@ -2806,13 +3078,25 @@ class Workbench:
             return
         attempt["ended_at"] = datetime.now(timezone.utc).isoformat()
         state = str(task.get("state") or "")
-        attempt["status"] = "done" if state == "done" else ("failed" if state in {"failed", "needs_human"} else "unknown")
+        attempt["status"] = (
+            "finished_ok"
+            if state == "done"
+            else ("finished_failed" if state in {"failed", "needs_human", "skipped", "cancelled"} else "unknown")
+        )
         repo = Path(attempt.get("repo") or "")
-        if attempt["status"] == "done" and (repo / ".git").exists():
+        if attempt["status"] == "finished_ok" and (repo / ".git").exists():
             try:
                 attempt["commit"] = _git_head(repo)
             except Exception:  # noqa: BLE001
                 attempt["commit"] = ""
+        history = task.get("attempt_history") or []
+        for index, item in enumerate(history):
+            if item.get("attempt_id") == attempt.get("attempt_id"):
+                history[index] = copy.deepcopy(attempt)
+                break
+        else:
+            history.append(copy.deepcopy(attempt))
+        task["attempt_history"] = history
         self._persist_snapshot(run)
 
     async def _execute_simulated_task(
@@ -3334,18 +3618,30 @@ class Workbench:
         result = propose_replan(graph, spec, design, int((run.limits.get("plan") or {})["capacity_points"]))
         if not result["ok"]:
             return {"status": "replan_failed", "errors": result["errors"]}
+        has_baseline = bool(run_approved_baseline_hashes(run) or run.artifacts.get("approvals"))
+        if has_baseline:
+            source = next(
+                (item.get("id") for item in reversed(run.gates) if item.get("kind") == "重排提案"),
+                "",
+            )
+            candidate = self._create_candidate(
+                run,
+                {"plan": graph.model_dump()},
+                ["PLAN"],
+                source_kind="replan",
+                source_gate_id=str(source or ""),
+                mode="replan",
+            )
+            return {
+                "status": "awaiting_baseline_reapproval",
+                "candidate_id": candidate["candidate_id"],
+                "tasks": list(run.tasks),
+            }
         for task in run.tasks.values():
             if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(task["state"], "cancel"):
                 self._set_state(run, task, "cancel")
         run.artifacts["plan"] = graph.model_dump()
         self._materialize_tasks(run)
-        if run_approved_baseline_hashes(run) or run.artifacts.get("approvals"):
-            source = next(
-                (item.get("id") for item in reversed(run.gates) if item.get("kind") == "重排提案"),
-                "",
-            )
-            self._open_reapproval_gate(run, str(source or ""))
-            self._persist_snapshot(run)
         return {"status": "replanned", "tasks": list(run.tasks)}
 
     async def control_task(
@@ -3414,13 +3710,16 @@ class Workbench:
                 run.skip_continue.add(code)
         elif action == "takeover":
             task["locked_by"] = actor
-            repo = self.data_dir / "runs" / run.id / "repo"
-            if not (repo / ".git").exists():
-                init_repo_sync(repo, self.profile.get("initial_files"))
-            wt = self.data_dir / "runs" / run.id / "wt" / code
-            if not wt.exists():
-                create_worktree(repo, wt, f"task/{code}")
-            task["takeover_workspace"] = str(wt)
+            if getattr(self, "simulated_executor", None) is not None:
+                task["takeover_workspace"] = f"simulated://runs/{run.id}/wt/{code}"
+            else:
+                repo = self.data_dir / "runs" / run.id / "repo"
+                if not (repo / ".git").exists():
+                    init_repo_sync(repo, self.profile.get("initial_files"))
+                wt = self.data_dir / "runs" / run.id / "wt" / code
+                if not wt.exists():
+                    create_worktree(repo, wt, f"task/{code}")
+                task["takeover_workspace"] = str(wt)
         elif action == "submit-takeover":
             task["takeover_submit"] = True
             task["revision"] += 1
@@ -3428,13 +3727,16 @@ class Workbench:
             self.emit(run, f"control.{action}", code, {"from": prev, "to": task["state"], "reason": reason, "rev": task["revision"]}, actor)
             return await self._submit_takeover(run, code)
         elif action == "force-pass":
+            simulated = getattr(self, "simulated_executor", None) is not None
             repo = self.data_dir / "runs" / run.id / "repo"
-            if repo.exists():
+            if not simulated and repo.exists():
                 regression = await self._run_regression(run, repo)
                 if not regression["ok"]:
                     raise ValidationFailed("集成回归失败，不能强制通过")
             self._set_state(run, task, "force_pass", reason=reason, actor=actor)
-            task["evidence"].append({"kind": "manual", "summary": reason, "path": ""})
+            task["evidence"].append(
+                {"kind": "simulated" if simulated else "manual", "summary": reason, "path": ""}
+            )
         elif action == "patch":
             raise ValidationFailed("patch 本轮未实现，见 Handoff")
         task["revision"] += 1
@@ -3451,6 +3753,9 @@ class Workbench:
             # P5: invalidate in-flight generations so late replies are dropped.
             self._generations.bump(run.id)
         elif action == "resume":
+            # A baseline re-approval block is not clearable by resume.
+            if "baseline_reapproval_required" in (run.artifacts.get("workflow_blocks") or []):
+                raise ValidationFailed("baseline_reapproval_required")
             # Resuming a retired DeepSeek-only run would let the loop call the retired
             # provider; keep it read-only. Pause/terminate stay available.
             self._reject_retired(run)
@@ -3472,6 +3777,18 @@ class Workbench:
 
     async def _submit_takeover(self, run: RunState, code: str) -> dict[str, Any]:
         self._require_execution_safety(run, code)
+        if getattr(self, "simulated_executor", None) is not None:
+            task = run.tasks[code]
+            if task["state"] == "ready":
+                self._set_state(run, task, "scheduled")
+            evidence = {"kind": "simulated", "summary": f"模拟接管提交 {code}", "path": ""}
+            task.setdefault("evidence", []).append(evidence)
+            if can_transition(task["state"], "code_finished"):
+                self._set_state(run, task, "code_finished")
+            if can_transition(task["state"], "accepted"):
+                self._set_state(run, task, "accepted")
+            task["takeover_submit"] = False
+            return {"state": task["state"], "kind": "simulated", "evidence": evidence}
         if run_execution_profile(run) == PROFILE_GRANTED:
             raise GrantRejected(
                 "granted_manual_merge_disabled",
@@ -3543,7 +3860,7 @@ class Workbench:
         self._maybe_tasks_complete(run)
         spec = SpecDoc.model_validate(run.artifacts["spec"])
         repo = self.data_dir / "runs" / run.id / "repo"
-        if not (repo / ".git").exists():
+        if getattr(self, "simulated_executor", None) is None and not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
         items: list[AcceptanceItem] = []
         for feat in list(spec.features) + list(spec.nonfunc):
@@ -3717,15 +4034,8 @@ class Workbench:
                 task["paused"] = True
                 self.emit(run, "task.state_changed", code, {"code": code, "to": task["state"], "event": "change_pause"})
         await self._apply_incremental_docs(run, cr)
-        if cr.get("status") != "rewrite_failed":
+        if cr.get("status") not in {"rewrite_failed", "awaiting_baseline_reapproval"}:
             cr["status"] = "applied"
-            if run_approved_baseline_hashes(run) or run.artifacts.get("approvals"):
-                source = next(
-                    (item.get("id") for item in reversed(run.gates) if item.get("kind") == "变更决定"),
-                    "",
-                )
-                self._open_reapproval_gate(run, str(source or ""))
-                self._persist_snapshot(run)
         return cr
 
     def _affected_codes(self, cr: dict[str, Any]) -> set[str]:
@@ -3779,6 +4089,9 @@ class Workbench:
     async def _apply_incremental_docs(self, run: RunState, cr: dict[str, Any]) -> None:
         version = self._next_doc_version(run)
         affected = self._affected_codes(cr)
+        has_baseline = bool(run_approved_baseline_hashes(run) or run.artifacts.get("approvals"))
+        proposed: dict[str, Any] = {}
+        work = dict(run.artifacts)
         note = {"code": cr["code"], "description": cr.get("description"), "version": version}
         rewrite_payload = {"change_request": cr, "affected": sorted(affected)}
         writers = (
@@ -3791,9 +4104,9 @@ class Workbench:
                 doc = run.artifacts.get(key)
                 if not isinstance(doc, dict):
                     continue
-                if key == "design" and not isinstance(run.artifacts.get("spec"), dict):
+                if key == "design" and not isinstance(work.get("spec"), dict):
                     continue
-                if key == "plan" and not isinstance(run.artifacts.get("design"), dict):
+                if key == "plan" and not isinstance(work.get("design"), dict):
                     continue
                 prev = str(run.artifacts.get(f"baseline_{kind}") or "1.0")
                 if f"{key}_{prev}" not in run.artifacts:
@@ -3802,7 +4115,7 @@ class Workbench:
                 rewritten, errors = await self._write_checked(
                     run,
                     role,
-                    self._incremental_inputs(run, cr, rewrite_payload, role),
+                    self._incremental_inputs(run, cr, rewrite_payload, role, work=work),
                     lambda item, _old=before, _kind=kind: self._incremental_check(
                         {
                             "SPEC": lambda doc: self._check_spec_doc(run, doc),
@@ -3839,14 +4152,41 @@ class Workbench:
                     for item in merged.get(section) or []:
                         if isinstance(item, dict) and item.get("code") in affected:
                             item.setdefault("change_notes", []).append(note)
-                run.artifacts[key] = merged
-                run.artifacts[f"{key}_{version}"] = copy.deepcopy(merged)
-                run.artifacts[f"baseline_{kind}"] = version
-                self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
+                if has_baseline:
+                    proposed[key] = merged
+                    work[key] = merged
+                else:
+                    run.artifacts[key] = merged
+                    run.artifacts[f"{key}_{version}"] = copy.deepcopy(merged)
+                    run.artifacts[f"baseline_{kind}"] = version
+                    self.emit(run, "baseline.frozen", kind, {"version": version, "cr": cr["code"]})
+        if has_baseline:
+            changed = [{"spec": "SPEC", "design": "DESIGN", "plan": "PLAN"}[key] for key in proposed]
+            candidate = self._create_candidate(
+                run,
+                proposed,
+                changed,
+                source_kind="cr",
+                source_gate_id=str(cr.get("gate_id") or ""),
+                mode="cr",
+                affected=affected,
+            )
+            cr["status"] = "awaiting_baseline_reapproval"
+            cr["candidate_id"] = candidate["candidate_id"]
+            return
         cr["applied_version"] = version
         self._sync_affected_task_cards(run, affected)
 
-    def _incremental_inputs(self, run: RunState, cr: dict[str, Any], rewrite_payload: dict[str, Any], role: str) -> dict[str, Any]:
+    def _incremental_inputs(
+        self,
+        run: RunState,
+        cr: dict[str, Any],
+        rewrite_payload: dict[str, Any],
+        role: str,
+        *,
+        work: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        work = work or run.artifacts
         payload = {**rewrite_payload, "change_request": cr}
         if role == "spec_writer":
             return {
@@ -3854,13 +4194,24 @@ class Workbench:
                 "proposal": run.artifacts.get("proposal") or {},
                 "issue_list": run.artifacts.get("issues") or [],
                 "review_sheet": run.artifacts.get("reviews") or [],
-                "rewrite": {**payload, "old": run.artifacts.get("spec")},
+                "rewrite": {**payload, "old": work.get("spec")},
                 "change_request": cr,
-                "baseline": run.artifacts.get("spec"),
+                "baseline": work.get("spec"),
             }
         if role == "architect":
-            return {"spec": run.artifacts.get("spec"), "rewrite": {**payload, "old": run.artifacts.get("design")}, "change_request": cr, "baseline": run.artifacts.get("design")}
-        return {"spec": run.artifacts.get("spec"), "design": run.artifacts.get("design"), "rewrite": {**payload, "old": run.artifacts.get("plan")}, "change_request": cr, "baseline": run.artifacts.get("plan")}
+            return {
+                "spec": work.get("spec"),
+                "rewrite": {**payload, "old": work.get("design")},
+                "change_request": cr,
+                "baseline": work.get("design"),
+            }
+        return {
+            "spec": work.get("spec"),
+            "design": work.get("design"),
+            "rewrite": {**payload, "old": work.get("plan")},
+            "change_request": cr,
+            "baseline": work.get("plan"),
+        }
 
     def _check_spec_doc(self, run: RunState, doc: SpecDoc) -> list[str]:
         issues = [Issue.model_validate(i) for i in (run.artifacts.get("issues") or [])]

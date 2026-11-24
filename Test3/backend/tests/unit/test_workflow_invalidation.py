@@ -90,7 +90,7 @@ async def test_reapproval_allows_new_grant_but_never_revives_old_one(tmp_path, m
         if item["kind"] == "PLAN基线确认" and item["status"] == "pending"
     )
     assert gate["payload"].get("candidate") is True
-    await bench.resolve_gate(run, gate["id"], "approve", {}, actor="leader")
+    await bench.resolve_gate(run, gate["id"], "approve", {}, actor="leader", expected_revision=run.revision)
     assert baseline_drift(run) == []
     assert run.paused is False
     assert "workflow_candidate" not in run.artifacts

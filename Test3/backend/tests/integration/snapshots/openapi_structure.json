@@ -939,7 +939,9 @@
       "properties": {
         "decision": "string",
         "expected_revision": "integer",
-        "reason": "string"
+        "reason": "string",
+        "risk_accepted": "boolean",
+        "verified_safe_scope": "string"
       },
       "required": [
         "decision",
