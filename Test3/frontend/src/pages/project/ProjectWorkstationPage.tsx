@@ -1,3 +1,4 @@
+import { TeamOutlined, UserAddOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
@@ -110,6 +111,24 @@ export function ProjectWorkstation({
   const [tab, setTab] = useState<WorkstationTab>(initialTab);
   const [selected, setSelected] = useState<string>(tasks[0]?.code || "");
   const [note, setNote] = useState("");
+  const [titleMenuOpen, setTitleMenuOpen] = useState(false);
+  const titleMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!titleMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!titleMenuRef.current?.contains(event.target as Node)) setTitleMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTitleMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [titleMenuOpen]);
 
   useEffect(() => {
     if (!tasks.some((task) => task.code === selected)) setSelected(tasks[0]?.code || "");
@@ -156,24 +175,68 @@ export function ProjectWorkstation({
   return (
     <div className="page ws-page">
       <div className="ws-page-bar">
-        <div className="page-head">
-          <h1>{projectName || "项目工作台"}</h1>
+        <div className="page-head ws-title-menu" ref={titleMenuRef}>
+          <h1 className="ws-title-heading">
+            <button
+              type="button"
+              className="ws-title-trigger"
+              aria-haspopup="menu"
+              aria-expanded={titleMenuOpen}
+              aria-label={`${projectName || "项目工作台"} 项目操作`}
+              onClick={() => setTitleMenuOpen((open) => !open)}
+            >
+              {projectName || "项目工作台"}
+            </button>
+          </h1>
+          {team && (
+            <TeamStrip
+              members={team.members}
+              onInvite={team.onInvite}
+              onManage={team.onManage}
+              showActions={false}
+            />
+          )}
+          {titleMenuOpen && team && (
+            <div className="ws-title-actions" role="menu" aria-label="项目操作">
+              <button
+                type="button"
+                role="menuitem"
+                className="ws-title-action"
+                onClick={() => {
+                  setTitleMenuOpen(false);
+                  team.onInvite();
+                }}
+              >
+                <span className="ws-title-action-icon is-accent" aria-hidden="true">
+                  <UserAddOutlined />
+                </span>
+                <span>邀请更多 Bot</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="ws-title-action"
+                onClick={() => {
+                  setTitleMenuOpen(false);
+                  team.onManage();
+                }}
+              >
+                <span className="ws-title-action-icon" aria-hidden="true">
+                  <TeamOutlined />
+                </span>
+                <span>管理项目成员</span>
+              </button>
+            </div>
+          )}
         </div>
-        {team && (
-          <TeamStrip
-            members={team.members}
-            onInvite={team.onInvite}
-            onManage={team.onManage}
-          />
+        {runId && onShowDiscussion && onShowTasks && (
+          <nav className="disc-project-nav" aria-label="项目工作区">
+            <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
+            <button type="button" aria-pressed={!discussionPanel} onClick={onShowTasks}>开发任务</button>
+          </nav>
         )}
       </div>
       <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
-      {runId && onShowDiscussion && onShowTasks && (
-        <nav className="disc-project-nav" aria-label="项目工作区">
-          <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
-          <button type="button" aria-pressed={!discussionPanel} onClick={onShowTasks}>开发任务</button>
-        </nav>
-      )}
       {!discussionPanel && (loadState === "empty" || tasks.length === 0) ? (
         <div className="well muted" data-testid="ws-empty" style={{ padding: "14px 16px" }}>
           {runId ? (

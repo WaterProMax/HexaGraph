@@ -37,4 +37,11 @@ describe("TeamStrip", () => {
     expect(screen.getByRole("button", { name: "邀请 Bot" })).toBeTruthy();
     expect(screen.queryByTestId("actor-bot-select")).toBeNull();
   });
+
+  it("can show avatars only when actions live in the title menu", () => {
+    render(<TeamStrip members={members} onInvite={vi.fn()} onManage={vi.fn()} showActions={false} />);
+    expect(screen.getByLabelText("项目成员")).toBeTruthy();
+    expect(screen.queryByTestId("invite-bots")).toBeNull();
+    expect(screen.queryByTestId("manage-members")).toBeNull();
+  });
 });

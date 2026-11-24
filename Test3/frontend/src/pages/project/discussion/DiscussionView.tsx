@@ -34,7 +34,6 @@ const CHAT_STAGES: DiscussionStage[] = [
   "terminated",
 ];
 
-export const SPEC_PREVIEW_CHARS = 240;
 export const UNSEALED_BODY_TEXT = "正文尚未解封";
 
 function actionErrorText(err: unknown): string {
@@ -98,20 +97,6 @@ function DiscussionPlan({ sessionId, actorBotId, onStatusChange }: {
       </Link>
     </>
   );
-}
-
-/** Plain-text preview of the markdown spec, capped at `SPEC_PREVIEW_CHARS`. */
-export function specPreview(markdown: string): string {
-  const plain = String(markdown ?? "")
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]*)`/g, "$1")
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/[*_>~]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.length > SPEC_PREVIEW_CHARS ? `${plain.slice(0, SPEC_PREVIEW_CHARS)}…` : plain;
 }
 
 /**
@@ -208,7 +193,6 @@ export function DiscussionView({
   const activeMembers = members.filter((member) => member.status === "active");
   const participantBotIds = activeMembers.map((member) => member.bot_id);
   const hasLeader = activeMembers.some((member) => member.is_leader);
-  const specPackage = session?.decision_package ?? null;
   const canSupplement = Boolean(session && CHAT_STAGES.includes(stage) && stage !== "terminated");
 
   return (
@@ -334,17 +318,6 @@ export function DiscussionView({
           )}
           {stage === "approved" && (
             <section className="disc-spec-summary glass-panel" data-testid="disc-spec-summary">
-              <div className="section-title">
-                <span>需求规格已通过</span>
-                {specPackage && (
-                  <span className="hint mono" title={specPackage.sha256}>
-                    摘要 {specPackage.sha256.slice(0, 8)}
-                  </span>
-                )}
-              </div>
-              <p className="disc-spec-summary-text">
-                {specPackage ? specPreview(specPackage.body_md) : "需求规格正文暂不可用。"}
-              </p>
               <div className="disc-spec-summary-actions">
                 <DiscussionPlan
                   key={sessionId}

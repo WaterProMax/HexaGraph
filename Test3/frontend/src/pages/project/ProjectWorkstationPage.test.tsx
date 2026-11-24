@@ -225,14 +225,23 @@ describe("P6-R03 team strip and shared memory", () => {
     { bot_id: "bot-b", display_name: "周明", role_template: "pm", status: "active" as const, role_in_project: "dev", is_leader: false },
   ];
 
-  it("renders the team strip and opens management", () => {
+  it("puts project actions behind the title menu and keeps avatars outside", () => {
     const onManage = vi.fn();
+    const onInvite = vi.fn();
     renderWorkstation({
-      team: { members: teamMembers, onInvite: vi.fn(), onManage },
+      team: { members: teamMembers, onInvite, onManage },
     });
     expect(screen.getByTestId("team-strip")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("manage-members"));
+    expect(screen.queryByTestId("manage-members")).toBeNull();
+    expect(screen.queryByTestId("invite-bots")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /项目操作/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "管理项目成员" }));
     expect(onManage).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /项目操作/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "邀请更多 Bot" }));
+    expect(onInvite).toHaveBeenCalled();
   });
 
   it("shows the shared memory panel in the monitor tab", () => {

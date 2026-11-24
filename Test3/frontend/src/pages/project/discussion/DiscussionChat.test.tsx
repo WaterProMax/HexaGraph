@@ -142,7 +142,7 @@ describe("DiscussionChat", () => {
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
     expect(loadProposalBody).toHaveBeenCalledWith("prop-1", "s1");
 
-    fireEvent.click(screen.getByText("收起方案"));
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
     expect(screen.queryByText(/先用邮箱登录/)).toBeNull();
     fireEvent.click(screen.getByText("展开方案"));
     expect(screen.getByText(/先用邮箱登录/)).toBeTruthy();
@@ -345,7 +345,7 @@ describe("DiscussionChat proposal sealing by round", () => {
     expect(loadProposalBody).not.toHaveBeenCalled();
 
     fireEvent.click(within(bubbles[0]).getByText("展开方案"));
-    expect(await within(bubbles[0]).findByText(/先用邮箱登录/)).toBeTruthy();
+    expect(await screen.findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(1);
     expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
   });
@@ -367,8 +367,11 @@ describe("DiscussionChat proposal sealing by round", () => {
     expect(within(bubbles[1]).getByText("展开方案")).toBeTruthy();
 
     fireEvent.click(within(bubbles[0]).getByText("展开方案"));
-    fireEvent.click(within(bubbles[1]).getByText("展开方案"));
-    expect(await screen.findAllByText(/先用邮箱登录/)).toHaveLength(2);
+    expect(await screen.findByText(/先用邮箱登录/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    const refreshed = screen.getAllByTestId("disc-bubble-proposal");
+    fireEvent.click(within(refreshed[1]).getByText("展开方案"));
+    expect(await screen.findByText(/先用邮箱登录/)).toBeTruthy();
     expect(loadProposalBody).toHaveBeenCalledTimes(2);
     expect(loadProposalBody).toHaveBeenCalledWith("prop-r1", "s1");
     expect(loadProposalBody).toHaveBeenCalledWith("prop-r2", "s1");

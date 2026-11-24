@@ -330,7 +330,7 @@ describe("DiscussionView approved spec", () => {
     expect(screen.queryByText("生成失败，等待重试")).toBeNull();
   });
 
-  it("shows the spec preview, the waiting placeholder and opens the spec viewer", () => {
+  it("shows only the spec actions and opens the spec viewer", () => {
     const body = "# 需求规格\n\n" + "覆盖主流程与边界条件。".repeat(40);
     const session = makeSession({
       status: "approved",
@@ -340,10 +340,9 @@ describe("DiscussionView approved spec", () => {
     renderView();
 
     const summary = screen.getByTestId("disc-spec-summary");
-    expect(summary.textContent).toContain("abcdef12");
     expect(within(summary).getByText(/Leader 正在拆解/)).toBeTruthy();
-    expect(summary.textContent).not.toContain("#");
-    expect(summary.textContent).toContain("覆盖主流程与边界条件。");
+    expect(summary.textContent).not.toContain("覆盖主流程与边界条件。");
+    expect(screen.queryByText("需求规格已通过")).toBeNull();
     expect(screen.getByTestId("disc-chat")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "查看需求规格" }));
@@ -470,13 +469,16 @@ describe("DiscussionView proposal bodies", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "展开方案" })[0]);
     await waitFor(() => expect(screen.getAllByLabelText("方案正文").length).toBe(1));
+    expect(screen.getAllByLabelText("方案正文")[0].textContent).toBe("方案正文");
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByLabelText("方案正文")).toBeNull();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "展开方案" })[0]);
-    await waitFor(() => expect(screen.getAllByLabelText("方案正文").length).toBe(2));
+    fireEvent.click(screen.getAllByRole("button", { name: "展开方案" })[1]);
+    await waitFor(() => expect(screen.getAllByLabelText("方案正文").length).toBe(1));
+    expect(screen.getAllByLabelText("方案正文")[0].textContent).toBe("方案正文");
 
     expect(apiMock.discussionProposals).toHaveBeenCalledTimes(1);
     expect(apiMock.discussionProposals).toHaveBeenCalledWith("s1", "bot-a");
-    expect(screen.getAllByLabelText("方案正文")[0].textContent).toBe("方案正文");
   });
 
   it("says the body is still sealed instead of throwing when it is null", async () => {

@@ -87,13 +87,13 @@ function renderViewer(overrides: Partial<ComponentProps<typeof SpecViewer>> = {}
 afterEach(cleanup);
 
 describe("SpecViewer", () => {
-  it("shows the latest approved markdown, its version and the first 8 characters of the sha", () => {
+  it("shows the latest approved markdown and its version", () => {
     renderViewer();
 
     const currentBox = screen.getByTestId("disc-spec-current");
     expect(within(currentBox).getByText("最新规格正文")).toBeTruthy();
     expect(within(currentBox).getByText("版本：第 3 次讨论")).toBeTruthy();
-    expect(within(currentBox).getByText("摘要 abcdef12")).toBeTruthy();
+    expect(within(currentBox).queryByText(/摘要/)).toBeNull();
     expect(within(currentBox).queryByText("较早批准正文")).toBeNull();
   });
 

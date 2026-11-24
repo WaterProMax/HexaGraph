@@ -47,10 +47,6 @@ function latestApproved(sessions: DiscussionSession[]): DiscussionSession | null
   );
 }
 
-function shortHash(session: DiscussionSession): string {
-  return (session.decision_package?.sha256 ?? "").slice(0, 8);
-}
-
 export function SpecViewer({ open, onClose, sessions }: SpecViewerProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const latest = latestApproved(sessions);
@@ -105,9 +101,6 @@ export function SpecViewer({ open, onClose, sessions }: SpecViewerProps) {
             <>
               <div className="disc-spec-meta">
                 <span>版本：第 {currentVersion} 次讨论</span>
-                <span className="disc-spec-hash" title={current.decision_package.sha256}>
-                  摘要 {shortHash(current)}
-                </span>
                 {statusLabel(current) && (
                   <span className="disc-spec-status">{statusLabel(current)}</span>
                 )}

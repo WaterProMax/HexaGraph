@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import type {
   BotInstance,
   DiscussionMessage,
@@ -125,12 +126,22 @@ function ProposalBubble({
   const truncated = message.payload?.truncated === true;
   const sealed = isProposalSealed(session, round);
 
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const [body, setBody] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const bodyId = `disc-proposal-body-${message.session_id}-${message.seq}`;
+  const dialogId = `disc-proposal-dialog-${message.session_id}-${message.seq}`;
+  const titleId = `${dialogId}-title`;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
 
   async function load() {
     if (!proposalId) return;
@@ -146,12 +157,9 @@ function ProposalBubble({
     }
   }
 
-  function toggle() {
-    if (expanded) {
-      setExpanded(false);
-      return;
-    }
-    setExpanded(true);
+  function openDialog() {
+    if (!proposalId) return;
+    setOpen(true);
     if (body === null && !loading && !failed) void load();
   }
 
@@ -182,30 +190,62 @@ function ProposalBubble({
             <button
               type="button"
               className="disc-btn disc-btn-quiet"
-              aria-expanded={expanded}
-              aria-controls={bodyId}
-              onClick={toggle}
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              aria-controls={dialogId}
+              onClick={openDialog}
               disabled={!proposalId}
             >
-              {expanded ? "收起方案" : "展开方案"}
+              展开方案
             </button>
-            {expanded && (
-              <div className="disc-proposal-body-wrap" id={bodyId}>
-                {loading && (
-                  <p className="disc-bubble-meta" role="status">
-                    加载中…
-                  </p>
-                )}
-                {!loading && failed && (
-                  <button type="button" className="disc-btn disc-btn-quiet" onClick={() => void load()}>
-                    正文加载失败，重试
-                  </button>
-                )}
-                {!loading && !failed && body !== null && (
-                  <pre className="disc-proposal-body" tabIndex={0} aria-label="方案正文">
-                    {body}
-                  </pre>
-                )}
+            {open && (
+              <div
+                className="disc-dialog-mask"
+                data-testid="disc-proposal-mask"
+                onClick={(event) => {
+                  if (event.target === event.currentTarget) setOpen(false);
+                }}
+              >
+                <div
+                  className="disc-dialog disc-proposal-dialog"
+                  id={dialogId}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby={titleId}
+                  data-testid="disc-proposal-dialog"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <header className="disc-dialog-head">
+                    <h2 id={titleId}>
+                      {bot.display_name} 的方案 · 第 {round} 轮
+                    </h2>
+                    <button
+                      type="button"
+                      className="disc-dialog-close"
+                      aria-label="关闭"
+                      onClick={() => setOpen(false)}
+                    >
+                      ×
+                    </button>
+                  </header>
+                  <div className="disc-proposal-dialog-body">
+                    {loading && (
+                      <p className="disc-proposal-dialog-state" role="status">
+                        正在加载方案…
+                      </p>
+                    )}
+                    {!loading && failed && (
+                      <button type="button" className="disc-btn disc-btn-quiet" onClick={() => void load()}>
+                        正文加载失败，重试
+                      </button>
+                    )}
+                    {!loading && !failed && body !== null && (
+                      <div className="disc-dialog-body disc-proposal-modal-text" tabIndex={0} aria-label="方案正文">
+                        <ReactMarkdown>{body}</ReactMarkdown>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
