@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.runtime import RoleRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.schemas.common import AcceptanceCheck, Budget
 from app.schemas.docs import TaskCard, TaskGraph
-from app.execution.simulation import ExecutionPolicy
 from app.schemas.execution_grant import ExecutionGrant
 from app.services.runtime import Workbench
 from app.settings import load_models, load_roles

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.services.runtime import _git_head
-from app.workspace.gitops import commit, init_repo_sync
+from app.workspace.gitops import init_repo_sync
 from tests.p1_support import install_plan, make_bench
 
 

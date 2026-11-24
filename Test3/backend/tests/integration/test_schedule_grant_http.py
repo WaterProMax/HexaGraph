@@ -4,8 +4,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry
-from app.execution.simulation import ExecutionPolicy
 from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app

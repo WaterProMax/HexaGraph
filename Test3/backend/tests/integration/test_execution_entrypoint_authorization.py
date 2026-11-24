@@ -11,7 +11,7 @@ from app.llm.providers import ScriptedProvider
 from app.main import create_app
 from app.services.runtime import Workbench
 from app.settings import load_models, load_roles
-from tests.p1_support import install_plan, make_bench
+from tests.p1_support import install_plan
 
 
 class _RealProvider:
@@ -58,7 +58,7 @@ async def test_schedule_task_control_and_accept_reject_real_legacy(tmp_path) -> 
     async with _client(app) as client:
         scheduled = await client.post(f"/api/runs/{run.id}/schedule")
         retried = await client.post(
-            f"/api/tasks/T-01/retry",
+            "/api/tasks/T-01/retry",
             json={"expected_revision": 1, "reason": "manual retry"},
         )
         accepted = await client.post(f"/api/runs/{run.id}/accept")

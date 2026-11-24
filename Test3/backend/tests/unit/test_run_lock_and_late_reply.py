@@ -9,8 +9,8 @@ from app.agents.runtime import RoleRegistry
 from app.errors import GrantRejected
 from app.execution.generation import GenerationGuard
 from app.execution.run_lock import RunLockRegistry
-from app.execution.simulation import ExecutionPolicy
 from app.execution.run_profile import set_approved_baseline_hashes, set_run_execution_profile
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.schemas.common import AcceptanceCheck, Budget

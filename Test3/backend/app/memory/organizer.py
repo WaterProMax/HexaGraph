@@ -8,9 +8,8 @@ note unchanged.
 
 from __future__ import annotations
 
-import logging
-
 import asyncio
+import logging
 import re
 from typing import Any
 
