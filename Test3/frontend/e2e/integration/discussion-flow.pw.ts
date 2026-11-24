@@ -180,6 +180,9 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   await firstProposal.getByRole("button", { name: "展开方案" }).click();
   await expect(firstProposal).toContainText("目标用户与痛点");
   await expect(firstProposal).not.toContainText("正文加载失败");
+  // HEAD 63e3608 起方案正文改为居中弹窗：读完关闭，后续按钮才可点击。
+  await page.getByTestId("disc-proposal-mask").click({ position: { x: 6, y: 6 } });
+  await expect(page.getByTestId("disc-proposal-mask")).toHaveCount(0);
   const runId = (await planLink.getAttribute("href"))?.split("/").pop();
   expect(runId).toBeTruthy();
   await expect(page.getByRole("button", { name: "查看需求规格" })).toBeVisible();
