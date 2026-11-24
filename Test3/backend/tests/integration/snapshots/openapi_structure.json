@@ -937,6 +937,7 @@
     },
     "ReconciliationBody": {
       "properties": {
+        "attempt_id": "string",
         "decision": "string",
         "expected_revision": "integer",
         "reason": "string",

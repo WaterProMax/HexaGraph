@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.runtime import _git_head
-from app.workspace.gitops import _git_sync, commit, init_repo_sync
+from app.workspace.gitops import _git_sync, commit, create_worktree, init_repo_sync, merge
 from tests.p1_support import install_plan, make_bench
 
 
@@ -20,27 +19,34 @@ def _seed(tmp_path: Path, *, with_work: bool):
     bench._set_state(run, task, "scheduled")
     repo = bench.data_dir / "runs" / run.id / "repo"
     init_repo_sync(repo, {"README.md": "x\n"})
+    base = _git_sync(repo, "rev-parse", "HEAD")[1].strip()
+    ref = _git_sync(repo, "symbolic-ref", "-q", "HEAD")[1].strip()
     branch = ""
+    commit_sha = base
     if with_work:
-        _git_sync(repo, "checkout", "-b", "task/T-01")
-        (repo / "src").mkdir(exist_ok=True)
-        (repo / "src" / "T-01.py").write_text("print('ok')\n", encoding="utf-8")
-        _git_sync(repo, "add", "src/T-01.py")
-        commit(repo, "task T-01")
+        wt = bench.data_dir / "runs" / run.id / "wt" / "T-01"
+        create_worktree(repo, wt, "task/T-01")
+        (wt / "src").mkdir(exist_ok=True)
+        (wt / "src" / "T-01.py").write_text("print('ok')\n", encoding="utf-8")
+        _git_sync(wt, "add", "src/T-01.py")
+        commit_sha = commit(wt, "task T-01")
+        assert merge(repo, "task/T-01")["ok"] is True
         branch = "task/T-01"
-    head = _git_head(repo)
     attempt = {
         "attempt_id": "A-1",
         "intent": "execute",
         "status": "finished_ok",
-        "baseline_hashes": {},
+        "baseline_hashes": dict(run.approved_baseline_hashes),
         "repo": str(repo),
         "repo_identity": str(repo.resolve()),
         "worktree": str(bench.data_dir / "runs" / run.id / "wt" / "T-01"),
         "branch": branch,
+        "base_commit": base,
+        "integration_ref": ref,
+        "integration_ref_sha": base,
+        "target_branch": ref,
         "write_set": ["src/T-01.py"],
-        "target_branch": "HEAD",
-        "commit": head,
+        "commit": commit_sha,
         "task_code": "T-01",
         "run_id": run.id,
         "project_id": run.project_id,

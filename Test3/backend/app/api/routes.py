@@ -180,6 +180,7 @@ class ReconciliationBody(BaseModel):
     reason: str = ""
     verified_safe_scope: str = ""
     risk_accepted: bool = False
+    attempt_id: str = ""
 
 
 @router.post("/runs/{run_id}/reconcile/{task_code}")
@@ -198,6 +199,7 @@ async def resolve_reconciliation(run_id: str, task_code: str, body: Reconciliati
             reason=body.reason,
             verified_safe_scope=body.verified_safe_scope,
             risk_accepted=body.risk_accepted,
+            attempt_id=body.attempt_id,
         )
     except RevisionConflict as exc:
         raise HTTPException(409, str(exc)) from exc

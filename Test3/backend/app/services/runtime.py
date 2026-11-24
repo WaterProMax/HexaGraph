@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -124,6 +125,7 @@ from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
 from app.trace.service import TraceGraph
 from app.workspace.gitops import (
+    _git_sync,
     changed_files,
     commit,
     create_worktree,
@@ -186,6 +188,22 @@ _SNAPSHOT_KINDS = {
 }
 
 DEFAULT_IMPORT_TIMEOUT_S = 600.0
+_CANDIDATE_IMMUTABLE_KEYS = (
+    "candidate_id",
+    "candidate_revision",
+    "created_at",
+    "source_kind",
+    "source_gate_id",
+    "project_id",
+    "run_id",
+    "session_id",
+    "parent_approved_baseline_hashes",
+    "documents",
+    "hashes",
+    "changed_keys",
+    "mode",
+    "affected",
+)
 _GRANT_COMPLETED_STATES = {"done", "skipped", "cancelled"}
 UNEXPECTED_IMPORT_FAILURE = "设计规格整理失败（本地异常，详见运行目录 import-error.txt）"
 
@@ -256,6 +274,10 @@ class Workbench:
         self._db_lock: asyncio.Lock | None = None
         self._grant_write_lock: asyncio.Lock | None = None
         self._grant_cache: dict[str, list[ExecutionGrant]] = {}
+        # Gate adoption/rejection stages audit events until the authoritative
+        # snapshot commit succeeds.  A failed commit must not leave events that
+        # a restart would replay into a half-adopted task graph.
+        self._deferred_audit: dict[str, list[dict[str, Any]]] = {}
         # Server-owned readiness flag.  It stays false until the isolation
         # backend (F-06) and the unified grant boundary (F-05) are in place; no
         # client input may set it.
@@ -319,17 +341,43 @@ class Workbench:
                         continue
 
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
+        pending = self._deferred_audit.get(run.id)
         event = {
-            "seq": len(run.events) + 1,
+            "seq": len(run.events) + (len(pending) if pending is not None else 0) + 1,
             "ts": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
             "subject": subject,
             "payload": payload or {},
             "actor": actor,
         }
+        if pending is not None:
+            pending.append(event)
+            return
+        self._emit_now(run, event)
+
+    def _emit_now(self, run: RunState, event: dict[str, Any]) -> None:
         run.events.append(event)
-        BUS.emit_sync(run.id, kind, subject, event["payload"], actor, seq=event["seq"])
+        BUS.emit_sync(run.id, event["kind"], event["subject"], event["payload"], event["actor"], seq=event["seq"])
         self._persist_event(run, event)
+
+    @contextmanager
+    def _stage_audit(self, run: RunState):
+        """Collect events for this run without touching disk until commit."""
+        run_id = run.id
+        previous = self._deferred_audit.get(run_id)
+        staged: list[dict[str, Any]] = []
+        self._deferred_audit[run_id] = staged
+        try:
+            yield staged
+        finally:
+            if previous is None:
+                self._deferred_audit.pop(run_id, None)
+            else:
+                self._deferred_audit[run_id] = previous
+
+    def _flush_audit(self, run: RunState, staged: list[dict[str, Any]]) -> None:
+        for event in staged:
+            self._emit_now(run, event)
 
     def _persist_event(self, run: RunState, event: dict[str, Any]) -> None:
         folder = self.data_dir / "runs" / run.id
@@ -346,6 +394,66 @@ class Workbench:
         payload["event_seq"] = len(run.events)
         _atomic_write(folder / "snapshot.json", json.dumps(payload, ensure_ascii=False))
         _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
+
+    def _mutation_backup(self, run: RunState) -> dict[str, Any]:
+        return {
+            "artifacts": copy.deepcopy(run.artifacts),
+            "gates": copy.deepcopy(run.gates),
+            "tasks": copy.deepcopy(run.tasks),
+            "revision": run.revision,
+            "paused": run.paused,
+            "pending_human": run.pending_human,
+            "status": run.status,
+            "approved_baseline_hashes": dict(run.approved_baseline_hashes),
+            "trace": copy.deepcopy(run.trace.links),
+        }
+
+    def _restore_mutation_backup(self, run: RunState, backup: dict[str, Any]) -> None:
+        """Restore identity-preserving in-memory state after a failed commit.
+
+        Tests and callers may hold references to a gate/candidate/task dict.
+        Clearing and updating the existing dicts keeps those references valid.
+        """
+        current_candidates = run.artifacts.get("workflow_candidates")
+        run.artifacts.clear()
+        run.artifacts.update(copy.deepcopy(backup["artifacts"]))
+        saved_candidates = run.artifacts.get("workflow_candidates")
+        if isinstance(current_candidates, dict) and isinstance(saved_candidates, dict):
+            merged: dict[str, Any] = {}
+            for candidate_id, saved in saved_candidates.items():
+                current = current_candidates.get(candidate_id)
+                if isinstance(current, dict) and isinstance(saved, dict):
+                    current.clear()
+                    current.update(copy.deepcopy(saved))
+                    merged[candidate_id] = current
+                else:
+                    merged[candidate_id] = saved
+            run.artifacts["workflow_candidates"] = merged
+        saved_gates = backup["gates"]
+        if len(run.gates) != len(saved_gates):
+            run.gates[:] = copy.deepcopy(saved_gates)
+        else:
+            for current, saved in zip(run.gates, saved_gates):
+                current.clear()
+                current.update(copy.deepcopy(saved))
+        saved_tasks = backup["tasks"]
+        for code in list(run.tasks):
+            if code not in saved_tasks:
+                run.tasks.pop(code, None)
+        for code, saved in saved_tasks.items():
+            current = run.tasks.get(code)
+            if isinstance(current, dict):
+                current.clear()
+                current.update(copy.deepcopy(saved))
+            else:
+                run.tasks[code] = copy.deepcopy(saved)
+        run.revision = int(backup["revision"])
+        run.paused = bool(backup["paused"])
+        run.pending_human = bool(backup["pending_human"])
+        run.status = str(backup["status"])
+        run.approved_baseline_hashes.clear()
+        run.approved_baseline_hashes.update(backup["approved_baseline_hashes"])
+        run.trace.links = copy.deepcopy(backup["trace"])
 
     def _serialize_run(self, run: RunState) -> dict[str, Any]:
         payload = {
@@ -531,34 +639,75 @@ class Workbench:
             if current.get("attempt_id") not in {item.get("attempt_id") for item in history}:
                 history.append(copy.deepcopy(current))
 
+    def _attempt_entries(self, task: dict[str, Any]) -> list[dict[str, Any]]:
+        entries = [item for item in (task.get("attempt_history") or []) if isinstance(item, dict)]
+        current = task.get("attempt")
+        if isinstance(current, dict) and current.get("attempt_id") not in {
+            item.get("attempt_id") for item in entries
+        }:
+            entries.append(current)
+        return entries
+
+    def _closed_attempt_ids(self, run: RunState, code: str, task: dict[str, Any]) -> set[str]:
+        closed: set[str] = set()
+        for record in task.get("reconciliation_resolutions") or []:
+            if not isinstance(record, dict):
+                continue
+            decision = record.get("decision")
+            if decision not in {"accept_evidence", "mark_failed_safe_retry"}:
+                continue
+            if decision == "accept_evidence" and not (
+                isinstance(record.get("completion_report"), dict)
+                and record["completion_report"].get("ok") is True
+            ):
+                continue
+            if decision == "mark_failed_safe_retry" and not (
+                record.get("risk_accepted") is True
+                and str(record.get("verified_safe_scope") or "").strip()
+                and str(record.get("reason") or "").strip()
+            ):
+                continue
+            if str(record.get("run_id") or "") != run.id:
+                continue
+            if str(record.get("task_code") or "") != code:
+                continue
+            attempt_id = str(record.get("attempt_id") or "")
+            if attempt_id:
+                closed.add(attempt_id)
+        return closed
+
+    @staticmethod
+    def _attempt_is_trusted_terminal(task: dict[str, Any], attempt: dict[str, Any]) -> bool:
+        status = str(attempt.get("status") or "")
+        if status == "finished_failed":
+            return True
+        return status == "finished_ok" and str(task.get("state") or "") == "done"
+
+    def _unresolved_attempts(self, run: RunState, code: str, task: dict[str, Any]) -> list[dict[str, Any]]:
+        closed = self._closed_attempt_ids(run, code, task)
+        unresolved: list[dict[str, Any]] = []
+        for attempt in self._attempt_entries(task):
+            attempt_id = str(attempt.get("attempt_id") or "")
+            if attempt_id and attempt_id in closed:
+                continue
+            if self._attempt_is_trusted_terminal(task, attempt):
+                continue
+            unresolved.append(attempt)
+        return unresolved
+
     def _tasks_requiring_reconciliation(self, run: RunState, pending: dict[str, str]) -> list[str]:
         codes = set(pending)
         for code, task in run.tasks.items():
-            if task.get("needs_reconciliation"):
-                codes.add(code)
-                continue
-            entries = list(task.get("attempt_history") or [])
-            current = task.get("attempt")
-            if isinstance(current, dict) and current.get("attempt_id") not in {
-                item.get("attempt_id") for item in entries
-            }:
-                entries.append(current)
-            if not entries:
-                continue
-            state = str(task.get("state") or "")
-            statuses = {str(item.get("status") or "") for item in entries}
-            if state == "done":
-                if statuses & {"started", "unknown", "done"}:
+            attempts = self._attempt_entries(task)
+            if attempts:
+                if self._unresolved_attempts(run, code, task):
                     codes.add(code)
                 continue
-            if state in {"failed", "needs_human"} and statuses <= {"finished_failed"}:
-                continue
-            codes.add(code)
-        return sorted(
-            code
-            for code in codes
-            if code in run.tasks and str(run.tasks[code].get("state") or "") != "done"
-        )
+            # A legacy flag with no attempt record stays conservative: there is
+            # nothing an attempt-bound resolution could close.
+            if task.get("needs_reconciliation"):
+                codes.add(code)
+        return sorted(code for code in codes if code in run.tasks)
 
     def _mark_unknown_executions(self, run: RunState, pending: dict[str, str]) -> None:
         """Any unproven attempt (even before repo/worktree work) blocks replay.
@@ -618,48 +767,104 @@ class Workbench:
         reason: str = "",
         verified_safe_scope: str = "",
         risk_accepted: bool = False,
+        attempt_id: str = "",
     ) -> dict[str, Any]:
-        """Controlled, auditable resolution; never a generic ``force_success``."""
+        """Serialize the resolution with task writes for this run."""
+        async with self._run_locks.write_scope(run.id):
+            return await self._resolve_reconciliation_locked(
+                run,
+                code,
+                decision,
+                expected_revision,
+                actor=actor,
+                reason=reason,
+                verified_safe_scope=verified_safe_scope,
+                risk_accepted=risk_accepted,
+                attempt_id=attempt_id,
+            )
+
+    async def _resolve_reconciliation_locked(
+        self,
+        run: RunState,
+        code: str,
+        decision: str,
+        expected_revision: int,
+        *,
+        actor: str,
+        reason: str = "",
+        verified_safe_scope: str = "",
+        risk_accepted: bool = False,
+        attempt_id: str = "",
+    ) -> dict[str, Any]:
+        """Attempt-bound resolution; never a generic ``force_success``."""
         task = run.tasks.get(code)
         if task is None:
             raise ValidationFailed(f"task not found: {code}")
+        attempts = self._attempt_entries(task)
+        selected: dict[str, Any] | None = None
+        if attempt_id:
+            selected = next(
+                (item for item in attempts if str(item.get("attempt_id") or "") == attempt_id),
+                None,
+            )
+            if selected is None:
+                raise ValidationFailed("attempt_not_found")
+        else:
+            unresolved = self._unresolved_attempts(run, code, task)
+            if unresolved:
+                selected = unresolved[-1]
+            elif attempts:
+                selected = attempts[-1]
+            else:
+                raise ValidationFailed("attempt_missing")
+        selected_id = str(selected.get("attempt_id") or "")
+        if not selected_id:
+            raise ValidationFailed("attempt_missing")
+        resolutions = task.get("reconciliation_resolutions") or []
+        existing = next(
+            (
+                item
+                for item in resolutions
+                if isinstance(item, dict) and str(item.get("attempt_id") or "") == selected_id
+            ),
+            None,
+        )
+        if existing is not None:
+            if existing.get("decision") == decision:
+                return self.reconcile_run(run)
+            raise RevisionConflict("attempt_already_resolved")
         if task["revision"] != expected_revision:
             raise RevisionConflict("revision mismatch")
         if not task.get("needs_reconciliation"):
             raise ValidationFailed("task is not awaiting reconciliation")
-        attempt = task.get("attempt") or {}
+        if dict(selected.get("baseline_hashes") or {}) != dict(run_approved_baseline_hashes(run)):
+            raise ValidationFailed("attempt_baseline_mismatch")
         if decision == "continue_reconcile":
             return self.reconcile_run(run)
-        if decision == "accept_evidence":
-            attempt_id = attempt.get("attempt_id")
-            history = task.get("attempt_history") or []
-            proven = next(
-                (item for item in history if item.get("attempt_id") == attempt_id),
-                None,
-            )
-            if proven is None:
-                raise ValidationFailed("attempt_not_in_history")
-            from app.workflow.completion import verify_task_completion
+        from app.workflow.completion import verify_task_completion
 
-            report = verify_task_completion(
+        report: dict[str, Any] | None = None
+        event = ""
+        if decision == "accept_evidence":
+            verification = verify_task_completion(
                 run,
                 task,
-                proven,
+                selected,
                 expected_repo=self.data_dir / "runs" / run.id / "repo",
             )
-            if not report.ok:
+            if not verification.ok:
                 task.setdefault("reconciliation_history", []).append(
                     {
                         "decision": "accept_evidence_rejected",
                         "actor": actor,
-                        "reason": report.reason,
+                        "reason": verification.reason,
                         "at": datetime.now(timezone.utc).isoformat(),
-                        "attempt_id": attempt_id,
-                        "provenance": report.provenance,
+                        "attempt_id": selected_id,
+                        "provenance": verification.provenance,
                     }
                 )
-                raise ValidationFailed(f"completion_not_proven:{report.reason}")
-            task["completion_proof"] = report.as_dict()
+                raise ValidationFailed(f"completion_not_proven:{verification.reason}")
+            report = verification.as_dict()
             event = "reconcile_accepted"
         elif decision == "mark_failed_safe_retry":
             if not reason.strip():
@@ -671,27 +876,87 @@ class Workbench:
             event = "reconcile_failed"
         else:
             raise ValidationFailed(f"unknown reconciliation decision: {decision}")
-        self._set_state(run, task, event, reason=reason or decision, actor=actor)
-        task["revision"] = int(task.get("revision") or 1) + 1
-        run.revision += 1
-        task["needs_reconciliation"] = False
-        task["paused"] = False
-        task.setdefault("reconciliation_history", []).append(
-            {
-                "decision": decision,
-                "actor": actor,
-                "reason": reason,
-                "at": datetime.now(timezone.utc).isoformat(),
-                "attempt_id": attempt.get("attempt_id"),
-                "verified_safe_scope": verified_safe_scope,
-                "risk_accepted": risk_accepted,
-            }
-        )
-        self.emit(run, "task.reconciliation", code, {"decision": decision, "actor": actor}, actor)
-        if not any(item.get("needs_reconciliation") for item in run.tasks.values()):
-            run.artifacts.pop("workflow_needs_reconciliation", None)
-            run.artifacts.pop("workflow_needs_reconciliation_tasks", None)
-        self._persist_snapshot(run)
+        remaining = [
+            item
+            for item in self._unresolved_attempts(run, code, task)
+            if str(item.get("attempt_id") or "") != selected_id
+        ]
+        state = str(task.get("state") or "")
+        if not remaining:
+            if decision == "accept_evidence" and state != "done" and not can_transition(
+                state, "reconcile_accepted"
+            ):
+                raise ValidationFailed("task_state_not_acceptable")
+            if decision == "mark_failed_safe_retry" and state not in {
+                "failed",
+                "needs_human",
+            } and not can_transition(state, "reconcile_failed"):
+                raise ValidationFailed("task_state_not_acceptable")
+        at = datetime.now(timezone.utc).isoformat()
+        report_hash = ""
+        if report is not None:
+            report_hash = hashlib.sha256(
+                json.dumps(report, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        record = {
+            "resolution_id": str(uuid.uuid4()),
+            "decision": decision,
+            "attempt_id": selected_id,
+            "run_id": run.id,
+            "project_id": run.project_id,
+            "task_code": code,
+            "task_revision": task["revision"],
+            "run_revision": run.revision,
+            "baseline_hashes": dict(run_approved_baseline_hashes(run)),
+            "actor": actor,
+            "reason": reason,
+            "verified_safe_scope": verified_safe_scope,
+            "risk_accepted": risk_accepted,
+            "at": at,
+            "completion_report": report,
+            "completion_report_hash": report_hash,
+        }
+        backup = self._mutation_backup(run)
+        try:
+            with self._stage_audit(run) as staged:
+                task.setdefault("reconciliation_resolutions", []).append(record)
+                task.setdefault("reconciliation_history", []).append(
+                    {
+                        "decision": decision,
+                        "actor": actor,
+                        "reason": reason,
+                        "at": at,
+                        "attempt_id": selected_id,
+                        "verified_safe_scope": verified_safe_scope,
+                        "risk_accepted": risk_accepted,
+                        "completion_report_hash": report_hash,
+                    }
+                )
+                if not remaining:
+                    if state != "done" and can_transition(state, event):
+                        self._set_state(run, task, event, reason=reason or decision, actor=actor)
+                    if decision == "accept_evidence" and report is not None:
+                        task["completion_proof"] = report
+                    task["needs_reconciliation"] = False
+                    task["paused"] = False
+                else:
+                    # Resolve only the selected attempt; the task stays blocked
+                    # until every unresolved attempt is closed.
+                    task["needs_reconciliation"] = True
+                    task["paused"] = True
+                task["revision"] = int(task.get("revision") or 1) + 1
+                run.revision += 1
+                self.emit(
+                    run, "task.reconciliation", code, {"decision": decision, "actor": actor}, actor
+                )
+                if not any(item.get("needs_reconciliation") for item in run.tasks.values()):
+                    run.artifacts.pop("workflow_needs_reconciliation", None)
+                    run.artifacts.pop("workflow_needs_reconciliation_tasks", None)
+                self._persist_snapshot(run)
+        except Exception:
+            self._restore_mutation_backup(run, backup)
+            raise
+        self._flush_audit(run, staged)
         return self.reconcile_run(run)
 
     def _restore_execution_profile(self, run: RunState, data: dict[str, Any]) -> None:
@@ -705,6 +970,10 @@ class Workbench:
         artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
         snapshot_profile = str(data.get("execution_profile") or artifacts.get("execution_profile") or "")
         snapshot_hashes = data.get("approved_baseline_hashes") or artifacts.get("approved_baseline_hashes") or {}
+        normalized_snapshot_hashes = {
+            str(key): str(value) for key, value in snapshot_hashes.items()
+        } if isinstance(snapshot_hashes, dict) else {}
+        recovered_from_snapshot = False
         if db_state is not None:
             profile = db_state.execution_profile
             hashes = dict(db_state.approved_baseline_hashes)
@@ -714,11 +983,25 @@ class Workbench:
                 resolved = PROFILE_CONFLICT
             elif (
                 profile == PROFILE_GRANTED
-                and isinstance(snapshot_hashes, dict)
-                and snapshot_hashes
-                and {str(k): str(v) for k, v in snapshot_hashes.items()} != hashes
+                and normalized_snapshot_hashes
+                and normalized_snapshot_hashes != hashes
             ):
-                resolved = PROFILE_CONFLICT
+                # Crash recovery for the adoption ordering: grants are marked
+                # stale before the snapshot commit.  If no active grant can
+                # authorize anything, the snapshot is the safe baseline (old on
+                # a failed commit, new on a crash after commit).  With an active
+                # grant present this remains a hard conflict.
+                try:
+                    grants = read_grants_for_run(self.db_path, run.id)
+                    active = any(item.status == "active" for item in grants)
+                except Exception:  # noqa: BLE001
+                    active = True
+                if active:
+                    resolved = PROFILE_CONFLICT
+                else:
+                    resolved = PROFILE_GRANTED
+                    hashes = dict(normalized_snapshot_hashes)
+                    recovered_from_snapshot = True
             else:
                 resolved = profile
         elif snapshot_profile == PROFILE_GRANTED:
@@ -740,6 +1023,12 @@ class Workbench:
         else:
             run.artifacts.pop("execution_profile", None)
             run.artifacts.pop("approved_baseline_hashes", None)
+        if recovered_from_snapshot:
+            run.artifacts["execution_state_recovered"] = {
+                "source": "snapshot",
+                "reason": "no_active_grant_after_adoption_crash",
+                "hashes": dict(hashes),
+            }
 
     def _read_json_file(self, path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -1467,6 +1756,29 @@ class Workbench:
         async with self._grant_lock():
             async with self.db_session() as session:
                 await GrantRepo(session).add(grant)
+                run = self.runs.get(grant.run_id)
+                if run is not None and run_execution_profile(run) == PROFILE_GRANTED:
+                    # A grant is always created against the run's current
+                    # baseline.  Keep the SERVER state row in step so a crash
+                    # during a previous adoption cannot cause a false conflict
+                    # after the new grant is active.
+                    state_repo = RunExecutionStateRepo(session)
+                    state = await state_repo.get(run.id)
+                    hashes = run_approved_baseline_hashes(run)
+                    if (
+                        state is not None
+                        and state.execution_profile == PROFILE_GRANTED
+                        and state.approved_baseline_hashes != hashes
+                    ):
+                        await state_repo.upsert(
+                            RunExecutionState(
+                                run_id=run.id,
+                                execution_profile=PROFILE_GRANTED,
+                                approved_baseline_hashes=hashes,
+                                approved_plan_hash=state.approved_plan_hash,
+                                allowed_tool_refs=state.allowed_tool_refs,
+                            )
+                        )
                 await session.commit()
         self._grant_cache.setdefault(grant.run_id, []).append(grant)
         run = self.runs.get(grant.run_id)
@@ -1638,6 +1950,37 @@ class Workbench:
         await self._mark_grants_stale(run, reason)
         self._persist_snapshot(run)
         return keys
+
+    async def _sync_execution_state_hashes(self, run: RunState) -> None:
+        """Persist the adopted baseline hashes after old grants were stale.
+
+        Ordering is deliberate: snapshot is still the commit point.  Updating
+        this row before the snapshot is safe because every active grant has
+        already been marked stale; a failed snapshot leaves "old snapshot +
+        stale grants" and restore can retry the adoption.
+        """
+        if run_execution_profile(run) != PROFILE_GRANTED:
+            return
+        hashes = run_approved_baseline_hashes(run)
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                state_repo = RunExecutionStateRepo(session)
+                state = await state_repo.get(run.id)
+                if (
+                    state is not None
+                    and state.execution_profile == PROFILE_GRANTED
+                    and state.approved_baseline_hashes != hashes
+                ):
+                    await state_repo.upsert(
+                        RunExecutionState(
+                            run_id=run.id,
+                            execution_profile=PROFILE_GRANTED,
+                            approved_baseline_hashes=hashes,
+                            approved_plan_hash=state.approved_plan_hash,
+                            allowed_tool_refs=state.allowed_tool_refs,
+                        )
+                    )
+                    await session.commit()
 
     async def _refresh_grant_statuses(self, run: RunState) -> None:
         """Mark only active grants whose baseline hashes actually changed."""
@@ -2238,6 +2581,261 @@ class Workbench:
         async with self._gate_lock_for(run):
             return await self._resolve_gate_locked(run, gate_id, decision, payload, actor, expected_revision)
 
+    def _candidate_gate_binding(self, run: RunState, gate: dict[str, Any]) -> dict[str, Any] | None:
+        """Return the frozen candidate bound to this gate, ``{}`` when invalid.
+
+        Detection is intentionally fail-closed: a normal PLAN gate must not
+        approve live artifacts while any candidate pointer/gate payload exists.
+        """
+        if gate.get("kind") != "PLAN基线确认":
+            return None
+        gate_payload = gate.get("payload") or {}
+        pointer = run.artifacts.get("workflow_candidate")
+        if not (gate_payload.get("candidate") or gate_payload.get("candidate_id") or pointer):
+            return None
+        candidate_id = str(gate_payload.get("candidate_id") or "")
+        if not candidate_id:
+            return {}
+        candidate = (run.artifacts.get("workflow_candidates") or {}).get(candidate_id)
+        return candidate if isinstance(candidate, dict) else {}
+
+    def _validate_candidate_gate(
+        self,
+        run: RunState,
+        gate: dict[str, Any],
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        expected_revision: int | None,
+        *,
+        approving: bool,
+    ) -> None:
+        """Validate bindings before any gate, revision or artifact mutation."""
+        if expected_revision is None:
+            raise ValidationFailed("expected_revision_required")
+        if expected_revision != run.revision:
+            raise RevisionConflict("revision mismatch")
+        if not candidate:
+            raise ValidationFailed("candidate_missing_regenerate")
+        gate_payload = gate.get("payload") or {}
+        if str(gate_payload.get("candidate_id") or "") != str(candidate.get("candidate_id") or ""):
+            raise ValidationFailed("candidate_binding_mismatch")
+        if candidate.get("status") != "pending":
+            raise RevisionConflict("candidate_superseded")
+        recomputed = hash_artifact(
+            {key: candidate.get(key) for key in _CANDIDATE_IMMUTABLE_KEYS}
+        )
+        if recomputed != candidate.get("candidate_hash") or gate_payload.get(
+            "candidate_hash"
+        ) != candidate.get("candidate_hash"):
+            raise ValidationFailed("candidate_hash_mismatch")
+        if str(candidate.get("project_id")) != run.project_id or str(candidate.get("run_id")) != run.id:
+            raise ValidationFailed("candidate_binding_mismatch")
+        if candidate.get("session_id") and str(candidate.get("session_id")) != str(
+            run.artifacts.get("discussion_session_id")
+        ):
+            raise ValidationFailed("candidate_binding_mismatch")
+        frozen_parent = {
+            str(key): str(value)
+            for key, value in (candidate.get("parent_approved_baseline_hashes") or {}).items()
+        }
+        if frozen_parent != dict(run_approved_baseline_hashes(run)):
+            raise RevisionConflict("candidate_baseline_mismatch")
+        if "SPEC" in (candidate.get("changed_keys") or []):
+            if approving and not (
+                payload.get("acknowledge_spec_change") is True and str(payload.get("reason") or "").strip()
+            ):
+                raise ValidationFailed("spec_reapproval_required")
+
+    def _candidate_decisions(self, run: RunState) -> list[dict[str, Any]]:
+        return run.artifacts.setdefault("workflow_candidate_decisions", [])
+
+    async def _resolve_candidate_gate(
+        self,
+        run: RunState,
+        gate: dict[str, Any],
+        candidate: dict[str, Any],
+        decision: str,
+        payload: dict[str, Any],
+        actor: str,
+        expected_revision: int | None,
+    ) -> dict[str, Any]:
+        approving = decision == "approve"
+        self._validate_candidate_gate(
+            run, gate, candidate, payload, expected_revision, approving=approving
+        )
+        if not approving:
+            return await self._reject_candidate_gate(run, gate, candidate, payload, actor)
+        return await self._adopt_candidate_gate(run, gate, candidate, payload, actor)
+
+    async def _reject_candidate_gate(
+        self,
+        run: RunState,
+        gate: dict[str, Any],
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        actor: str,
+    ) -> dict[str, Any]:
+        backup = self._mutation_backup(run)
+        candidate_id = str(candidate.get("candidate_id") or "")
+        at = datetime.now(timezone.utc).isoformat()
+        reason = str(payload.get("reason") or "候选再确认驳回")
+        try:
+            with self._stage_audit(run) as staged:
+                gate["status"] = "rejected"
+                gate["decision"] = payload
+                gate["resolved_by"] = actor
+                gate["resolved_at"] = at
+                run.pending_human = any(
+                    item.get("status") == "pending" for item in run.gates
+                )
+                run.revision += 1
+                candidate["status"] = "rejected"
+                candidate["rejected_at"] = at
+                candidate["rejected_by"] = actor
+                candidate["rejected_gate_id"] = gate["id"]
+                candidate["rejection_reason"] = reason
+                candidate.setdefault("decisions", []).append(
+                    {
+                        "decision": "reject",
+                        "gate_id": gate["id"],
+                        "candidate_id": candidate_id,
+                        "candidate_hash": candidate.get("candidate_hash"),
+                        "actor": actor,
+                        "reason": reason,
+                        "at": at,
+                    }
+                )
+                self._candidate_decisions(run).append(
+                    {
+                        "decision": "reject",
+                        "candidate_id": candidate_id,
+                        "candidate_hash": candidate.get("candidate_hash"),
+                        "gate_id": gate["id"],
+                        "actor": actor,
+                        "reason": reason,
+                        "at": at,
+                    }
+                )
+                if run.artifacts.get("workflow_candidate") == candidate_id:
+                    run.artifacts.pop("workflow_candidate", None)
+                remaining = any(
+                    item.get("status") == "pending"
+                    for item in (run.artifacts.get("workflow_candidates") or {}).values()
+                    if isinstance(item, dict)
+                )
+                if not remaining:
+                    # Active artifacts never changed; only release the pause
+                    # that this baseline reapproval owned.
+                    self._clear_baseline_block(run)
+                self.emit(run, "gate.resolved", gate["id"], {"decision": "reject", **payload}, actor)
+                self._persist_snapshot(run)
+        except Exception:
+            self._restore_mutation_backup(run, backup)
+            raise
+        self._flush_audit(run, staged)
+        return {"status": "rejected", "candidate_id": candidate_id, "stage": run.engine.current}
+
+    async def _adopt_candidate_gate(
+        self,
+        run: RunState,
+        gate: dict[str, Any],
+        candidate: dict[str, Any],
+        payload: dict[str, Any],
+        actor: str,
+    ) -> dict[str, Any]:
+        """Validate/prepare, mark grants stale, then one authoritative snapshot."""
+        candidate_id = str(candidate.get("candidate_id") or "")
+        documents = copy.deepcopy(candidate.get("documents") or {})
+        if not isinstance(documents, dict) or not documents:
+            raise ValidationFailed("candidate_documents_missing")
+        version = self._next_doc_version(run)
+        kind_for = {"spec": "SPEC", "design": "DESIGN", "plan": "PLAN"}
+        if any(key not in kind_for for key in documents):
+            raise ValidationFailed("candidate_documents_invalid")
+        hashes = {
+            "SPEC": str((candidate.get("hashes") or {}).get("SPEC") or ""),
+            "DESIGN": str((candidate.get("hashes") or {}).get("DESIGN") or ""),
+            "PLAN": str((candidate.get("hashes") or {}).get("PLAN") or ""),
+        }
+        hashes = {key: value for key, value in hashes.items() if value}
+        if set(hashes) != {kind_for[key] for key in documents}:
+            raise ValidationFailed("candidate_hashes_incomplete")
+        backup = self._mutation_backup(run)
+        at = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._stage_audit(run) as staged:
+                gate["status"] = "approved"
+                gate["decision"] = payload
+                gate["resolved_by"] = actor
+                gate["resolved_at"] = at
+                run.pending_human = any(
+                    item.get("status") == "pending" for item in run.gates
+                )
+                run.revision += 1
+                for key, doc in documents.items():
+                    kind = kind_for[key]
+                    run.artifacts[key] = copy.deepcopy(doc)
+                    run.artifacts[f"{key}_{version}"] = copy.deepcopy(doc)
+                    run.artifacts[f"baseline_{kind}"] = version
+                run.artifacts["baseline_provenance"] = "approved"
+                for key, digest in hashes.items():
+                    store_approved_baseline_hash(run, key, digest)
+                    self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
+                self._freeze(run, "PLAN")
+                self._record_gate_approval(run, gate, actor)
+                candidate["status"] = "adopted"
+                candidate["adopted_at"] = at
+                candidate["adopted_gate_id"] = gate["id"]
+                candidate.setdefault("decisions", []).append(
+                    {
+                        "decision": "approve",
+                        "gate_id": gate["id"],
+                        "candidate_id": candidate_id,
+                        "candidate_hash": candidate.get("candidate_hash"),
+                        "actor": actor,
+                        "at": at,
+                    }
+                )
+                self._candidate_decisions(run).append(
+                    {
+                        "decision": "approve",
+                        "candidate_id": candidate_id,
+                        "candidate_hash": candidate.get("candidate_hash"),
+                        "gate_id": gate["id"],
+                        "actor": actor,
+                        "at": at,
+                    }
+                )
+                run.artifacts.setdefault("workflow_adopted_candidates", []).append(
+                    copy.deepcopy(candidate)
+                )
+                if run.artifacts.get("workflow_candidate") == candidate_id:
+                    run.artifacts.pop("workflow_candidate", None)
+                self._clear_baseline_block(run)
+                if candidate.get("mode") == "replan":
+                    for task in run.tasks.values():
+                        if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(
+                            task["state"], "cancel"
+                        ):
+                            self._set_state(run, task, "cancel")
+                    if "plan" in documents:
+                        run.artifacts["plan"] = copy.deepcopy(documents["plan"])
+                    self._materialize_tasks(run)
+                else:
+                    self._sync_affected_task_cards(run, set(candidate.get("affected") or []))
+                # Old grants are permanently stale once a new baseline is
+                # adopted.  This SQLite write precedes the snapshot commit so a
+                # crash can only leave "old baseline + stale grant", never
+                # "new baseline + active old grant".
+                await self._mark_grants_stale(run, "baseline_candidate_adopted")
+                await self._sync_execution_state_hashes(run)
+                self._persist_snapshot(run)
+        except Exception:
+            self._restore_mutation_backup(run, backup)
+            raise
+        self._flush_audit(run, staged)
+        return {"status": "adopted", "candidate_id": candidate_id, "stage": run.engine.current}
+
     async def _resolve_gate_locked(
         self,
         run: RunState,
@@ -2254,52 +2852,13 @@ class Workbench:
             raise ValidationFailed("关卡已裁决，不能重复推进")
         if expected_revision is not None and expected_revision != run.revision:
             raise RevisionConflict("revision mismatch")
-        if (
-            gate.get("kind") == "PLAN基线确认"
-            and decision == "approve"
-            and ((gate.get("payload") or {}).get("candidate") or run.artifacts.get("workflow_candidate"))
-        ):
-            # Validate every immutable binding before mutating gate/revision state.
-            if expected_revision is None:
-                raise ValidationFailed("expected_revision_required")
-            pre_payload = gate.get("payload") or {}
-            pre_id = str(pre_payload.get("candidate_id") or "")
-            pre_cand = (run.artifacts.get("workflow_candidates") or {}).get(pre_id)
-            if not isinstance(pre_cand, dict):
-                raise ValidationFailed("candidate_missing_regenerate")
-            if pre_cand.get("status") != "pending":
-                raise RevisionConflict("candidate_superseded")
-            from app.execution.baseline import hash_artifact as _hash_candidate
-
-            immutable = (
-                "candidate_id",
-                "candidate_revision",
-                "created_at",
-                "source_kind",
-                "source_gate_id",
-                "project_id",
-                "run_id",
-                "session_id",
-                "parent_approved_baseline_hashes",
-                "documents",
-                "hashes",
-                "changed_keys",
-                "mode",
-                "affected",
+        candidate = self._candidate_gate_binding(run, gate)
+        if candidate is not None:
+            # Candidate gates have their own approve/reject dispatch.  In
+            # particular, a rejection must never fall through to run_plan().
+            return await self._resolve_candidate_gate(
+                run, gate, candidate, decision, payload, actor, expected_revision
             )
-            if _hash_candidate({key: pre_cand.get(key) for key in immutable}) != pre_cand.get(
-                "candidate_hash"
-            ) or pre_payload.get("candidate_hash") != pre_cand.get("candidate_hash"):
-                raise ValidationFailed("candidate_hash_mismatch")
-            if str(pre_cand.get("project_id")) != run.project_id or str(pre_cand.get("run_id")) != run.id:
-                raise ValidationFailed("candidate_binding_mismatch")
-            if pre_cand.get("session_id") and str(pre_cand.get("session_id")) != str(
-                run.artifacts.get("discussion_session_id")
-            ):
-                raise ValidationFailed("candidate_binding_mismatch")
-            if "SPEC" in (pre_cand.get("changed_keys") or []):
-                if not (payload.get("acknowledge_spec_change") is True and str(payload.get("reason") or "").strip()):
-                    raise ValidationFailed("spec_reapproval_required")
         gate["status"] = "approved" if decision == "approve" else "rejected"
         gate["decision"] = payload
         gate["resolved_by"] = actor
@@ -2373,87 +2932,6 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
-            candidate_flag = bool((gate.get("payload") or {}).get("candidate")) or bool(
-                run.artifacts.get("workflow_candidate")
-            )
-            if candidate_flag:
-                if expected_revision is None:
-                    raise ValidationFailed("expected_revision_required")
-                gate_payload = gate.get("payload") or {}
-                candidate_id = str(gate_payload.get("candidate_id") or "")
-                candidates = run.artifacts.get("workflow_candidates") or {}
-                cand = candidates.get(candidate_id)
-                if not isinstance(cand, dict):
-                    raise ValidationFailed("candidate_missing_regenerate")
-                if cand.get("status") != "pending":
-                    raise RevisionConflict("candidate_superseded")
-                immutable_keys = (
-                    "candidate_id",
-                    "candidate_revision",
-                    "created_at",
-                    "source_kind",
-                    "source_gate_id",
-                    "project_id",
-                    "run_id",
-                    "session_id",
-                    "parent_approved_baseline_hashes",
-                    "documents",
-                    "hashes",
-                    "changed_keys",
-                    "mode",
-                    "affected",
-                )
-                from app.execution.baseline import hash_artifact
-
-                recomputed = hash_artifact({key: cand.get(key) for key in immutable_keys})
-                if recomputed != cand.get("candidate_hash") or gate_payload.get("candidate_hash") != cand.get(
-                    "candidate_hash"
-                ):
-                    raise ValidationFailed("candidate_hash_mismatch")
-                if str(cand.get("project_id")) != run.project_id or str(cand.get("run_id")) != run.id:
-                    raise ValidationFailed("candidate_binding_mismatch")
-                if cand.get("session_id") and str(cand.get("session_id")) != str(
-                    run.artifacts.get("discussion_session_id")
-                ):
-                    raise ValidationFailed("candidate_binding_mismatch")
-                if "SPEC" in (cand.get("changed_keys") or []):
-                    acknowledged = payload.get("acknowledge_spec_change") is True and bool(
-                        str(payload.get("reason") or "").strip()
-                    )
-                    if not acknowledged:
-                        raise ValidationFailed("spec_reapproval_required")
-                version = self._next_doc_version(run)
-                documents = cand.get("documents") or {}
-                kind_for = {"spec": "SPEC", "design": "DESIGN", "plan": "PLAN"}
-                for key, doc in documents.items():
-                    run.artifacts[key] = copy.deepcopy(doc)
-                    run.artifacts[f"{key}_{version}"] = copy.deepcopy(doc)
-                    run.artifacts[f"baseline_{kind_for[key]}"] = version
-                run.artifacts["baseline_provenance"] = "approved"
-                for key, digest in (cand.get("hashes") or {}).items():
-                    store_approved_baseline_hash(run, str(key), str(digest))
-                self._freeze(run, "PLAN")
-                self._record_gate_approval(run, gate, actor)
-                cand["status"] = "adopted"
-                cand["adopted_at"] = datetime.now(timezone.utc).isoformat()
-                cand["adopted_gate_id"] = gate["id"]
-                run.artifacts.setdefault("workflow_adopted_candidates", []).append(copy.deepcopy(cand))
-                if run.artifacts.get("workflow_candidate") == candidate_id:
-                    run.artifacts.pop("workflow_candidate", None)
-                self._clear_baseline_block(run)
-                await self._refresh_grant_statuses(run)
-                if cand.get("mode") == "replan":
-                    for task in run.tasks.values():
-                        if task["state"] not in {"done", "skipped", "cancelled"} and can_transition(
-                            task["state"], "cancel"
-                        ):
-                            self._set_state(run, task, "cancel")
-                    run.artifacts["plan"] = copy.deepcopy(documents.get("plan") or run.artifacts.get("plan"))
-                    self._materialize_tasks(run)
-                else:
-                    self._sync_affected_task_cards(run, set(cand.get("affected") or []))
-                self._persist_snapshot(run)
-                return {"status": "adopted", "candidate_id": candidate_id, "stage": run.engine.current}
             if run.artifacts.get("discussion_session_id"):
                 self._record_approved_baseline(run, "DESIGN", run.artifacts["design"])
                 self._freeze(run, "DESIGN")
@@ -3043,7 +3521,16 @@ class Workbench:
             self._finish_attempt(run, code)
             return result
 
-    def _begin_attempt(self, run: RunState, task: dict[str, Any], code: str) -> None:
+    def _begin_attempt(
+        self,
+        run: RunState,
+        task: dict[str, Any],
+        code: str,
+        *,
+        repo: Path | None = None,
+        branch: str = "",
+        integration_hint: str = "",
+    ) -> None:
         history = task.setdefault("attempt_history", [])
         current = task.get("attempt")
         if isinstance(current, dict) and current.get("attempt_id") not in {
@@ -3051,19 +3538,50 @@ class Workbench:
         }:
             history.append(copy.deepcopy(current))
         card = task.get("card") or {}
-        repo = self.data_dir / "runs" / run.id / "repo"
+        repo_path = repo or (self.data_dir / "runs" / run.id / "repo")
+        integration_ref = ""
+        integration_sha = ""
+        proof_reason = ""
+        if not (repo_path / ".git").exists():
+            proof_reason = "repo_not_initialized"
+        else:
+            if integration_hint:
+                hinted = integration_hint if integration_hint.startswith("refs/") else f"refs/heads/{integration_hint}"
+                code_ref, _ = _git_sync(repo_path, "rev-parse", "--verify", hinted)
+                if code_ref == 0:
+                    integration_ref = hinted
+                else:
+                    proof_reason = "integration_hint_missing"
+            if not integration_ref and not proof_reason:
+                code_ref, out_ref = _git_sync(repo_path, "symbolic-ref", "-q", "HEAD")
+                if code_ref == 0 and out_ref.strip().startswith("refs/"):
+                    integration_ref = out_ref.strip()
+            if not integration_ref:
+                proof_reason = proof_reason or "detached_or_unresolvable_integration_ref"
+            else:
+                code_sha, out_sha = _git_sync(repo_path, "rev-parse", "--verify", integration_ref)
+                if code_sha == 0:
+                    integration_sha = out_sha.strip()
+                else:
+                    integration_ref = ""
+                    proof_reason = "integration_ref_unresolved"
         task["attempt"] = {
             "attempt_id": str(uuid.uuid4()),
             "intent": "execute",
             "status": "started",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "baseline_hashes": dict(run_approved_baseline_hashes(run)),
-            "repo": str(repo),
-            "repo_identity": str(repo.resolve()),
+            "repo": str(repo_path),
+            "repo_identity": str(repo_path.resolve()),
             "worktree": str(self.data_dir / "runs" / run.id / "wt" / code),
-            "branch": f"task/{code}",
+            "branch": branch or f"task/{code}",
             "write_set": list(card.get("write_set") or []),
-            "target_branch": "HEAD",
+            "base_commit": integration_sha,
+            "integration_ref": integration_ref,
+            "integration_ref_sha": integration_sha,
+            "target_branch": integration_ref,
+            "proof_ready": bool(integration_ref and integration_sha),
+            "proof_unknown_reason": proof_reason,
             "commit": "",
             "task_code": code,
             "run_id": run.id,
@@ -3084,11 +3602,22 @@ class Workbench:
             else ("finished_failed" if state in {"failed", "needs_human", "skipped", "cancelled"} else "unknown")
         )
         repo = Path(attempt.get("repo") or "")
-        if attempt["status"] == "finished_ok" and (repo / ".git").exists():
+        commit = ""
+        branch = str(attempt.get("branch") or "")
+        if branch and (repo / ".git").exists():
+            code_ref, out_ref = _git_sync(repo, "rev-parse", "--verify", f"refs/heads/{branch}")
+            if code_ref == 0:
+                commit = out_ref.strip()
+        if not commit and attempt["status"] == "finished_ok" and (repo / ".git").exists():
             try:
-                attempt["commit"] = _git_head(repo)
+                commit = _git_head(repo)
             except Exception:  # noqa: BLE001
-                attempt["commit"] = ""
+                commit = ""
+        attempt["commit"] = commit
+        integration_ref = str(attempt.get("integration_ref") or "")
+        if integration_ref and (repo / ".git").exists():
+            code_ref, out_ref = _git_sync(repo, "rev-parse", "--verify", integration_ref)
+            attempt["integration_head"] = out_ref.strip() if code_ref == 0 else ""
         history = task.get("attempt_history") or []
         for index, item in enumerate(history):
             if item.get("attempt_id") == attempt.get("attempt_id"):
@@ -3135,7 +3664,6 @@ class Workbench:
         if getattr(self, "simulated_executor", None) is not None:
             self._begin_attempt(run, task, code)
             return await self._execute_simulated_task(run, task, code, card)
-        self._begin_attempt(run, task, code)
         # Real execution boundary: granted_v1 is validated before any revision
         # bump, state transition, worktree or command.  No Grant / missing spec
         # can never fall through to the legacy agent/commit/merge chain.
@@ -3166,11 +3694,26 @@ class Workbench:
                 self._set_state(run, task, "budget_or_stuck")
             self.emit(run, "budget.exceeded", code, {"used": task.get("tokens_used")})
             return {"state": task["state"], "kind": "预算耗尽"}
-        if granted_spec is not None and grant is not None:
-            return await self._execute_granted_task(run, code, task, card, granted_spec, grant)
         repo = self.data_dir / "runs" / run.id / "repo"
         if not (repo / ".git").exists():
             init_repo_sync(repo, self.profile.get("initial_files"))
+        attempt_branch = f"task/{code}"
+        integration_hint = ""
+        if granted_spec is not None and grant is not None:
+            attempt_branch = f"{grant.feature_branch}/{code}"
+            integration_hint = grant.base_branch
+        # Freeze the base commit / integration ref before any worktree, write
+        # or process.  Verification later uses these exact snapshots.
+        self._begin_attempt(
+            run,
+            task,
+            code,
+            repo=repo,
+            branch=attempt_branch,
+            integration_hint=integration_hint,
+        )
+        if granted_spec is not None and grant is not None:
+            return await self._execute_granted_task(run, code, task, card, granted_spec, grant)
         wt = self.data_dir / "runs" / run.id / "wt" / code
         try:
             if not wt.exists():
