@@ -56,6 +56,7 @@ async def _bot(client: AsyncClient, slot: str = "flagship", name: str = "Water")
             "model": "qwen3.8-max-0902",
             "slot": slot,
             "secret_ref": "DASHSCOPE_API_KEY",
+            "api_key": "sk-test-key",
         },
     )
     assert res.status_code == 201, res.text

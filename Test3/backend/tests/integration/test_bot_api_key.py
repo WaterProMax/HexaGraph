@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry, bot_endpoint
+from app.errors import AgentOutputError
 from app.llm.bot_secrets import BotSecretStore
 from app.llm.catalog import PROVIDER_ENDPOINTS
 from app.llm.gateway import Gateway
@@ -114,11 +115,13 @@ async def test_archive_deletes_key_and_unknown_provider_is_rejected(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_bot_without_key_keeps_env_behaviour(tmp_path):
+async def test_bot_without_key_fails_closed_in_real_mode(tmp_path):
     async with _client(_app(tmp_path)) as client:
         bot = (await client.post("/api/bots", json=_body(provider_ref="dashscope"))).json()
     gateway = SimpleNamespace(data_dir=tmp_path, models=load_models())
-    assert bot_endpoint(gateway, bot["bot_id"], "dashscope") is None
+    with pytest.raises(AgentOutputError) as exc:
+        bot_endpoint(gateway, bot["bot_id"], "dashscope")
+    assert exc.value.category == "missing_bot_key"
 
 
 def testbot_endpoint_uses_provider_base_url(tmp_path):

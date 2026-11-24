@@ -25,6 +25,7 @@ from app.execution.run_profile import run_approved_baseline_hashes, run_executio
 from app.schemas.design_input import DesignRunCreate
 from app.schemas.execution_grant import ExecutionGrant, ExecutionGrantCreate
 from app.services.runtime import Workbench
+from app.workflow.evidence import evidence_for_run
 
 router = APIRouter()
 
@@ -518,6 +519,7 @@ async def get_execution_profile(run_id: str, request: Request) -> Any:
         "execution_profile": run_execution_profile(run),
         "approved_baseline_hashes": run_approved_baseline_hashes(run),
         "execution_safety_ready": bool(getattr(bench, "execution_safety_ready", False)),
+        "evidence": evidence_for_run(bench, run),
     }
 
 
@@ -539,14 +541,22 @@ async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
     run = _run(request, run_id)
     if "spec" not in run.artifacts:
         raise HTTPException(409, "SPEC not ready; run has no spec artifact yet")
+    bench = wb(request)
     try:
-        return await wb(request).accept(run)
+        result = await bench.accept(run)
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
     except GrantRejected as exc:
         return _json_error(exc.status_code, exc.category, exc.message)
     except (IllegalTransition, ValidationFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
+    from app.workflow.evidence import evidence_for_run
+
+    return {
+        **result,
+        "evidence": evidence_for_run(bench, run),
+        "workflow": bench.workflow_projection(run),
+    }
 
 
 def _run(request: Request, run_id: str):

@@ -61,7 +61,7 @@ from app.discussion.session_store import (
     SessionNotFound,
     retry_locked,
 )
-from app.errors import classify_llm_error
+from app.errors import AgentOutputError, classify_llm_error
 from app.leader.steward import DiscussionSteward, InvalidParticipant
 from app.memory.injection import build_memory_slot
 from app.schemas.bot import BotInstance
@@ -303,7 +303,12 @@ async def _call(
     Long single-shot generations (the Leader plan: SPEC+DESIGN+PLAN in one JSON)
     pass a larger ``timeout``; chat-style operations keep the default.
     """
-    endpoint = bot_endpoint(bench.gateway, bot.bot_id, bot.provider_ref)
+    try:
+        endpoint = bot_endpoint(bench.gateway, bot.bot_id, bot.provider_ref)
+    except AgentOutputError as exc:
+        # A real-mode bot without its own key fails closed; never fall back to
+        # the workbench default credential.
+        raise BotFailed(bot.bot_id, getattr(exc, "category", None) or "missing_bot_key") from exc
     last_error: BaseException | None = None
     for _attempt in range(2):
         kwargs: dict[str, Any] = {

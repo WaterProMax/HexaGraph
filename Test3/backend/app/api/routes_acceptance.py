@@ -96,7 +96,12 @@ async def create_module_acceptance(run_id: str, request: Request) -> Any:
         return _json_error(400, "validation_error", str(exc))
     except ValidationError as exc:
         return _json_error(400, "validation_error", str(exc))
-    return JSONResponse(status_code=201, content=acceptance.model_dump())
+    from app.workflow.evidence import evidence_for_run
+
+    return JSONResponse(
+        status_code=201,
+        content={**acceptance.model_dump(), "evidence": evidence_for_run(bench, run)},
+    )
 
 
 @router.post("/runs/{run_id}/defects", status_code=201)
@@ -119,7 +124,11 @@ async def create_defect(run_id: str, request: Request) -> Any:
         defect = await bench.record_defect(run, data.model_dump(), actor=actor)
     except AcceptanceValidation as exc:
         return _json_error(400, "validation_error", str(exc))
-    return JSONResponse(status_code=201, content=defect.model_dump())
+    from app.workflow.evidence import evidence_for_run
+
+    return JSONResponse(
+        status_code=201, content={**defect.model_dump(), "evidence": evidence_for_run(bench, run)}
+    )
 
 
 __all__ = ["router"]
@@ -134,7 +143,12 @@ async def get_defects(run_id: str, request: Request) -> Any:
         return _json_error(404, "run_not_found", f"run not found: {run_id}")
     async with bench.db_session() as session:
         items = await list_defects(session, run_id)
-    return {"items": [item.model_dump() for item in items]}
+    from app.workflow.evidence import evidence_for_run
+
+    return {
+        "items": [item.model_dump() for item in items],
+        "evidence": evidence_for_run(bench, bench.runs[run_id]),
+    }
 
 
 @router.get("/runs/{run_id}/module-acceptances")
@@ -147,4 +161,9 @@ async def get_module_acceptances(run_id: str, request: Request) -> Any:
         return _json_error(404, "run_not_found", f"run not found: {run_id}")
     async with bench.db_session() as session:
         items = await list_acceptances(session, run_id)
-    return {"items": [item.model_dump() for item in items]}
+    from app.workflow.evidence import evidence_for_run
+
+    return {
+        "items": [item.model_dump() for item in items],
+        "evidence": evidence_for_run(bench, bench.runs[run_id]),
+    }

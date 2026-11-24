@@ -98,16 +98,31 @@ def _render_memory_slot(items: list[dict] | None) -> str:
 
 
 def bot_endpoint(gateway: Gateway, bot_id: str, provider_ref: str) -> dict[str, str] | None:
-    """The bot's own base_url + API key, or None to use the workbench default.
+    """The bot's own base_url + API key, or None in scripted/replay mode.
 
-    The key is read at call time from the encrypted BotSecretStore; the frozen pin
-    only fixes provider_ref and model.
+    A real provider must never silently borrow the workbench default key: a bot
+    without its own key fails closed with ``missing_bot_key``.  Scripted/replay
+    fixtures do not call a real endpoint, so they may return ``None``.
     """
+    from app.llm.providers import ReplayProvider, ScriptedProvider
+
+    provider = getattr(gateway, "provider", None)
+    scripted = isinstance(provider, (ScriptedProvider, ReplayProvider))
     if gateway.data_dir is None:
-        return None
+        if scripted:
+            return None
+        raise AgentOutputError(
+            "bot has no own api key (workbench default key fallback is disabled)",
+            category="missing_bot_key",
+        )
     api_key = BotSecretStore(gateway.data_dir).get(bot_id)
     if not api_key:
-        return None
+        if scripted:
+            return None
+        raise AgentOutputError(
+            "bot has no own api key (workbench default key fallback is disabled)",
+            category="missing_bot_key",
+        )
     base_url = endpoint_for(provider_ref, gateway.models.base_url)
     if base_url is None:
         raise AgentOutputError("模型配置或凭据不可用", category="auth")

@@ -3110,15 +3110,16 @@ class Workbench:
 
     def workflow_projection(self, run: RunState | None, discussion: Any | None = None) -> dict[str, Any]:
         """Read-only workflow view (stage/blocked/baseline) for API responses."""
-        from app.llm.providers import ReplayProvider, ScriptedProvider
+        from app.workflow.evidence import evidence_for_run
         from app.workflow.projection import project_workflow_projection
 
-        provider = getattr(getattr(self, "gateway", None), "provider", None)
-        model_mode = "scripted" if isinstance(provider, (ScriptedProvider, ReplayProvider)) else "real"
+        evidence = evidence_for_run(self, run) if run is not None else {}
         return project_workflow_projection(
             discussion=discussion,
             run=run,
-            model_mode=model_mode,
+            model_mode=evidence.get("model_mode", "not_run"),
+            execution_mode=evidence.get("execution_mode", "not_run"),
+            evidence=evidence,
         ).to_dict()
 
     def budget(self, run: RunState) -> dict[str, Any]:
