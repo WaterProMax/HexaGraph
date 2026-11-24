@@ -130,7 +130,7 @@ async def create_run(project_id: str, body: CreateRun, request: Request) -> dict
         started = await bench.start_idea(run)
     except (AgentOutputError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"run": _run_view(run), "result": started}
+    return {"run": _run_view(run), "result": started, "workflow": bench.workflow_projection(run)}
 
 
 @router.post("/projects/{project_id}/design-runs")

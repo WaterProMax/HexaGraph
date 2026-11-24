@@ -386,3 +386,18 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 - 投影是纯查询：不写库、不改状态；项目/会话绑定不一致时返回 `blocked` + `cross_project_mismatch`，不会静默改写历史。
 - 未批准规格时 `POST /plan` 仍返回 409 `invalid_status`「需先确认需求规格」，且不创建 run。
 
+## 执行授权边界（2026-11-24）
+
+所有会触发任务执行的入口共用同一服务端决策：`/schedule`、自动调度循环、`/tasks/{id}/{action}` 的 retry/takeover/submit-takeover/force-pass、`/accept`。
+
+| 场景 | 结果 |
+|---|---|
+| 规格已批准、PLAN 门仍 pending | 409，拒绝且无任务副作用 |
+| legacy run + 真实 provider（非 scripted/replay） | 403 `profile_not_granted_v1`；真实执行必须升 `granted_v1` 并取得 active grant |
+| legacy run + scripted/replay | 允许，作为模拟执行，证据标 `scripted` / `simulated` |
+| granted_v1 + 真实 provider + 总闸关闭 | 409 `execution_safety_not_ready` |
+| granted_v1 + 真实 provider + 总闸开启 | 进入既有 grant 范围 / 基线 / DAG / 工具校验 |
+| profile 缺失或冲突 | 409 `profile_unspecified` / `profile_conflict` |
+
+`execution_safety_ready` 仍为服务端只读开关且默认 `False`；没有开闸路由或前端入口。脚本成功不等于真实测试通过：成功响应与 monitor 的 `evidence` 会分别标注 `model_mode` / `execution_mode` / `verification_status`。
+

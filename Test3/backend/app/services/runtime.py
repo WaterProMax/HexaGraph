@@ -1177,6 +1177,18 @@ class Workbench:
             "execution_safety_ready": self.execution_safety_ready,
         }
 
+    def _require_execution_authorization(self, run: RunState, action: str) -> None:
+        """Unified decision shared by schedule/execute/task control/accept."""
+        from app.execution.authorization import decide_execution
+
+        decision = decide_execution(self, run, action)
+        if not decision.allowed:
+            raise GrantRejected(
+                decision.error_category or "execution_not_authorized",
+                decision.detail or "execution is not authorized",
+                status_code=decision.status_code,
+            )
+
     def _require_execution_safety(self, run: RunState, code: str = "") -> None:
         profile = run_execution_profile(run)
         if profile in (PROFILE_UNSPECIFIED, PROFILE_CONFLICT):
@@ -2383,6 +2395,7 @@ class Workbench:
     async def schedule_once(self, run: RunState, *, task_codes: set[str] | None = None) -> list[str]:
         # Direct API callers get the same controlled rejection as the auto loop.
         self._reject_retired(run)
+        self._require_execution_authorization(run, "schedule")
         allowed = await self._granted_scope(run, task_codes)
         if task_codes is not None and run_execution_profile(run) == PROFILE_GRANTED:
             # P5: a successor may not start before its predecessors succeeded.
@@ -2462,6 +2475,7 @@ class Workbench:
             return await self._execute_task_locked(run, code)
 
     async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
+        self._require_execution_authorization(run, "execute")
         self._require_execution_safety(run, code)
         task = run.tasks[code]
         card = TaskCard.model_validate(task["card"])
@@ -2978,6 +2992,7 @@ class Workbench:
             # Reject before changing state/revisions or creating a worktree: a
             # granted run must not be half-way through a control action while
             # the safety gate is closed.
+            self._require_execution_authorization(run, "execute")
             self._require_execution_safety(run, code)
         if run_execution_profile(run) == PROFILE_GRANTED:
             # Same boundary as execute_task: retry is authorized before state
@@ -3133,6 +3148,7 @@ class Workbench:
 
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
+        self._require_execution_authorization(run, "accept")
         self._require_execution_safety(run)
         if run_execution_profile(run) == PROFILE_GRANTED:
             raise GrantRejected(

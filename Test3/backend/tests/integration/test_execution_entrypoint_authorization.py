@@ -52,6 +52,7 @@ def _approved_run(app):
 async def test_schedule_task_control_and_accept_reject_real_legacy(tmp_path) -> None:
     app = _app(tmp_path, _RealProvider())
     run = _approved_run(app)
+    before = {code: (task["state"], task["revision"]) for code, task in run.tasks.items()}
 
     async with _client(app) as client:
         scheduled = await client.post(f"/api/runs/{run.id}/schedule")
@@ -68,8 +69,7 @@ async def test_schedule_task_control_and_accept_reject_real_legacy(tmp_path) -> 
     assert accepted.status_code == 403, accepted.text
     assert accepted.json()["error_category"] == "profile_not_granted_v1"
     # No side effects: no task moved and no acceptance gate opened.
-    assert run.tasks["T-01"]["state"] == "ready"
-    assert run.tasks["T-01"]["revision"] == 1
+    assert {code: (task["state"], task["revision"]) for code, task in run.tasks.items()} == before
     assert not any(gate["kind"] == "验收确认" for gate in run.gates)
 
 

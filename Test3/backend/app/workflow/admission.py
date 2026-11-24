@@ -105,13 +105,6 @@ def assert_phase_admission(
         return
 
     if action in {"schedule", "execute", "accept"}:
-        status = str(getattr(run, "status", ""))
-        if status in {"done", "terminated"} and action != "accept":
-            raise WorkflowRejected(
-                status,
-                category="invalid_status",
-                blocked_reason="run_closed",
-            )
         gate = _last_gate(run, PLAN_GATE_KIND)
         if gate is not None and gate.get("status") == "pending":
             raise WorkflowRejected(
