@@ -2660,12 +2660,16 @@ class Workbench:
         expected_revision: int | None,
     ) -> dict[str, Any]:
         approving = decision == "approve"
-        self._validate_candidate_gate(
-            run, gate, candidate, payload, expected_revision, approving=approving
-        )
-        if not approving:
-            return await self._reject_candidate_gate(run, gate, candidate, payload, actor)
-        return await self._adopt_candidate_gate(run, gate, candidate, payload, actor)
+        # Adoption stages this run's audit events until the snapshot commits.
+        # Serialize with task execution so unrelated events are not swallowed
+        # into that buffer.
+        async with self._run_locks.write_scope(run.id):
+            self._validate_candidate_gate(
+                run, gate, candidate, payload, expected_revision, approving=approving
+            )
+            if not approving:
+                return await self._reject_candidate_gate(run, gate, candidate, payload, actor)
+            return await self._adopt_candidate_gate(run, gate, candidate, payload, actor)
 
     async def _reject_candidate_gate(
         self,
