@@ -401,3 +401,9 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 
 `execution_safety_ready` 仍为服务端只读开关且默认 `False`；没有开闸路由或前端入口。脚本成功不等于真实测试通过：成功响应与 monitor 的 `evidence` 会分别标注 `model_mode` / `execution_mode` / `verification_status`。
 
+## 基线失效与崩溃和解（2026-11-24）
+
+- 已批准 SPEC/DESIGN/PLAN（或 DecisionPackage）与当前产物哈希不一致时，`/schedule`、任务执行、`/accept` 返回 409 `baseline_stale`；run 被暂停，`workflow_invalidations` 追加一条历史记录，active grant 标为 `stale`。历史记录与 grant 行不删除；重新批准并取得新 grant 后才可继续。
+- `POST /api/runs/{run_id}/reconcile` 返回只读报告：`{run_id, needs_reconciliation, tasks:[{task_code,state,evidence_count,status:"unknown"}], note}`。重启后处于 running/verifying 且无证据的任务被暂停并标记 `needs_reconciliation`；调度/手动 retry 对其返回 409 `needs_reconciliation`，不会自动重放。
+- 模块验收 `accepted` 复验会把同任务旧的 open/reopened 缺陷标为 `resolved`，保留原缺陷行并记录 `resolved_by_acceptance_id`。
+

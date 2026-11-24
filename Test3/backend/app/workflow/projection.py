@@ -188,9 +188,11 @@ def project_workflow_projection(
             or any(bool((task or {}).get("needs_reconciliation")) for task in (getattr(run, "tasks", None) or {}).values())
         )
     )
-    invalidation = (
-        (getattr(run, "artifacts", None) or {}).get("workflow_invalidations") if run is not None else None
-    )
+    drift: list[str] = []
+    if run is not None:
+        from app.workflow.invalidation import baseline_drift
+
+        drift = baseline_drift(run)
 
     plan_gate = _last_gate(run, PLAN_GATE_KIND) if run is not None else None
     spec_approved = _spec_approved(discussion, run, plan_gate)
@@ -208,14 +210,14 @@ def project_workflow_projection(
     else:
         stage = "discussing"
 
-    if needs_reconciliation and stage not in {"accepted", "blocked"}:
+    if drift and stage != "accepted":
+        stage = "invalidated"
+        blocked.append(_blocked("baseline_stale", "approved baseline changed; re-approval required"))
+    elif needs_reconciliation and stage not in {"accepted", "blocked"}:
         stage = "needs_reconciliation"
         blocked.append(
             _blocked("needs_reconciliation", "restored run has execution without complete evidence")
         )
-    if invalidation and stage not in {"accepted", "blocked"}:
-        stage = "invalidated"
-        blocked.append(_blocked("baseline_stale", "approved baseline changed; re-approval required"))
 
     return WorkflowProjection(
         stage=stage,

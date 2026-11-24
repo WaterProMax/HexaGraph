@@ -74,6 +74,21 @@ def decide_execution(
         )
 
     profile = run_execution_profile(run)
+    from app.workflow.invalidation import baseline_drift
+
+    drift = baseline_drift(run)
+    if drift:
+        return ExecutionDecision(
+            allowed=False,
+            error_category="baseline_stale",
+            detail=f"approved baseline changed: {', '.join(drift)}; re-approval required",
+            status_code=409,
+            blocked_reason="baseline_stale",
+            simulated=simulated,
+            model_mode=evidence["model_mode"],
+            execution_mode=evidence["execution_mode"],
+            evidence_level=evidence["level"],
+        )
     base = dict(
         simulated=simulated,
         model_mode=evidence["model_mode"],

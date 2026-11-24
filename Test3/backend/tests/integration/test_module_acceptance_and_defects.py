@@ -191,6 +191,35 @@ async def test_defect_returns_task_to_failed(app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reverification_resolves_defect_without_deleting_history(app) -> None:
+    run_id = _run(app)
+    async with _client(app) as client:
+        rejected = await client.post(
+            f"/api/runs/{run_id}/module-acceptances",
+            json=_acceptance_body(status="rejected", comment="缺回归证据"),
+            headers={"X-Bot-Id": "bot-reviewer"},
+        )
+        assert rejected.status_code == 201, rejected.text
+        # Human repair: the task is done again with evidence, then re-verified.
+        run = app.state.workbench.runs[run_id]
+        run.tasks["T-01"]["state"] = "done"
+        run.tasks["T-01"]["evidence"] = [{"kind": "command", "summary": "ok", "path": EVIDENCE}]
+        accepted = await client.post(
+            f"/api/runs/{run_id}/module-acceptances",
+            json=_acceptance_body(comment="复验通过"),
+            headers={"X-Bot-Id": "bot-reviewer"},
+        )
+    assert accepted.status_code == 201, accepted.text
+    assert accepted.json()["evidence"]["level"] == "scripted"
+    async with app.state.workbench.db_session() as session:
+        defects = (await session.execute(select(DefectRow))).scalars().all()
+    assert len(defects) == 1
+    assert defects[0].payload["status"] == "resolved"
+    assert defects[0].payload["resolved_by_acceptance_id"] == accepted.json()["acceptance_id"]
+    assert defects[0].payload["detail"] == "缺回归证据"
+
+
+@pytest.mark.asyncio
 async def test_unknown_run_is_404(app) -> None:
     async with _client(app) as client:
         accepted = await client.post(

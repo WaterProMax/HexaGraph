@@ -168,6 +168,12 @@ async def monitor(run_id: str, request: Request) -> dict[str, Any]:
     return wb(request).monitor_snapshot(_run(request, run_id))
 
 
+@router.post("/runs/{run_id}/reconcile")
+async def reconcile_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Report interrupted tasks; never replays them automatically."""
+    return wb(request).reconcile_run(_run(request, run_id))
+
+
 @router.get("/runs/{run_id}/stages")
 async def stages(run_id: str, request: Request) -> dict[str, Any]:
     run = _run(request, run_id)

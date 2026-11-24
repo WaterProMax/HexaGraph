@@ -448,8 +448,14 @@ class Workbench:
                 run.pending_human = False
                 run.artifacts["release_dir"] = str(release)
             repo = run_dir / "repo"
+            pending = {
+                code: task["state"]
+                for code, task in run.tasks.items()
+                if task.get("state") in {"running", "verifying"}
+            }
             if (repo / ".git").exists() and run.tasks:
                 recover_tasks(run.tasks, repo, lambda code: f"task/{code}")
+            self._mark_unknown_executions(run, pending)
             self.runs[run.id] = run
             # SQLite is the authority for grants: a fresh process must not keep
             # an empty cache and later re-bind specs with an empty grant_id.
@@ -463,6 +469,57 @@ class Workbench:
                 run.artifacts["model_stage"]["error"] = message
                 self._doc_check_failed(run, retry="plan", errors=[message], extra={"error_category": "interrupted"})
             self._persist_snapshot(run)
+
+    def _mark_unknown_executions(self, run: RunState, pending: dict[str, str]) -> None:
+        """Restored running/verifying tasks without evidence are unknown, not ready.
+
+        They are paused and flagged so the scheduler never silently re-runs a
+        step that may already have produced external side effects.  A human
+        reconciliation (``reconcile_run``) is required.
+        """
+        flagged: list[str] = []
+        for code in sorted(pending):
+            task = run.tasks.get(code)
+            if task is None or task.get("needs_reconciliation"):
+                continue
+            if task.get("state") == "done":
+                continue
+            if task.get("evidence"):
+                continue
+            task["needs_reconciliation"] = True
+            task["paused"] = True
+            flagged.append(code)
+        if flagged:
+            run.artifacts["workflow_needs_reconciliation"] = True
+            run.artifacts["workflow_needs_reconciliation_tasks"] = flagged
+            self.emit(
+                run,
+                "workflow.needs_reconciliation",
+                run.id,
+                {"tasks": flagged, "note": "manual review required; no automatic replay"},
+            )
+
+    def reconcile_run(self, run: RunState) -> dict[str, Any]:
+        """Read-only report for tasks interrupted without complete evidence."""
+        items = []
+        for code, task in sorted(run.tasks.items()):
+            if not task.get("needs_reconciliation"):
+                continue
+            evidence = task.get("evidence") or []
+            items.append(
+                {
+                    "task_code": code,
+                    "state": task.get("state") or "",
+                    "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+                    "status": "unknown",
+                }
+            )
+        return {
+            "run_id": run.id,
+            "needs_reconciliation": bool(items),
+            "tasks": items,
+            "note": "manual review required; automatic replay is disabled",
+        }
 
     def _restore_execution_profile(self, run: RunState, data: dict[str, Any]) -> None:
         """Apply SQLite authority after a snapshot/events restore.
@@ -1236,6 +1293,37 @@ class Workbench:
         digest = write_approved_baseline_hash(run, key, value)
         self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
         return digest
+
+    async def _mark_grants_stale(self, run: RunState, reason: str) -> None:
+        """Append-only: active grants become stale; rows are never deleted."""
+        async with self._grant_lock():
+            async with self.db_session() as session:
+                repo = GrantRepo(session)
+                changed = False
+                for grant in await repo.list_for_run(run.id):
+                    if grant.status == "active":
+                        await repo.update_status(grant.grant_id, "stale")
+                        changed = True
+                if changed:
+                    await session.commit()
+        self._grant_cache[run.id] = await self.grants_for_run(run.id)
+
+    async def _invalidate_if_drifted(self, run: RunState, reason: str = "approved baseline changed") -> list[str]:
+        """Pause and archive when SPEC/DESIGN/PLAN no longer match approval."""
+        from app.workflow.invalidation import baseline_drift, invalidation_record
+
+        keys = baseline_drift(run)
+        if not keys:
+            return []
+        records = run.artifacts.setdefault("workflow_invalidations", [])
+        if records and records[-1].get("keys") == keys and run.paused:
+            return keys
+        records.append(invalidation_record(keys, reason))
+        run.paused = True
+        self.emit(run, "baseline.invalidated", run.id, {"keys": keys, "reason": reason})
+        await self._mark_grants_stale(run, reason)
+        self._persist_snapshot(run)
+        return keys
 
     async def _refresh_grant_statuses(self, run: RunState) -> None:
         """Mark only active grants whose baseline hashes actually changed."""
@@ -2414,6 +2502,15 @@ class Workbench:
     async def schedule_once(self, run: RunState, *, task_codes: set[str] | None = None) -> list[str]:
         # Direct API callers get the same controlled rejection as the auto loop.
         self._reject_retired(run)
+        await self._invalidate_if_drifted(run)
+        if task_codes is not None:
+            flagged = sorted(code for code in task_codes if (run.tasks.get(code) or {}).get("needs_reconciliation"))
+            if flagged:
+                raise GrantRejected(
+                    "needs_reconciliation",
+                    f"manual reconciliation required: {', '.join(flagged)}",
+                    status_code=409,
+                )
         self._require_execution_authorization(run, "schedule")
         allowed = await self._granted_scope(run, task_codes)
         if task_codes is not None and run_execution_profile(run) == PROFILE_GRANTED:
@@ -2494,9 +2591,16 @@ class Workbench:
             return await self._execute_task_locked(run, code)
 
     async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
+        await self._invalidate_if_drifted(run)
         self._require_execution_authorization(run, "execute")
         self._require_execution_safety(run, code)
         task = run.tasks[code]
+        if task.get("needs_reconciliation"):
+            raise GrantRejected(
+                "needs_reconciliation",
+                "task was interrupted without complete evidence; needs manual reconciliation",
+                status_code=409,
+            )
         card = TaskCard.model_validate(task["card"])
         if run.status == "terminated":
             self.emit(run, "task.late_result_ignored", code, {"reason": "run terminated"}, "system")
@@ -3011,6 +3115,13 @@ class Workbench:
             # Reject before changing state/revisions or creating a worktree: a
             # granted run must not be half-way through a control action while
             # the safety gate is closed.
+            await self._invalidate_if_drifted(run)
+            if task.get("needs_reconciliation"):
+                raise GrantRejected(
+                    "needs_reconciliation",
+                    "task was interrupted without complete evidence; needs manual reconciliation",
+                    status_code=409,
+                )
             self._require_execution_authorization(run, "execute")
             self._require_execution_safety(run, code)
         if run_execution_profile(run) == PROFILE_GRANTED:
@@ -3167,6 +3278,7 @@ class Workbench:
 
     async def accept(self, run: RunState) -> dict[str, Any]:
         self._reject_retired(run)
+        await self._invalidate_if_drifted(run)
         self._require_execution_authorization(run, "accept")
         self._require_execution_safety(run)
         if run_execution_profile(run) == PROFILE_GRANTED:

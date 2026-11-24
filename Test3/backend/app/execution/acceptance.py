@@ -19,6 +19,7 @@ Evidence rules:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -145,6 +146,8 @@ async def record_acceptance(
             payload=acceptance.model_dump(),
         )
     )
+    if data.status == "accepted":
+        await _resolve_open_defects(session, run, data.task_codes, acceptance.acceptance_id)
     defects: list[DefectRecord] = []
     if data.status == "rejected":
         for code in data.task_codes:
@@ -215,6 +218,38 @@ async def _insert_defect(
         )
     )
     return defect
+
+
+async def _resolve_open_defects(
+    session: AsyncSession,
+    run: Any,
+    task_codes: list[str],
+    acceptance_id: str,
+) -> None:
+    """A later accepted re-verification resolves open defects without deleting them."""
+    if not task_codes:
+        return
+    rows = (
+        (
+            await session.execute(
+                select(DefectRow).where(
+                    DefectRow.run_id == str(run.id),
+                    DefectRow.task_code.in_(list(task_codes)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        payload = dict(row.payload or {})
+        if payload.get("status") not in {"open", "reopened"}:
+            continue
+        payload["status"] = "resolved"
+        payload["resolved_by_acceptance_id"] = acceptance_id
+        payload["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        row.payload = payload
+    await session.flush()
 
 
 async def list_acceptances(session: AsyncSession, run_id: str) -> list[ModuleAcceptance]:

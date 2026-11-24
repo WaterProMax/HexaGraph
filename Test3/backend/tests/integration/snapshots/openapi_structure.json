@@ -781,6 +781,16 @@
         "422"
       ]
     },
+    "POST /api/runs/{run_id}/reconcile": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/runs/{run_id}/resume": {
       "body": null,
       "params": [

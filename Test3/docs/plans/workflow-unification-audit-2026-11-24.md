@@ -96,3 +96,13 @@ uv run pytest -q -m "not live"
 
 - 卡 1（投影+准入）→ 卡 2（证据+缺 key）→ 卡 3（统一授权）→ 卡 4（幂等+第一轮出口）。
 - 卡 5（失效/重新批准）→ 卡 6（P5 返工适配+崩溃和解+差距文档）。
+
+## 9. 实施过程中发现的本地事实
+
+1. **HEAD 的讨论 e2e 已存在测试/UI 不匹配（先于本任务）**
+   - `63e3608` 把方案正文从内联展开改为居中弹窗（`disc-proposal-mask`），但 `discussion-flow.pw.ts` 仍按旧交互继续点击「查看需求规格」；弹窗遮罩拦截点击，测试在 15 分钟超时。
+   - 处理：只在 e2e 中补“读取后关闭方案弹窗”一步（测试前置条件），不修改产品 UI，不放宽任何安全断言。修复后该 scripted e2e 通过（11.1s）。
+2. **讨论 `/plan` 的 PLAN 哈希本来就在门确认时写入**，卡 4 不需要改算法；只补审批人/时间/绑定的加法记录。
+3. **PLAN 门确认会 materialize 任务**；因此“已批准 PLAN + 任务 ready + 无 grant”的投影为 `authorization_pending`，不是 `executing`。
+4. **`recover_tasks` 会把未合并的 running 任务回退为 ready**（存在自动重跑风险）；卡 6 在恢复流程中把“running/verifying 且无证据”的任务额外标记为 `needs_reconciliation` 并暂停调度。
+5. **运行级 reconcile 此前只有 SQLite 书签/记忆对齐**（`app/ops/reconcile.py`），没有任务级报告；本轮新增只读 `Workbench.reconcile_run` 与 `/runs/{id}/reconcile`。
