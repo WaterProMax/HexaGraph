@@ -369,3 +369,20 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 - `messages` / `events` 同样只带消息元数据，不含方案或规格正文；SSE 帧格式与 `Last-Event-ID` 续传见 P4「多 Bot 群聊（消息流与驱动器）」。
 - 未新增写接口、未改任何既有 POST 语义。Alembic head 现为 `0012`：本轮只新增 `discussion_messages` 表（迁移 `0012_discussion_messages`），其余表结构未变。
 
+## 工作流阶段投影（加法字段，2026-11-24）
+
+只读查询新增 `workflow` 对象，不改变既有字段与语义；旧客户端可忽略。
+
+| 方法 | 路径 | 附加字段 |
+|---|---|---|
+| GET | `/api/runs/{run_id}` | `workflow` |
+| GET | `/api/runs/{run_id}/monitor` | `workflow` |
+| GET | `/api/discussion-sessions/{session_id}` | `workflow` |
+| POST | `/api/discussion-sessions/{session_id}/plan`（409） | 错误体附 `workflow`，`error_category` / `detail` 不变 |
+
+`workflow` 形状：`{stage, status, project_id, session_id, run_id, spec_approved, plan_approved, blocked: [{code, detail}], baseline_hashes, model_mode, execution_mode, evidence}`。
+
+- `stage` 是内部阶段（`discussing`、`spec_pending`、`spec_approved`、`planning`、`plan_pending`、`plan_approved`、`authorization_pending`、`executing`、`verifying`、`accepted`，以及 `blocked` / `invalidated` / `needs_reconciliation`）；对外 `status` 仍是原 discussion/run 状态。
+- 投影是纯查询：不写库、不改状态；项目/会话绑定不一致时返回 `blocked` + `cross_project_mismatch`，不会静默改写历史。
+- 未批准规格时 `POST /plan` 仍返回 409 `invalid_status`「需先确认需求规格」，且不创建 run。
+

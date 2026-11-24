@@ -510,7 +510,13 @@ async def get_discussion_session(session_id: str, request: Request) -> Any:
             return _json_error(404, "session_not_found", f"session not found: {session_id}")
     if actor not in record.participant_bot_ids and actor != record.leader_bot_id:
         return _json_error(403, "not_participant", "actor is not a participant of this session")
-    return record.model_dump()
+    from app.workflow.projection import find_run_for_session
+
+    run = find_run_for_session(bench.runs, record.session_id)
+    return {
+        **record.model_dump(),
+        "workflow": bench.workflow_projection(run, discussion=record),
+    }
 
 
 @router.get("/discussion-sessions/{session_id}/reviews")

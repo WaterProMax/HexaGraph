@@ -3104,7 +3104,22 @@ class Workbench:
         return items
 
     def monitor_snapshot(self, run: RunState) -> dict[str, Any]:
-        return build_monitor_snapshot(run, self.models, self.registry)
+        snapshot = build_monitor_snapshot(run, self.models, self.registry)
+        snapshot["workflow"] = self.workflow_projection(run)
+        return snapshot
+
+    def workflow_projection(self, run: RunState | None, discussion: Any | None = None) -> dict[str, Any]:
+        """Read-only workflow view (stage/blocked/baseline) for API responses."""
+        from app.llm.providers import ReplayProvider, ScriptedProvider
+        from app.workflow.projection import project_workflow_projection
+
+        provider = getattr(getattr(self, "gateway", None), "provider", None)
+        model_mode = "scripted" if isinstance(provider, (ScriptedProvider, ReplayProvider)) else "real"
+        return project_workflow_projection(
+            discussion=discussion,
+            run=run,
+            model_mode=model_mode,
+        ).to_dict()
 
     def budget(self, run: RunState) -> dict[str, Any]:
         orch = run.limits.get("orchestrator") or {}

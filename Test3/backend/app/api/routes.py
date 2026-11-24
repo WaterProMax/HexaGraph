@@ -158,7 +158,8 @@ async def list_runs(request: Request) -> list[dict[str, Any]]:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request) -> dict[str, Any]:
-    return _run_view(_run(request, run_id))
+    run = _run(request, run_id)
+    return {**_run_view(run), "workflow": wb(request).workflow_projection(run)}
 
 
 @router.get("/runs/{run_id}/monitor")

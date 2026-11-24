@@ -18,6 +18,7 @@ from app.errors import ValidationFailed, user_message_for_category
 from app.leader.steward import DiscussionSteward, InvalidParticipant, LeaderNotInProject
 from app.memory.organizer import contains_secret
 from app.storage.models import ProjectMembershipRow
+from app.workflow.admission import WorkflowRejected, assert_phase_admission
 
 router = APIRouter()
 
@@ -197,9 +198,20 @@ async def plan_discussion(session_id: str, request: Request) -> Any:
     if error is not None:
         return error
     assert record is not None
+    bench = request.app.state.workbench
+    try:
+        assert_phase_admission("plan", discussion=record)
+    except WorkflowRejected as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error_category": exc.category,
+                "detail": exc.message,
+                "workflow": bench.workflow_projection(None, discussion=record),
+            },
+        )
     if record.status != "approved" or record.decision_package is None:
         return _json_error(409, "invalid_status", "需先确认需求规格")
-    bench = request.app.state.workbench
     async with bench.db_session() as session:
         member = await session.get(ProjectMembershipRow, (record.project_id, actor))
         if member is None or not member.is_leader:
