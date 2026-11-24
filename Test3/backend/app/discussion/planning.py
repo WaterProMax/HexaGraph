@@ -374,7 +374,17 @@ async def prepare_run(bench, record: DiscussionSession) -> str:
     run_id = run_id_for(record.session_id)
     locks = bench._discussion_plan_locks
     async with locks.setdefault(run_id, asyncio.Lock()):
-        if run_id not in bench.runs:
-            output = await generate(bench, record)
-            bench.create_discussion_plan_run(record, output, run_id)
+        existing = bench.runs.get(run_id)
+        if existing is not None:
+            # A deterministic run_id is only reusable for the same project and
+            # session; never let one session read/reuse another project's plan.
+            if getattr(existing, "project_id", "") != record.project_id:
+                raise ValidationFailed("讨论会话与既有计划运行的所属项目不一致")
+            linked = (getattr(existing, "artifacts", None) or {}).get("discussion_session_id")
+            if linked and str(linked) != record.session_id:
+                raise ValidationFailed("既有计划运行绑定了其它讨论会话")
+            return run_id
+        output = await generate(bench, record)
+        bench.create_discussion_plan_run(record, output, run_id)
+        bench._persist_snapshot(bench.runs[run_id])
     return run_id

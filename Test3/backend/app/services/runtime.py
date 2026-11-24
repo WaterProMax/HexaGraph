@@ -1218,6 +1218,20 @@ class Workbench:
         if run is not None:
             self._bind_grant_to_tasks(run, grant)
 
+    def _record_gate_approval(self, run: RunState, gate: dict[str, Any], actor: str) -> None:
+        """Append an immutable approval record bound to project/run/session."""
+        record = {
+            "kind": str(gate.get("kind") or ""),
+            "gate_id": str(gate.get("id") or ""),
+            "actor": actor,
+            "at": str(gate.get("resolved_at") or ""),
+            "project_id": run.project_id,
+            "run_id": run.id,
+            "session_id": run.artifacts.get("discussion_session_id"),
+            "approved_baseline_hashes": dict(run_approved_baseline_hashes(run)),
+        }
+        run.artifacts.setdefault("approvals", []).append(record)
+
     def _record_approved_baseline(self, run: RunState, key: str, value: Any) -> str:
         digest = write_approved_baseline_hash(run, key, value)
         self.emit(run, "baseline.hash", key, {"key": key, "sha256": digest})
@@ -1838,6 +1852,8 @@ class Workbench:
             raise RevisionConflict("revision mismatch")
         gate["status"] = "approved" if decision == "approve" else "rejected"
         gate["decision"] = payload
+        gate["resolved_by"] = actor
+        gate["resolved_at"] = datetime.now(timezone.utc).isoformat()
         run.pending_human = False
         run.revision += 1
         self.emit(run, "gate.resolved", gate_id, {"decision": decision, **payload}, actor)
@@ -1879,6 +1895,7 @@ class Workbench:
             self._record_approved_baseline(run, "SPEC", run.artifacts.get("spec") or {})
             await self._refresh_grant_statuses(run)
             self._freeze(run, "SPEC")
+            self._record_gate_approval(run, gate, actor)
             run.engine.apply("spec_confirmed")
             return await self.run_design(run)
         if kind == "DESIGN基线确认":
@@ -1897,6 +1914,7 @@ class Workbench:
             self._record_approved_baseline(run, "DESIGN", run.artifacts.get("design") or {})
             await self._refresh_grant_statuses(run)
             self._freeze(run, "DESIGN")
+            self._record_gate_approval(run, gate, actor)
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "design_confirmed"
             run.engine.apply("design_confirmed")
@@ -1911,6 +1929,7 @@ class Workbench:
             self._record_approved_baseline(run, "PLAN", run.artifacts.get("plan") or {})
             await self._refresh_grant_statuses(run)
             self._freeze(run, "PLAN")
+            self._record_gate_approval(run, gate, actor)
             if run.artifacts.get("design_input"):
                 run.artifacts["design_input_status"] = "plan_confirmed"
             run.engine.apply("plan_confirmed")
