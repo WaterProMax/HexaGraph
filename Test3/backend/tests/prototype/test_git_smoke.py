@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.workspace.gitops import changed_files, commit, create_worktree, init_repo_sync, is_merged, merge, rollback_merge
+from app.workspace.gitops import changed_files, commit, create_worktree, head_sha, init_repo_sync, is_merged, merge, rollback_merge
+
+
+def test_commit_treats_clean_worktree_as_noop(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_repo_sync(repo, {"README.md": "base\n"})
+    before = head_sha(repo)
+    assert commit(repo, "identical content") == before
+    assert head_sha(repo) == before
 
 
 def test_git_worktree_merge_conflict_rollback(tmp_path: Path) -> None:

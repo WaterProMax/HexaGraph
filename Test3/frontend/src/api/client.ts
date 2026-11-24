@@ -102,6 +102,7 @@ export const api = {
   artifacts: (id: string, init?: RequestInit) => req(`/runs/${id}/artifacts`, init),
   todos: (id: string) => req(`/runs/${id}/todos`),
   tasks: (id: string) => req(`/runs/${id}/tasks`),
+  monitor: (id: string): Promise<import("./types").MonitorSnapshot> => req(`/runs/${id}/monitor`),
   task: (taskId: string) => req(`/tasks/${taskId}`),
   budget: (id: string) => req(`/runs/${id}/budget`),
   trace: (id: string) => req(`/runs/${id}/trace`),

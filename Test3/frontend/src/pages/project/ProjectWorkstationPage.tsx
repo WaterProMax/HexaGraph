@@ -5,6 +5,7 @@ import type { BotInstance, DefectRecord, GrantStatus, ReviewBallot, RunTask } fr
 import type { LoadState } from "../../components/AppShell";
 import { LEFT_PANEL_ID, WorkstationSplitter } from "../../components/WorkstationSplitter";
 import { useWorkstationLayout } from "../../workstationLayout";
+import { AgentEvaluationPanel } from "./AgentEvaluationPanel";
 import { DefectList } from "./DefectList";
 import { DiscussionReviewPanel } from "./DiscussionReviewPanel";
 import { DiscussionView } from "./discussion/DiscussionView";
@@ -12,9 +13,10 @@ import { GrantStatusBanner } from "./GrantStatusBanner";
 import { InviteBotsDialog } from "./InviteBotsDialog";
 import { ManageMembersDialog } from "./ManageMembersDialog";
 import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
+import { RunMonitorPanel } from "./RunMonitorPanel";
 import { TeamStrip, type TeamMember } from "./TeamStrip";
 
-export type WorkstationTab = "details" | "monitor" | "activity" | "graph";
+export type WorkstationTab = "details" | "monitor" | "evaluation" | "activity" | "graph";
 
 export type WorkstationTask = { code: string; title: string; progress: number; status: string };
 
@@ -44,11 +46,13 @@ export type ProjectWorkstationProps = {
   discussionPanel?: ReactNode;
   onShowDiscussion?: () => void;
   onShowTasks?: () => void;
+  onRefresh?: () => void;
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
   { key: "details", label: "详情" },
   { key: "monitor", label: "执行监控" },
+  { key: "evaluation", label: "Agent 评测" },
   { key: "activity", label: "活动" },
   { key: "graph", label: "任务图" },
 ];
@@ -88,6 +92,7 @@ export function ProjectWorkstation({
   discussionPanel,
   onShowDiscussion,
   onShowTasks,
+  onRefresh,
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
   const [highlight, setHighlight] = useState("");
@@ -111,6 +116,7 @@ export function ProjectWorkstation({
   }, [tasks, selected]);
 
   const current = useMemo(() => tasks.find((task) => task.code === selected), [tasks, selected]);
+  const soloWorkspace = tab === "monitor" || tab === "evaluation";
 
   if (loadState === "loading") {
     return (
@@ -183,44 +189,48 @@ export function ProjectWorkstation({
       )}
 
       {!discussionPanel && (
-      <div className={layout.bodyClassName} style={layout.bodyStyle} ref={layout.bodyRef} data-testid="project-workstation">
-        <aside className="ws-left" id={LEFT_PANEL_ID} ref={layout.leftRef} tabIndex={-1} aria-label="任务树">
-          <div className="section-title">
-            <span>任务</span>
-            <span className="hint mono">{tasks.length}</span>
-          </div>
-          <div className="task-tree" data-testid="task-tree" role="tree">
-            {tasks.length === 0 && <div className="muted">没有任务</div>}
-            {tasks.map((task) => (
-              <button
-                type="button"
-                key={task.code}
-                role="treeitem"
-                aria-selected={task.code === selected}
-                className={`task-tree-item ${task.code === selected ? "active" : ""} ${task.code === highlight ? "highlight" : ""}`}
-                onClick={() => {
-                  locateTask(task.code);
-                }}
-              >
-                <span className="mono">{task.code}</span>
-                <span className="task-tree-title">{task.title}</span>
-                <span className={`chip status-${task.status}`}>{task.status}</span>
-                <span
-                  className="task-progress"
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={task.progress}
-                  aria-label={`${task.code} 进度`}
-                >
-                  {task.progress}%
-                </span>
-              </button>
-            ))}
-          </div>
-        </aside>
+      <div className={`${layout.bodyClassName} ${soloWorkspace ? "ws-body-solo" : ""}`.trim()} style={layout.bodyStyle} ref={layout.bodyRef} data-testid="project-workstation">
+        {!soloWorkspace && (
+          <>
+            <aside className="ws-left" id={LEFT_PANEL_ID} ref={layout.leftRef} tabIndex={-1} aria-label="任务树">
+              <div className="section-title">
+                <span>任务</span>
+                <span className="hint mono">{tasks.length}</span>
+              </div>
+              <div className="task-tree" data-testid="task-tree" role="tree">
+                {tasks.length === 0 && <div className="muted">没有任务</div>}
+                {tasks.map((task) => (
+                  <button
+                    type="button"
+                    key={task.code}
+                    role="treeitem"
+                    aria-selected={task.code === selected}
+                    className={`task-tree-item ${task.code === selected ? "active" : ""} ${task.code === highlight ? "highlight" : ""}`}
+                    onClick={() => {
+                      locateTask(task.code);
+                    }}
+                  >
+                    <span className="mono">{task.code}</span>
+                    <span className="task-tree-title">{task.title}</span>
+                    <span className={`chip status-${task.status}`}>{task.status}</span>
+                    <span
+                      className="task-progress"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={task.progress}
+                      aria-label={`${task.code} 进度`}
+                    >
+                      {task.progress}%
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </aside>
 
-        <WorkstationSplitter layout={layout} />
+            <WorkstationSplitter layout={layout} />
+          </>
+        )}
 
         <section className="ws-main">
           <div className="subnav" role="tablist" aria-label="工作台面板">
@@ -271,20 +281,12 @@ export function ProjectWorkstation({
 
           {tab === "monitor" && (
             <section className="surface" data-testid="panel-monitor" style={{ padding: 16 }}>
-              <div className="section-title">
-                <span>执行监控</span>
-                <span className="hint mono">{runId || "未绑定运行"}</span>
-              </div>
-              <div className="grid-list">
-                {tasks.length === 0 && <div className="muted">没有任务可监控。</div>}
-                {tasks.map((task) => (
-                  <div className="list-card" key={task.code}>
-                    <span className="mono">{task.code}</span>
-                    <span className={`chip status-${task.status}`}>{task.status}</span>
-                    <span className="hint">{task.progress}%</span>
-                  </div>
-                ))}
-              </div>
+              <RunMonitorPanel
+                runId={runId}
+                tasks={tasks}
+                onLocateTask={locateTask}
+                onRefresh={onRefresh}
+              />
               {memoryPanel && <div style={{ marginTop: 16 }}>{memoryPanel}</div>}
               <div style={{ marginTop: 16 }}>
                 <DiscussionReviewPanel ballots={ballots} dissentItems={dissentItems} bots={bots} />
@@ -292,6 +294,12 @@ export function ProjectWorkstation({
               <div style={{ marginTop: 16 }}>
                 <DefectList defects={defects} onLocateTask={locateTask} />
               </div>
+            </section>
+          )}
+
+          {tab === "evaluation" && (
+            <section className="surface" data-testid="panel-evaluation" style={{ padding: 16 }}>
+              <AgentEvaluationPanel runId={runId} />
             </section>
           )}
 
@@ -496,6 +504,7 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         onManage: () => setDialogOpen(true),
       }}
       bots={allBots}
+      onRefresh={load}
       onShowDiscussion={() => setShowDiscussion(true)}
       onShowTasks={() => {
         setShowDiscussion(false);

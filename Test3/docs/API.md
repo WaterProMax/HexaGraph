@@ -38,6 +38,7 @@
 | GET | `/runs/{id}/todos` | 未决关卡 + `needs_human` 任务 |
 | POST | `/gates/{id}/resolve` | `decision` + `payload` |
 | GET | `/runs/{id}/tasks` | 任务列表 |
+| GET | `/runs/{id}/monitor` | 监控聚合：运行 KPI、任务/工作包状态、Agent 评测与失败原因 |
 | GET | `/tasks/{id}` | 任务详情 |
 | POST | `/tasks/{id}/{action}` | pause/resume/retry/skip/takeover/submit-takeover/force-pass/patch |
 | POST | `/runs/{id}/pause` `/resume` `/terminate` | 运行级控制；终止必须 `{confirm: true}` |
@@ -48,7 +49,7 @@
 | POST/GET | `/runs/{id}/crs` | 提交 / 列出变更单 |
 | POST | `/crs/{code}/decision` | 变更决定 |
 | POST/GET | `/runs/{id}/feedback/import`、`/feedback` | 导入与查看 |
-| GET | `/runs/{id}/events/history?after=` | 历史事件 |
+| GET | `/runs/{id}/events/history?after=` | 历史事件；每条含 `ts`，旧快照事件可能为空 |
 | GET | `/runs/{id}/events` | SSE |
 | GET/PUT | `/config/models` | 读/写进程内槽位 |
 | POST | `/config/models/test` | 占位，返回提示用 `make check-models` |

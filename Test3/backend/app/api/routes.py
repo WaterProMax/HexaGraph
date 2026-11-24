@@ -161,6 +161,11 @@ async def get_run(run_id: str, request: Request) -> dict[str, Any]:
     return _run_view(_run(request, run_id))
 
 
+@router.get("/runs/{run_id}/monitor")
+async def monitor(run_id: str, request: Request) -> dict[str, Any]:
+    return wb(request).monitor_snapshot(_run(request, run_id))
+
+
 @router.get("/runs/{run_id}/stages")
 async def stages(run_id: str, request: Request) -> dict[str, Any]:
     run = _run(request, run_id)

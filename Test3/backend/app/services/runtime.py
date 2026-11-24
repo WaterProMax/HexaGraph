@@ -114,6 +114,7 @@ from app.schemas.docs import (
 )
 from app.schemas.execution_grant import ExecutionGrant, ExecutionProfile
 from app.services import design_input as design_input_service
+from app.services.monitor import build_monitor_snapshot
 from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
 from app.storage.db import make_engine, session_factory, sqlite_url
@@ -281,6 +282,7 @@ class Workbench:
     def emit(self, run: RunState, kind: str, subject: str = "", payload: dict[str, Any] | None = None, actor: str = "system") -> None:
         event = {
             "seq": len(run.events) + 1,
+            "ts": datetime.now(timezone.utc).isoformat(),
             "kind": kind,
             "subject": subject,
             "payload": payload or {},
@@ -3100,6 +3102,9 @@ class Workbench:
         if run.pending_human:
             items.append({"kind": "pending_human", "revision": run.revision})
         return items
+
+    def monitor_snapshot(self, run: RunState) -> dict[str, Any]:
+        return build_monitor_snapshot(run, self.models, self.registry)
 
     def budget(self, run: RunState) -> dict[str, Any]:
         orch = run.limits.get("orchestrator") or {}

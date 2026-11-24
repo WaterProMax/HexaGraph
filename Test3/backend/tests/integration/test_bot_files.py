@@ -29,8 +29,13 @@ class FakeProvider:
 
 def _app(tmp_path, provider=None):
     app = create_app()
+    models = load_models()
+    # File budgets derive from each slot's context window. Pin the flagship slot
+    # to 32K so these tests stay deterministic when local models.yaml is switched
+    # for a run; the coder slot remains the larger-window control below.
+    models.slots["flagship"].context_window = 32768
     app.state.workbench = Workbench(
-        Gateway(load_models(), provider or FakeProvider(), data_dir=tmp_path),
+        Gateway(models, provider or FakeProvider(), data_dir=tmp_path),
         RoleRegistry(load_roles()),
         tmp_path,
     )

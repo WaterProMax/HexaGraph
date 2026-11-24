@@ -56,10 +56,33 @@ describe("ProjectWorkstation tree and tabs", () => {
 
   it("shows the clicked task code in the details tab", () => {
     renderWorkstation();
-    fireEvent.click(screen.getByTestId("tab-monitor"));
     fireEvent.click(screen.getByRole("treeitem", { name: /T-02/ }));
     expect(screen.getByTestId("panel-details")).toBeTruthy();
     expect(screen.getByTestId("detail-task-code").textContent).toBe("T-02");
+  });
+
+  it("uses the full width for monitor and evaluation panels", () => {
+    renderWorkstation();
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    expect(screen.queryByTestId("task-tree")).toBeNull();
+    expect(screen.getByTestId("project-workstation").className).toContain("ws-body-solo");
+    fireEvent.click(screen.getByTestId("tab-evaluation"));
+    expect(screen.queryByTestId("task-tree")).toBeNull();
+  });
+
+  it("renders monitor KPIs and fallback tasks", () => {
+    renderWorkstation();
+    fireEvent.click(screen.getByTestId("tab-monitor"));
+    expect(screen.getByTestId("run-monitor")).toBeTruthy();
+    expect(screen.getByTestId("monitor-kpis").textContent).toContain("任务进度");
+    expect(screen.getByTestId("monitor-package-loose").textContent).toContain("T-01");
+  });
+
+  it("renders the Agent evaluation tab", () => {
+    renderWorkstation();
+    fireEvent.click(screen.getByTestId("tab-evaluation"));
+    expect(screen.getByTestId("panel-evaluation")).toBeTruthy();
+    expect(screen.getByTestId("agent-evaluation")).toBeTruthy();
   });
 
   it("marks the shared dirtyRef when editing a note", () => {

@@ -304,6 +304,16 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/monitor": {
+      "body": null,
+      "params": [
+        "path:run_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/stages": {
       "body": null,
       "params": [

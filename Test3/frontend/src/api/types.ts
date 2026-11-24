@@ -212,6 +212,98 @@ export type RunTask = {
   evidence?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
+
+export type MonitorTask = {
+  code: string;
+  title: string;
+  state: string;
+  status: "done" | "running" | "failed" | "blocked" | "pending" | "skipped" | string;
+  role: string;
+  slot: string;
+  model: string;
+  module: string;
+  parent: string;
+  points: number;
+  tokens_used: number;
+  repair_rounds: number;
+  last_error: string;
+  blocked_by: string[];
+  waiting_on: string[];
+  evidence_count: number;
+  review_issue_count: number;
+  revision: number;
+  paused: boolean;
+  duration_seconds: number | null;
+};
+
+export type MonitorPackage = {
+  code: string;
+  title: string;
+  module: string;
+  total: number;
+  done: number;
+  running: number;
+  failed: number;
+  blocked: number;
+  pending: number;
+  skipped: number;
+  progress: number;
+};
+
+export type MonitorAgent = {
+  role: string;
+  slot: string;
+  model: string;
+  total: number;
+  done: number;
+  failed: number;
+  running: number;
+  blocked: number;
+  pending: number;
+  success_rate: number;
+  completion_rate: number;
+  tokens_used: number;
+  avg_repair_rounds: number;
+  avg_task_seconds: number | null;
+  fallback_count: number;
+  failure_reasons: Array<{ reason: string; count: number }>;
+};
+
+export type MonitorRunSummary = {
+  id: string;
+  project_id: string;
+  status: string;
+  stage: string;
+  paused: boolean;
+  revision: number;
+  tokens_used: number;
+  event_count: number;
+  task_count: number;
+  state_counts: Record<string, number>;
+  total: number;
+  done: number;
+  running: number;
+  failed: number;
+  blocked: number;
+  pending: number;
+  skipped: number;
+  progress: number;
+  repair_rounds: number;
+  fallback_count: number;
+  fallback_by_slot: Record<string, number>;
+  first_event_at: string;
+  last_event_at: string;
+  elapsed_seconds: number | null;
+};
+
+/** Aggregate returned by `GET /api/runs/{run_id}/monitor`. */
+export type MonitorSnapshot = {
+  generated_at: string;
+  run: MonitorRunSummary;
+  work_packages: MonitorPackage[];
+  tasks: MonitorTask[];
+  agents: MonitorAgent[];
+};
 /** Memory (C.4 / C.5.5). Bodies never contain secret plaintext. */
 export type MemorySource = { kind: string; ref: string; sha: string };
 
