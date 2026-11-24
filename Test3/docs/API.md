@@ -405,9 +405,12 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 ## 基线失效与崩溃和解（2026-11-24）
 
 - 已批准 SPEC/DESIGN/PLAN（或 DecisionPackage）与当前产物哈希不一致时，`/schedule`、任务执行、`/accept` 返回 409 `baseline_stale`；run 被暂停，`workflow_invalidations` 追加一条历史记录，active grant 标为 `stale`。历史记录与 grant 行不删除；重新批准并取得新 grant 后才可继续。
+- 模拟执行器（仅由 `create_app(execution_policy=ExecutionPolicy(simulated=True))` 构造注入）现在覆盖 accept、takeover、submit-takeover、force-pass、release 导出：不建 repo/worktree、不跑命令、不 tag/copy；验收证据为 `simulated://`，发布包只写元数据 JSON、不导出代码树。产品默认不注入。
 - `POST /api/runs/{run_id}/reconcile` 返回只读报告：`{run_id, needs_reconciliation, tasks:[{task_code,state,evidence_count,status:"unknown"}], note}`。重启后处于 running/verifying（含已有部分 evidence）的任务被暂停并标记 `needs_reconciliation`；调度/手动 retry 对其返回 409 `needs_reconciliation`，不会自动重放。
-- `POST /api/runs/{run_id}/reconcile/{task_code}`（需 `X-Bot-Id`）是受控决议：`decision=continue_reconcile|accept_evidence|mark_failed_safe_retry`，带 `expected_revision`。`accept_evidence` 必须 attempt 终态 commit 与工作区 HEAD、当前基线一致；`mark_failed_safe_retry` 必须写理由。只读报告不等于恢复完成。
-- 基线漂移时自动新建 pending `PLAN基线确认` 门；通过既有 `POST /api/gates/{gate_id}/resolve` 采用当前产物哈希。旧 approval/invalidation 保留，旧 grant 仍 stale。
+- `POST /api/runs/{run_id}/reconcile/{task_code}`（需 `X-Bot-Id`）是受控决议：`decision=continue_reconcile|accept_evidence|mark_failed_safe_retry`，带 `expected_revision`。`accept_evidence` 走只读 `verify_task_completion`：attempt 必须在历史中，且 task/run/project、基线、repo 身份、write_set 在 commit 树、commit 在目标分支 ancestry 全部通过；README HEAD 或任意 commit 不再被接受。`mark_failed_safe_retry` 还要求非空 `verified_safe_scope` 与 `risk_accepted=true`，写入 reconciliation_history。只读报告不等于恢复完成。
+- 基线漂移或 CR/重排产生不可变候选：`workflow_candidates[candidate_id]` 冻结 SPEC/DESIGN/PLAN 文档、canonical hashes、父基线、project/run/session 与 candidate_hash；新候选取代旧 pending，旧门转 `superseded`。
+- 候选门 `PLAN基线确认` payload 含 `candidate_id`、`candidate_hash`、`changed_keys`、文档与 `source_gate_id`。`POST /api/gates/{gate_id}/resolve` 对候选门**必须**带 `expected_revision`（缺 400），只采用门绑定的候选快照，不读取当时 live artifacts；旧/被取代门 409。若 `SPEC` 变更，body 需 `payload.acknowledge_spec_change=true` + `payload.reason` 才可采用（400 `spec_reapproval_required`）。采用后旧 grant 仍 stale。
+- 存在 `baseline_reapproval_required` 时 `POST /api/runs/{run_id}/resume` 返回 400，不会靠 resume 重新调度。
 - 证据修正：验收 `pass=false` 后人工批准记为 `verification_status=overridden`（标签“人工覆盖（原验收未通过）”），不再显示测试通过；仅含 skipped/cancelled 的任务不计 execution；模块验收/缺陷响应的 run 级聚合改名为 `run_evidence`，对象结论用 `decision`/`evidence_uris`。
 - 有批准哈希但无法证明来源（无 approval、无已裁决基线门、无 fixture 标记）的 run 返回 409 `baseline_unverifiable`，要求显式再批准。
 - 模块验收 `accepted` 复验会把同任务旧的 open/reopened 缺陷标为 `resolved`，保留原缺陷行并记录 `resolved_by_acceptance_id`。

@@ -84,16 +84,16 @@
 
 | 验收行 | 本轮状态 |
 |---|---|
-| 完整 scripted 主线 | 通过（e2e 现走无副作用模拟执行器，证据 simulated） |
+| 完整 scripted 主线 | 通过（e2e 模拟执行器覆盖执行/验收/导出，无 repo/worktree/release code） |
 | 未批准规格/PLAN 拒绝 | 通过（既有 + 更新） |
 | 过期/不匹配 baseline | 通过（含存量哈希+门证据） |
 | 跨项目/跨 run/跨 session | 通过（投影/准入/计划 + 执行回查会话） |
 | 入口一致授权 | 通过 |
 | 并发 /plan、门、schedule 幂等 | 通过 |
 | 模型失败重试/副作用只一次 | **仍未闭环**：无端到端副作用计数测试 |
-| 崩溃不明执行不自动重放 | 通过（attempt + 标记 + 隔离 git 测试） |
+| 崩溃不明执行不自动重放 | 通过（F1 扫描 attempt 历史，ready+started 也阻断；二次重启仍阻断） |
 | 缺陷→修复→复验 | 通过（模块验收层）；讨论主线仍整 run accept |
-| 变更→失效→再批准 | 通过（新 PLAN 门 adopt） |
+| 变更→失效→再批准 | 通过（F2 不可变候选 + 门绑定 + CAS 采用；旧门不能采用 live 产物） |
 | 旧数据兼容 | 通过（unknown 显式拒绝，不伪造 approval） |
 | 记忆 UI/退役路由/testid/Banner | 通过（前端 427） |
 | scripted 离线 | 通过 |
@@ -113,17 +113,17 @@
 2. 人通过 `POST /api/gates/{gate_id}/resolve` 批准该门（无需手工改 paused / append 门）。
 3. 服务端记录新 SPEC/DESIGN/PLAN 哈希与 approval（可信 actor 来自门 resolve），旧 approval/invalidation 保留。
 4. 旧 grant 全部 stale；执行需新建覆盖新哈希的 grant（`granted_v1` 且总闸开启）。
-5. 并发用旧 revision adopt/resolve 至多一次成功（CAS）。
+5. 候选门 resolve 必须带 `expected_revision`；缺字段 400，同一 revision 至多一次成功。
 
 ## 7. 恢复与和解
 
-- 终态证据 = attempt `done` + commit 与工作区 HEAD 一致 + 基线与当前一致；仅有 evidence 列表不算终态。
+- 终态证据 = F4 `verify_task_completion`：task/run/attempt 身份、基线、repo 身份、write_set 在 commit 树、commit 在目标分支 ancestry、provenance；仅有 `status=done` 或 HEAD==commit 不算。
 - 只读 `POST /reconcile` 只报告；受控决议 `POST /reconcile/{task_code}` 才改变任务，且 `accept_evidence` 校验 commit/基线/CAS。
 - 证据不足保持 blocked；`mark_failed_safe_retry` 后重试仍受执行授权。
 
 ## 8. 迁移与回滚
 
-- 无 Alembic 迁移；head 仍 `0012`；未触碰 `Test3/data`。
+- 无 Alembic 迁移；head 仍 `0012`；未触碰 `Test3/data`。候选门/决议字段为内存快照加法。
 - 回滚须整组：卡 1 能力门 + e2e 注入；卡 2 candidate/门/adopt；卡 3 attempt/恢复标记/决议；卡 4 证据；卡 5 provenance。禁止只回滚门禁留下“scripted 即放行”。
 
 ## 9. 仍未闭环（诚实列出）
@@ -134,3 +134,7 @@
 4. CR/重排的完整模型链路（生成改写内容）未单独集成测试；再批准门/adopt 路径已通过 drift 场景与单元覆盖。
 5. `accept_evidence` 的 actor 目前只要求 `X-Bot-Id` 并写入审计，未接入更强的用户身份系统。
 6. 自动循环事件去重只在进程内；重启后会重新发第一条。
+
+## 10. 2026-11-24 四项边界闭环更正
+
+F1/F2/F3/F4 已由 `four-boundary-fixes-delivery-2026-11-24.md` 实施：恢复扫描 attempt 历史、不可变候选原子采用、模拟覆盖 accept/takeover/submit/release、accept_evidence 任务成果校验。
