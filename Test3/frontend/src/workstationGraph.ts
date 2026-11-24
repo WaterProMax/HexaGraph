@@ -20,7 +20,8 @@ export interface PhaseTaskItem {
   rawState?: string;
   phaseKey: string;
   dependsOn: string[];
-  kind: "stage" | "spec" | "design" | "task";
+  kind: "stage" | "spec" | "design" | "package" | "task";
+  parent?: string;
   detail?: any;
 }
 
@@ -54,9 +55,18 @@ function stageNumber(run: any): number {
   return stageStr === "done" ? 9 : stageStr === "stopped" ? -1 : Number(stageStr);
 }
 
+function rollupStatus(items: PhaseTaskItem[]): ItemStatus {
+  if (items.length === 0) return "pending";
+  if (items.every((item) => item.status === "completed" || item.status === "skipped")) return "completed";
+  if (items.some((item) => item.status === "error")) return "error";
+  if (items.some((item) => item.status !== "pending")) return "in_progress";
+  return "pending";
+}
+
 export function buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDesignRun }: WorkstationInput): {
   phases: PhaseDef[];
   allItems: PhaseTaskItem[];
+  workPackages: PhaseTaskItem[];
 } {
   const stageNum = stageNumber(run);
   const hasSpec = Boolean(artifacts?.spec);
@@ -235,6 +245,7 @@ export function buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDe
     return {
       id: t.code,
       code: t.code,
+      parent: card.parent || "",
       title: card.title || t.code,
       subtitle: `${card.role || "coder"} · ${card.kind || "impl"} · ${card.module || "M1"} · ${card.points || 1}pt`,
       status: mapTaskState(t.state),
@@ -266,13 +277,32 @@ export function buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDe
     });
   }
 
+  const planPackages = Array.isArray(artifacts?.plan?.work_packages) ? artifacts.plan.work_packages : [];
+  const leafTasks = p4Items.filter((item) => item.kind === "task");
+  const workPackages: PhaseTaskItem[] = planPackages.map((pkg: any) => {
+    const children = leafTasks.filter((item) => item.parent === pkg.code);
+    const done = children.filter((item) => item.status === "completed" || item.status === "skipped").length;
+    return {
+      id: pkg.code,
+      code: pkg.code,
+      title: pkg.title || pkg.code,
+      subtitle: `${children.length} 个任务 · ${pkg.module || "M1"}`,
+      status: rollupStatus(children),
+      rawState: `${done}/${children.length}`,
+      phaseKey: "phase4",
+      dependsOn: [],
+      kind: "package" as const,
+      detail: { package: pkg, children: children.map((item) => item.id) },
+    };
+  });
+
   const phases: PhaseDef[] = [
     { key: "phase1", no: "Phase 1", title: "想法与需求规格", items: p1Items },
     { key: "phase2", no: "Phase 2", title: "设计规格与模块契约", items: p2Items },
     { key: "phase3", no: "Phase 3", title: "开发任务分解", items: p3Items },
     { key: "phase4", no: "Phase 4", title: "编排执行与验收", items: p4Items },
   ];
-  return { phases, allItems: phases.flatMap((p) => p.items) };
+  return { phases, allItems: phases.flatMap((p) => p.items), workPackages };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -331,14 +361,67 @@ export interface GraphEdgeSpec {
   target: string;
 }
 
+function transitiveReduction(edges: GraphEdgeSpec[]): GraphEdgeSpec[] {
+  const reachable = (from: string, to: string, skip: string): boolean => {
+    const seen = new Set<string>();
+    const stack = edges
+      .filter((edge) => edge.id !== skip && edge.source === from)
+      .map((edge) => edge.target);
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (node === to) return true;
+      if (seen.has(node)) continue;
+      seen.add(node);
+      for (const edge of edges) {
+        if (edge.id !== skip && edge.source === node) stack.push(edge.target);
+      }
+    }
+    return false;
+  };
+  return edges.filter((edge) => !reachable(edge.source, edge.target, edge.id));
+}
+
 export interface MainGraph {
-  kind: "tasks" | "modules" | "empty";
+  kind: "packages" | "tasks" | "modules" | "empty";
   items: PhaseTaskItem[];
   edges: GraphEdgeSpec[];
 }
 
-export function buildMainGraph(allItems: PhaseTaskItem[]): MainGraph {
+export function buildMainGraph(
+  allItems: PhaseTaskItem[],
+  workPackages: PhaseTaskItem[] = [],
+  openedPackage?: string | null,
+): MainGraph {
   const tasks = allItems.filter((item) => item.kind === "task");
+  if (workPackages.length > 0) {
+    if (openedPackage) {
+      const children = tasks.filter((item) => item.parent === openedPackage);
+      const known = new Set(children.map((item) => item.id));
+      const edges = children.flatMap((item) =>
+        item.dependsOn
+          .filter((dep) => known.has(dep) && dep !== item.id)
+          .map((dep) => ({ id: `e-${dep}-${item.id}`, source: dep, target: item.id })),
+      );
+      return { kind: "tasks", items: children, edges };
+    }
+    const parentOf = new Map(tasks.map((item) => [item.id, item.parent || ""]));
+    const packageEdges = new Map<string, GraphEdgeSpec>();
+    for (const item of tasks) {
+      const target = item.parent || "";
+      if (!target) continue;
+      for (const dep of item.dependsOn) {
+        const source = parentOf.get(dep) || "";
+        if (!source || source === target) continue;
+        const id = `e-${source}-${target}`;
+        packageEdges.set(id, { id, source, target });
+      }
+    }
+    const known = new Set(workPackages.map((item) => item.id));
+    const direct = [...packageEdges.values()].filter(
+      (edge) => known.has(edge.source) && known.has(edge.target),
+    );
+    return { kind: "packages", items: workPackages, edges: transitiveReduction(direct) };
+  }
   if (tasks.length > 0) {
     const known = new Set(tasks.map((item) => item.id));
     const edges = tasks.flatMap((item) =>

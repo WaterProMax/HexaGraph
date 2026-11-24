@@ -217,6 +217,42 @@ def check_design(doc: DesignDoc, spec: SpecDoc, issues: list[Issue], *, max_modu
     return errors
 
 
+def check_work_packages(graph: TaskGraph, spec: SpecDoc, design: DesignDoc) -> list[str]:
+    packages = graph.work_packages
+    if not packages:
+        return []
+    errors: list[str] = []
+    if not 3 <= len(packages) <= 10:
+        errors.append(f"工作包数量 {len(packages)} 需在 3-10 之间")
+    seen: set[str] = set()
+    modules = {module.code for module in design.modules}
+    known = {item.code for item in spec.features + spec.nonfunc} | modules | {
+        item.code for item in design.interfaces
+    } | {str(item.get("code")) for item in design.decisions if item.get("code")}
+    for package in packages:
+        if package.code in seen:
+            errors.append(f"工作包编号重复: {package.code}")
+        seen.add(package.code)
+        if not package.title.strip():
+            errors.append(f"{package.code} 缺少标题")
+        if package.module not in modules:
+            errors.append(f"{package.code} 的所属模块无效: {package.module}")
+        if not package.sources:
+            errors.append(f"{package.code} 缺少来源")
+        for source in package.sources:
+            if source not in known:
+                errors.append(f"{package.code} 来源不存在: {source}")
+    if graph.tasks:
+        counts = {package.code: 0 for package in packages}
+        for task in graph.tasks:
+            if task.parent in counts:
+                counts[task.parent] += 1
+        for code, count in counts.items():
+            if count < 1:
+                errors.append(f"{code} 至少需要 1 个叶子任务，当前 {count} 个")
+    return errors
+
+
 def check_task_graph(graph: TaskGraph, spec: SpecDoc, design: DesignDoc, capacity: int) -> list[str]:
     errors: list[str] = []
     if not graph.tasks:
@@ -241,7 +277,7 @@ def check_task_graph(graph: TaskGraph, spec: SpecDoc, design: DesignDoc, capacit
                 errors.append(f"{task.code} 悬空依赖 {dep}")
         known = {i.code for i in spec.features + spec.nonfunc} | {m.code for m in design.modules} | {
             c.code for c in design.interfaces
-        }
+        } | {str(d.get("code")) for d in design.decisions if d.get("code")}
         for src in task.sources:
             if src not in known:
                 errors.append(f"{task.code} 来源不存在: {src}")
@@ -252,6 +288,16 @@ def check_task_graph(graph: TaskGraph, spec: SpecDoc, design: DesignDoc, capacit
                 produced = any(ref in other.outputs for other in graph.tasks if other.code in task.depends_on)
                 if not produced and ref not in {c.code for c in design.interfaces}:
                     errors.append(f"{task.code} 输入引用不存在: {ref}")
+    errors.extend(check_work_packages(graph, spec, design))
+    if graph.work_packages:
+        package_codes = {package.code for package in graph.work_packages}
+        for task in graph.tasks:
+            if not task.parent:
+                errors.append(f"{task.code} 缺少所属工作包")
+            elif task.parent not in package_codes:
+                errors.append(f"{task.code} 的工作包不存在: {task.parent}")
+    elif any(task.parent for task in graph.tasks):
+        errors.append("任务引用了工作包，但计划未声明 work_packages")
     if _task_cycle(graph):
         errors.append("任务图有环: " + " -> ".join(_task_cycle(graph) or []))
     for item in spec.features:

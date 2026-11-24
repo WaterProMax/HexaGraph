@@ -24,7 +24,6 @@ export function TeamStrip({ members, onInvite, onManage }: TeamStripProps) {
           {members.map((member) => (
             <span className={`team-member ${member.is_leader ? "is-leader" : ""}`} key={member.bot_id}>
               <BotAvatar bot={member} size={30} />
-              {member.is_leader && <span className="team-leader-mark">Leader</span>}
             </span>
           ))}
         </div>

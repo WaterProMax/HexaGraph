@@ -318,9 +318,14 @@ export function routePathOrtho(route: EdgeRoute, s: Point, t: Point): string {
     const midX = (s.x + t.x) / 2;
     pts.push({ x: midX, y: s.y });
     pts.push({ x: midX, y: s.y + lift });
-    pts.push({ x: t.x, y: s.y + lift });
-  } else {
-    pts.push({ x: t.x, y: at.y });
+    at = { x: midX, y: s.y + lift };
+  }
+  if (Math.abs(at.y - t.y) > 0.5) {
+    // Finish the vertical move before the target, then enter it horizontally so the
+    // arrowhead points at the connection dot instead of stabbing down/up into it.
+    const elbowX = Math.max(at.x, Math.min(t.x, t.x - 24));
+    pts.push({ x: elbowX, y: at.y });
+    pts.push({ x: elbowX, y: t.y });
   }
   pts.push(t);
   const clean = pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.y !== pts[i - 1].y);

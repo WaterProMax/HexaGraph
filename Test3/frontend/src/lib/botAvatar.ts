@@ -16,6 +16,8 @@ export type BotAvatarPreset = {
   emoji?: string;
   color?: string;
   imageDataUrl?: string;
+  /** Sidebar icon key from `sidebarIcons`; takes precedence over emoji / initials. */
+  icon?: string;
 };
 
 export type AvatarSource = {
@@ -94,6 +96,7 @@ export function readAvatarPresets(storage?: Storage | null): Record<string, BotA
       if (typeof record.imageDataUrl === "string" && record.imageDataUrl.startsWith("data:image/")) {
         preset.imageDataUrl = record.imageDataUrl;
       }
+      if (typeof record.icon === "string" && record.icon.trim()) preset.icon = record.icon.trim().slice(0, 40);
       if (Object.keys(preset).length) clean[botId] = preset;
     }
     return clean;
@@ -113,6 +116,7 @@ export function writeAvatarPreset(
   if (preset.emoji && preset.emoji.trim()) clean.emoji = preset.emoji.trim().slice(0, 4);
   if (preset.color && HEX_COLOR.test(preset.color)) clean.color = preset.color;
   if (preset.imageDataUrl && preset.imageDataUrl.startsWith("data:image/")) clean.imageDataUrl = preset.imageDataUrl;
+  if (preset.icon && preset.icon.trim()) clean.icon = preset.icon.trim().slice(0, 40);
   if (Object.keys(clean).length) all[botId] = clean;
   else delete all[botId];
   try {
@@ -177,13 +181,14 @@ export function clearAvatarPreset(botId: string, storage?: Storage | null): Reco
 export function resolveAvatar(
   bot: AvatarSource,
   presets: Record<string, BotAvatarPreset> = {},
-): { label: string; color: string; emoji?: string; imageDataUrl?: string; archived: boolean } {
+): { label: string; color: string; emoji?: string; imageDataUrl?: string; icon?: string; archived: boolean } {
   const preset = presets[bot.bot_id] || {};
   return {
     label: defaultInitials(bot.display_name),
     color: preset.color || defaultAvatarColor(bot),
     emoji: preset.emoji,
     imageDataUrl: preset.imageDataUrl,
+    icon: preset.icon,
     archived: bot.status === "archived",
   };
 }

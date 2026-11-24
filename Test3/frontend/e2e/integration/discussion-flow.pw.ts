@@ -256,6 +256,13 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   await moduleDetail.getByRole("button", { name: /接通查询和上报接口/ }).click();
   await expect(page.getByRole("heading", { name: "接通查询和上报接口" })).toBeVisible();
   await page.getByRole("button", { name: "流程图", exact: true }).click();
+  const packageNodes = page.locator(".flow-node.package-node");
+  await expect(packageNodes).toHaveCount(3);
+  await packageNodes.first().click();
+  await expect(packageNodes).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "← 全部工作包" })).toBeVisible();
+  await page.getByRole("button", { name: "← 全部工作包" }).click();
+  await expect(packageNodes).toHaveCount(3);
   await expect(page.getByRole("heading", { name: "PLAN基线确认" })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("discussion-05-plan.png"), fullPage: true });
   const currentRun = await (await request.get(`${API}/runs/${runId}`)).json();

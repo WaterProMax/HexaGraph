@@ -1,5 +1,6 @@
 import type { BotInstance } from "../api/types";
 import { readAvatarPresets, resolveAvatar, type BotAvatarPreset } from "../lib/botAvatar";
+import { SidebarGlyph } from "./sidebarIcons";
 
 export type BotAvatarProps = {
   bot: Pick<BotInstance, "bot_id" | "display_name" | "role_template" | "status">;
@@ -36,6 +37,8 @@ export function BotAvatar({ bot, size = 36, title, nativeTitle = true, className
     >
       {resolved.imageDataUrl ? (
         <img src={resolved.imageDataUrl} alt="" aria-hidden />
+      ) : resolved.icon ? (
+        <SidebarGlyph name={resolved.icon} size={Math.round(size * 0.52)} />
       ) : resolved.emoji ? (
         <span aria-hidden>{resolved.emoji}</span>
       ) : (

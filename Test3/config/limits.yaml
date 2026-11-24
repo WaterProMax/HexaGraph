@@ -23,7 +23,8 @@ design:
 plan:
   max_points_per_task: 8
   max_write_files: 8
-  capacity_points: 40
+  capacity_points: 600
+  min_tasks_per_package: 50
 
 orchestrator:
   concurrency: 6

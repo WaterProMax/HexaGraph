@@ -114,9 +114,16 @@ export function ProjectWorkstation({
 
   if (loadState === "loading") {
     return (
-      <div className="page">
-        <div className="well muted" data-testid="ws-loading" style={{ padding: "14px 16px" }}>
-          正在加载项目工作台…
+      <div className="page ws-page">
+        <div className="ws-page-bar">
+          <div className="page-head">
+            <h1>{projectName || "项目工作台"}</h1>
+          </div>
+        </div>
+        <div className="ws-page-skeleton" data-testid="ws-loading" role="status">
+          <div className="ws-skeleton-panel" />
+          <div className="ws-skeleton-side" />
+          <span className="ws-skeleton-label">正在加载项目工作台…</span>
         </div>
       </div>
     );
@@ -142,17 +149,19 @@ export function ProjectWorkstation({
 
   return (
     <div className="page ws-page">
-      <div className="page-head">
-        <h1>{projectName || "项目工作台"}</h1>
+      <div className="ws-page-bar">
+        <div className="page-head">
+          <h1>{projectName || "项目工作台"}</h1>
+        </div>
+        {team && (
+          <TeamStrip
+            members={team.members}
+            onInvite={team.onInvite}
+            onManage={team.onManage}
+          />
+        )}
       </div>
       <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
-      {team && (
-        <TeamStrip
-          members={team.members}
-          onInvite={team.onInvite}
-          onManage={team.onManage}
-        />
-      )}
       {runId && onShowDiscussion && onShowTasks && (
         <nav className="disc-project-nav" aria-label="项目工作区">
           <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
@@ -358,7 +367,6 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
 
   useEffect(() => {
     let cancelled = false;
-    setProjectName("");
     api
       .projects()
       .then((list: any) => {

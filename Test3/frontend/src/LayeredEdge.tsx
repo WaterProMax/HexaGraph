@@ -3,10 +3,12 @@ import { routePath, routePathOrtho, type EdgeRoute } from "./flowLayout";
 
 /** Draws the lane-based route computed by layoutLayered; falls back to a straight line without one. */
 export default function LayeredEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, style, data, label }: EdgeProps) {
-  const route = (data as { route?: EdgeRoute; ortho?: boolean } | undefined)?.route;
-  const ortho = Boolean((data as { ortho?: boolean } | undefined)?.ortho);
-  const source = { x: sourceX, y: sourceY };
-  const target = { x: targetX, y: targetY };
+  const payload = data as { route?: EdgeRoute; ortho?: boolean; sourceOffset?: number; targetOffset?: number } | undefined;
+  const route = payload?.route;
+  const ortho = Boolean(payload?.ortho);
+  const source = { x: sourceX, y: sourceY + (payload?.sourceOffset || 0) };
+  // Leave a small gap before the node so the arrowhead is not painted under the card.
+  const target = { x: targetX - 20, y: targetY + (payload?.targetOffset || 0) };
   const path = route
     ? ortho
       ? routePathOrtho(route, source, target)

@@ -13,7 +13,10 @@ describe("TeamStrip", () => {
   it("shows the leader and member avatars without an identity switcher", () => {
     render(<TeamStrip members={members} onInvite={vi.fn()} onManage={vi.fn()} />);
     const strip = screen.getByTestId("team-strip");
-    expect(strip.textContent).toContain("Leader");
+    const leader = strip.querySelector(".team-member.is-leader");
+    expect(leader).toBeTruthy();
+    expect(leader?.querySelector(".bot-avatar")).toBeTruthy();
+    expect(strip.textContent).not.toContain("Leader");
     expect(screen.queryByTestId("actor-bot-select")).toBeNull();
     expect(strip.textContent).not.toContain("当前操作身份");
   });

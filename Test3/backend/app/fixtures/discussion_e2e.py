@@ -120,7 +120,13 @@ class DiscussionDemoProvider(ScriptedProvider):
             return _leader_output(revised=revised)
         if operation in {"plan", "plan_rewrite"}:
             result = _plan(revised=revised)
-            return result["plan"] if operation == "plan_rewrite" else result
+            if "LeaderOutline" in material:
+                return {
+                    "spec": result["spec"],
+                    "design": result["design"],
+                    "work_packages": result["plan"]["work_packages"],
+                }
+            return {"tasks": result["plan"]["tasks"]}
         if not operation and kwargs.get("role") in {"coder", "tester", "code_reviewer"}:
             _, marker, payload = material.partition('<资料 name="task_card">\n')
             if marker:
@@ -152,9 +158,10 @@ def _plan(*, revised: bool) -> dict[str, Any]:
     ]
     if revised:
         features[0]["acceptance"].append(EXPIRY_RULE)
+    parents = {1: "W1", 2: "W1", 3: "W2", 4: "W3"}
     tasks = [
         {
-            "code": f"T{index}", "title": title, "kind": kind, "module": module,
+            "code": f"T{index}", "title": title, "parent": parents[index], "kind": kind, "module": module,
             "sources": ["F-01", "F-02"], "description": title,
             "write_set": [TASK_FILES[f"T{index}"][0]], "outputs": [TASK_FILES[f"T{index}"][0]],
             "acceptance": [{
@@ -172,6 +179,14 @@ def _plan(*, revised: bool) -> dict[str, Any]:
             ("展示楼层余位和上报表单", "impl", "M1", ["T3"]),
         ], start=1)
     ]
+    work_packages = [
+        {"code": "W1", "title": "座位数据与测试基座", "module": "M3", "summary": "座位数据、限频与过期规则",
+         "sources": ["F-01", "F-02"]},
+        {"code": "W2", "title": "查询与上报接口", "module": "M2", "summary": "统一查询与上报表单的 API",
+         "sources": ["F-01", "F-02"]},
+        {"code": "W3", "title": "查询界面与交互", "module": "M1", "summary": "楼层余位展示与上报表单",
+         "sources": ["F-01", "F-02"]},
+    ]
     return {
         "spec": {"scenarios": [{"code": "S1"}], "features": features},
         "design": {
@@ -188,7 +203,7 @@ def _plan(*, revised: bool) -> dict[str, Any]:
                 {"code": "C2", "provider": "M3", "consumers": ["M2"]},
             ],
         },
-        "plan": {"tasks": tasks},
+        "plan": {"tasks": tasks, "work_packages": work_packages},
     }
 
 

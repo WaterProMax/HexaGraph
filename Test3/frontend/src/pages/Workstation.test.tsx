@@ -8,6 +8,7 @@ import Workstation from "./Workstation";
 
 const api = vi.hoisted(() => ({
   runs: vi.fn(),
+  projects: vi.fn(),
   run: vi.fn(),
   artifacts: vi.fn(),
   tasks: vi.fn(),
@@ -127,6 +128,7 @@ beforeEach(() => {
   }
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
   api.runs.mockReset().mockResolvedValue([]);
+  api.projects.mockReset().mockResolvedValue([{ id: "proj-1", name: "自习室项目" }]);
   api.run.mockReset().mockResolvedValue(designRun());
   api.artifacts.mockReset().mockResolvedValue(designArtifacts());
   api.tasks.mockReset().mockResolvedValue([]);
@@ -174,6 +176,26 @@ describe("Workstation design-spec entry", () => {
     expect(screen.queryByDisplayValue(DEFAULT_IDEA)).toBeNull();
   });
 
+  it("hides the idea composer and provenance for an existing discussion run", async () => {
+    api.run.mockResolvedValue(
+      designRun({ origin: "discussion_plan", idea: "我想做一个类似小红书的平台", gates: [] }),
+    );
+    api.artifacts.mockResolvedValue({
+      provenance: { generation_label: "真实模型生成", execution_label: "真实工具执行" },
+    });
+    api.tasks.mockResolvedValue([]);
+    renderWorkstation();
+    await waitFor(() =>
+      expect(screen.getByTestId("run-summary").textContent).toContain("自习室项目"),
+    );
+    expect(screen.getByTestId("run-idea").textContent).toContain("我想做一个类似小红书的平台");
+    expect(screen.queryByLabelText("产品想法")).toBeNull();
+    expect(screen.queryByText("想法输入")).toBeNull();
+    expect(screen.queryByTestId("run-provenance")).toBeNull();
+    expect(document.querySelector(".topbar")).toBeNull();
+    expect(screen.getByTestId("run-actions")).toBeTruthy();
+  });
+
   it("reuses the current project when resubmitting a failed design-spec run", async () => {
     api.artifacts.mockResolvedValue(
       designArtifacts({ design_input_status: "failed", design_input_error_category: "timeout" }),
@@ -219,9 +241,10 @@ describe("Workstation buttons follow backend status", () => {
   it.each(["stopped", "terminated", "done"])("does not offer pause or resume when the run is %s", async (status) => {
     api.run.mockResolvedValue(designRun({ status, gates: [], paused: false }));
     renderWorkstation();
-    await waitFor(() => expect(document.querySelector(".topbar-right")).toBeTruthy());
-    expect(document.querySelector(".topbar-right")?.textContent).toMatch(
-      status === "done" ? /已完成/ : status === "stopped" ? /已停止/ : /已终止/,
+    await waitFor(() =>
+      expect(screen.getByTestId("run-status-line").textContent).toMatch(
+        status === "done" ? /已完成/ : status === "stopped" ? /已停止/ : /已终止/,
+      ),
     );
     expect(runPauseResume()).toBeNull();
     expect(hiddenOrDisabled("暂停")).toBe(true);
@@ -357,8 +380,7 @@ describe("Workstation buttons follow backend status", () => {
     await waitFor(() => expect(screen.getByTestId("schedule-notice")).toBeTruthy());
     expect(screen.getByTestId("schedule-notice").textContent).toContain("请点击调度执行");
     expect(screen.getByTestId("schedule-notice").textContent).not.toContain("每 5 秒自动调度");
-    expect(screen.getByTestId("run-provenance").textContent).toContain("预置测试输出");
-    expect(screen.getByTestId("run-provenance").textContent).toContain("模拟执行");
+    expect(screen.queryByTestId("run-provenance")).toBeNull();
   });
 
   it("keeps preset labels after remount and still follows auto schedule_mode", async () => {
@@ -374,10 +396,11 @@ describe("Workstation buttons follow backend status", () => {
     api.tasks.mockResolvedValue([{ code: "T-01", state: "ready", revision: 1 }]);
     const { unmount } = renderWorkstation();
     await waitFor(() => expect(screen.getByTestId("schedule-notice").textContent).toContain("每 5 秒自动调度"));
-    expect(screen.getByTestId("run-provenance").textContent).toContain("预置测试输出");
+    expect(screen.queryByTestId("run-provenance")).toBeNull();
     unmount();
     renderWorkstation();
-    await waitFor(() => expect(screen.getByTestId("run-provenance").textContent).toContain("模拟执行"));
+    await waitFor(() => expect(screen.getByTestId("schedule-notice")).toBeTruthy());
+    expect(screen.queryByTestId("run-provenance")).toBeNull();
     expect(screen.getByTestId("schedule-notice").textContent).toContain("每 5 秒自动调度");
     expect(screen.queryByText("请点击调度执行")).toBeNull();
   });
@@ -394,7 +417,7 @@ describe("Workstation buttons follow backend status", () => {
     expect(String(errorSpy.mock.calls[0][0])).toMatch(/恢复失败|恢复被拒绝/);
     expect(successSpy).not.toHaveBeenCalled();
     expect(runPauseResume()?.getAttribute("aria-label")).toBe("恢复");
-    expect(screen.getByText(/阶段 .*已暂停/)).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("run-status-line").textContent).toContain("运行已暂停"));
   });
 
   it("rejects DESIGN with success feedback and keeps the original text for resubmit", async () => {

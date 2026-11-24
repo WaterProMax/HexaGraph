@@ -679,6 +679,19 @@ class Workbench:
         _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
         return self.projects[pid]
 
+    def set_project_archived(self, project_id: str, archived: bool) -> dict[str, Any]:
+        project = self.projects.get(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        if archived:
+            project["archived"] = True
+            project["archived_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            project.pop("archived", None)
+            project.pop("archived_at", None)
+        _atomic_write(self.data_dir / "projects.json", json.dumps(self.projects, ensure_ascii=False))
+        return project
+
     def create_run(self, project_id: str, idea: str) -> RunState:
         self._prepare_scripted()
         rid = str(uuid.uuid4())
@@ -2206,9 +2219,11 @@ class Workbench:
                 rewrite = run.artifacts.pop("plan_rewrite", None)
                 async with self.db_session() as session:
                     record = await DiscussionSessionStore(session).get(discussion_id)
+                existing_packages = (run.artifacts.get("plan") or {}).get("work_packages") or []
                 try:
                     graph = await discussion_planning.generate(
                         self, record, spec=spec, design=design, rewrite=rewrite,
+                        work_packages=existing_packages,
                     )
                 except (BotFailed, ValidationFailed) as exc:
                     message = user_message_for_category(exc.category) if isinstance(exc, BotFailed) else str(exc)

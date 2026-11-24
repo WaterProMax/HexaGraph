@@ -147,9 +147,12 @@
     },
     "GET /api/projects": {
       "body": null,
-      "params": [],
+      "params": [
+        "query:include_archived"
+      ],
       "responses": [
-        "200"
+        "200",
+        "422"
       ]
     },
     "GET /api/projects/{project_id}/discussion-sessions": {
@@ -628,6 +631,16 @@
         "422"
       ]
     },
+    "POST /api/projects/{project_id}/archive": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/projects/{project_id}/design-runs": {
       "body": "DesignRunCreate",
       "params": [
@@ -655,6 +668,16 @@
       ],
       "responses": [
         "201",
+        "422"
+      ]
+    },
+    "POST /api/projects/{project_id}/restore": {
+      "body": null,
+      "params": [
+        "path:project_id*"
+      ],
+      "responses": [
+        "200",
         "422"
       ]
     },

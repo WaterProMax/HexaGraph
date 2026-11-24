@@ -74,8 +74,13 @@ function botHeader(botId: string): Record<string, string> {
 
 export const api = {
   health: () => req("/health"),
-  projects: () => req("/projects"),
+  projects: (includeArchived = false) =>
+    req(`/projects${includeArchived ? "?include_archived=true" : ""}`),
   createProject: (name: string) => req("/projects", { method: "POST", body: JSON.stringify({ name }) }),
+  archiveProject: (projectId: string) =>
+    req(`/projects/${encodeURIComponent(projectId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
+  restoreProject: (projectId: string) =>
+    req(`/projects/${encodeURIComponent(projectId)}/restore`, { method: "POST", body: JSON.stringify({}) }),
   createRun: (projectId: string, idea: string) =>
     req(`/projects/${projectId}/runs`, { method: "POST", body: JSON.stringify({ idea }) }),
   createDesignRun: (

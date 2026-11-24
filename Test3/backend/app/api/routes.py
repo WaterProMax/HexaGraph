@@ -96,8 +96,27 @@ async def create_project(body: CreateProject, request: Request) -> dict[str, Any
 
 
 @router.get("/projects")
-async def list_projects(request: Request) -> list[dict[str, Any]]:
-    return list(wb(request).projects.values())
+async def list_projects(request: Request, include_archived: bool = False) -> list[dict[str, Any]]:
+    projects = list(wb(request).projects.values())
+    if include_archived:
+        return projects
+    return [project for project in projects if not project.get("archived")]
+
+
+@router.post("/projects/{project_id}/archive")
+async def archive_project(project_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).set_project_archived(project_id, True)
+    except KeyError as exc:
+        raise HTTPException(404, "project not found") from exc
+
+
+@router.post("/projects/{project_id}/restore")
+async def restore_project(project_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).set_project_archived(project_id, False)
+    except KeyError as exc:
+        raise HTTPException(404, "project not found") from exc
 
 
 @router.post("/projects/{project_id}/runs")

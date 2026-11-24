@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_ROUTE_PATHS } from "../App";
 import { AppShell, DEFAULT_NAV_ITEMS, REQUIRED_NAV_KEYS } from "./AppShell";
-import { BOT_AVATAR_STORAGE_KEY, writeAvatarPreset } from "../lib/botAvatar";
+import { BOT_AVATAR_STORAGE_KEY, readAvatarPresets, writeAvatarPreset } from "../lib/botAvatar";
 
 function renderShell(navItems = DEFAULT_NAV_ITEMS, currentPath = "/bots") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -20,6 +20,7 @@ function renderShell(navItems = DEFAULT_NAV_ITEMS, currentPath = "/bots") {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
   vi.stubGlobal(
     "fetch",
@@ -80,7 +81,7 @@ describe("project section in the shell", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
-        const body = String(input) === "/api/projects" ? [{ id: "p1", name: "Alpha" }] : [];
+        const body = String(input).startsWith("/api/projects") ? [{ id: "p1", name: "Alpha" }] : [];
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
       }),
     );
@@ -89,6 +90,94 @@ describe("project section in the shell", () => {
     expect(within(section).getByTestId("sidebar-new-project").getAttribute("href")).toBe("/projects/new");
     expect((await within(section).findByRole("link", { name: /Alpha/ })).getAttribute("href")).toBe("/projects/p1");
     expect(screen.queryByText("最近运行")).toBeNull();
+  });
+});
+
+describe("project archive menu", () => {
+  it("archives from the right-click menu and hides the project", async () => {
+    let archived = false;
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.startsWith("/api/projects") && method === "GET") {
+          return new Response(JSON.stringify([{ id: "p1", name: "Alpha", archived }]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url === "/api/projects/p1/archive") {
+          archived = true;
+          calls.push("POST /api/projects/p1/archive");
+          return new Response(JSON.stringify({ id: "p1", name: "Alpha", archived: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+      }),
+    );
+    renderShell();
+
+    const projectLink = await screen.findByRole("link", { name: /Alpha/ });
+    fireEvent.contextMenu(projectLink, { clientX: 90, clientY: 260 });
+    const archiveItem = await screen.findByRole("menuitem", { name: /归档项目/ });
+    expect(archiveItem.className).toContain("danger");
+    fireEvent.click(archiveItem);
+
+    await waitFor(() => expect(calls).toContain("POST /api/projects/p1/archive"));
+    await waitFor(() => expect(screen.queryByRole("link", { name: /Alpha/ })).toBeNull());
+    expect(screen.queryByTestId("sidebar-archived-toggle")).toBeNull();
+  });
+});
+
+describe("bot context menu", () => {
+  it("edits the bot icon and archives only after confirmation", async () => {
+    const calls: string[] = [];
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/bots" && method === "GET") {
+          return json({
+            items: [{ bot_id: "bot-1", display_name: "Leader A", role_template: "leader", status: "active" }],
+          });
+        }
+        if (url === "/api/bots/bot-1/archive") {
+          calls.push("POST /api/bots/bot-1/archive");
+          return json({ bot_id: "bot-1", status: "archived" });
+        }
+        return json([]);
+      }),
+    );
+    renderShell();
+
+    const row = await screen.findByRole("link", { name: /Leader A/ });
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 220 });
+    const editItem = await screen.findByRole("menuitem", { name: /编辑图标/ });
+    const archiveItem = screen.getByRole("menuitem", { name: /归档 Bot/ });
+    expect(archiveItem.className).toContain("danger");
+
+    fireEvent.click(editItem);
+    const picker = await screen.findByTestId("sidebar-icon-picker");
+    fireEvent.click(picker.querySelector('[data-icon="rocket"]') as HTMLButtonElement);
+    fireEvent.click(picker.querySelector('[data-color="#ef4444"]') as HTMLButtonElement);
+    expect(readAvatarPresets()["bot-1"]).toMatchObject({ icon: "rocket", color: "#ef4444" });
+    fireEvent.click(within(picker).getByRole("button", { name: "完成" }));
+    expect(screen.queryByTestId("sidebar-icon-picker")).toBeNull();
+
+    fireEvent.contextMenu(await screen.findByRole("link", { name: /Leader A/ }), { clientX: 120, clientY: 220 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /归档 Bot/ }));
+    expect(await screen.findByText(/归档后该 Bot 不再参与新运行/)).toBeTruthy();
+    expect(calls).toEqual([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "确认归档" }));
+    await waitFor(() => expect(calls).toContain("POST /api/bots/bot-1/archive"));
   });
 });
 
@@ -118,6 +207,7 @@ describe("assistant list in the shell", () => {
     const row = await screen.findByRole("link", { name: /Leader A/ });
     expect(row.getAttribute("href")).toBe("/bots/bot-1/chat");
     expect(list.textContent).toContain("leader");
+    expect(screen.queryByText("周明")).toBeNull();
     expect(screen.getByTestId("sidebar-new-bot").getAttribute("href")).toBe("/bots/new");
     expect(screen.getByTestId("sidebar-manage-bots").getAttribute("href")).toBe("/bots");
   });
@@ -129,7 +219,7 @@ describe("assistant list in the shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "收起导航" }));
     const rail = await screen.findByTestId("sidebar-bot-rail");
     expect(within(rail).getByRole("link", { name: "Leader A · Leader" }).getAttribute("href")).toBe("/bots/bot-1/chat");
-    expect(within(rail).getByRole("link", { name: "周明 · 产品经理" })).toBeTruthy();
+    expect(within(rail).queryByRole("link", { name: "周明 · 产品经理" })).toBeNull();
     expect(within(rail).queryByRole("link", { name: "Bot 管理" })).toBeNull();
     expect(within(rail).queryByRole("link", { name: "新建 Bot" })).toBeNull();
     const projects = screen.getByTestId("sidebar-project-list");

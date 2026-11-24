@@ -191,9 +191,18 @@ class DesignDoc(BaseModel):
     appendix: str = ""
 
 
+class WorkPackage(BaseModel):
+    code: str
+    title: str
+    module: str
+    summary: str = ""
+    sources: list[str] = Field(default_factory=list)
+
+
 class TaskCard(BaseModel):
     code: str
     title: str
+    parent: str = ""
     kind: Literal["scaffold", "stub", "impl", "test", "integration", "spike", "doc"]
     module: str
     sources: list[str]
@@ -225,8 +234,9 @@ class TaskCard(BaseModel):
 
 class TaskGraph(BaseModel):
     tasks: list[TaskCard]
+    work_packages: list[WorkPackage] = Field(default_factory=list)
     notes: str = ""
-    capacity: int = 40
+    capacity: int = 160
 
 
 class ChangeRequest(BaseModel):
