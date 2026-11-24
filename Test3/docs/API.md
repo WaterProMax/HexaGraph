@@ -394,7 +394,8 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 |---|---|
 | 规格已批准、PLAN 门仍 pending | 409，拒绝且无任务副作用 |
 | legacy run + 真实 provider（非 scripted/replay） | 403 `profile_not_granted_v1`；真实执行必须升 `granted_v1` 并取得 active grant |
-| legacy run + scripted/replay | 允许，作为模拟执行，证据标 `scripted` / `simulated` |
+| legacy run + scripted/replay provider | **不再因此允许**；需显式注入无副作用模拟执行器，否则同真实执行拒绝（403 `profile_not_granted_v1`） |
+| 注入的模拟执行器 | 允许调度，任务证据 `simulated`；不建 worktree/仓库、不跑命令、不 merge |
 | granted_v1 + 真实 provider + 总闸关闭 | 409 `execution_safety_not_ready` |
 | granted_v1 + 真实 provider + 总闸开启 | 进入既有 grant 范围 / 基线 / DAG / 工具校验 |
 | profile 缺失或冲突 | 409 `profile_unspecified` / `profile_conflict` |
@@ -404,6 +405,10 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 ## 基线失效与崩溃和解（2026-11-24）
 
 - 已批准 SPEC/DESIGN/PLAN（或 DecisionPackage）与当前产物哈希不一致时，`/schedule`、任务执行、`/accept` 返回 409 `baseline_stale`；run 被暂停，`workflow_invalidations` 追加一条历史记录，active grant 标为 `stale`。历史记录与 grant 行不删除；重新批准并取得新 grant 后才可继续。
-- `POST /api/runs/{run_id}/reconcile` 返回只读报告：`{run_id, needs_reconciliation, tasks:[{task_code,state,evidence_count,status:"unknown"}], note}`。重启后处于 running/verifying 且无证据的任务被暂停并标记 `needs_reconciliation`；调度/手动 retry 对其返回 409 `needs_reconciliation`，不会自动重放。
+- `POST /api/runs/{run_id}/reconcile` 返回只读报告：`{run_id, needs_reconciliation, tasks:[{task_code,state,evidence_count,status:"unknown"}], note}`。重启后处于 running/verifying（含已有部分 evidence）的任务被暂停并标记 `needs_reconciliation`；调度/手动 retry 对其返回 409 `needs_reconciliation`，不会自动重放。
+- `POST /api/runs/{run_id}/reconcile/{task_code}`（需 `X-Bot-Id`）是受控决议：`decision=continue_reconcile|accept_evidence|mark_failed_safe_retry`，带 `expected_revision`。`accept_evidence` 必须 attempt 终态 commit 与工作区 HEAD、当前基线一致；`mark_failed_safe_retry` 必须写理由。只读报告不等于恢复完成。
+- 基线漂移时自动新建 pending `PLAN基线确认` 门；通过既有 `POST /api/gates/{gate_id}/resolve` 采用当前产物哈希。旧 approval/invalidation 保留，旧 grant 仍 stale。
+- 证据修正：验收 `pass=false` 后人工批准记为 `verification_status=overridden`（标签“人工覆盖（原验收未通过）”），不再显示测试通过；仅含 skipped/cancelled 的任务不计 execution；模块验收/缺陷响应的 run 级聚合改名为 `run_evidence`，对象结论用 `decision`/`evidence_uris`。
+- 有批准哈希但无法证明来源（无 approval、无已裁决基线门、无 fixture 标记）的 run 返回 409 `baseline_unverifiable`，要求显式再批准。
 - 模块验收 `accepted` 复验会把同任务旧的 open/reopened 缺陷标为 `resolved`，保留原缺陷行并记录 `resolved_by_acceptance_id`。
 

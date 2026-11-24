@@ -26,7 +26,7 @@
 
 - 新增 `app/execution/authorization.py::decide_execution`：阶段准入 + profile + 模拟模式 + 总闸的统一决策，不新建 grant 存储。
 - `schedule_once`、`_execute_task_locked`、任务 control（retry/takeover/submit-takeover/force-pass）、`accept` 全部调用同一决策。
-- legacy + 真实 provider → 403 `profile_not_granted_v1`；scripted/replay legacy 作为模拟例外；granted 真实执行仍受总闸与既有 grant/范围/基线/DAG/工具校验。
+- legacy + 真实 provider → 403 `profile_not_granted_v1`。**2026-11-24 边界修复更正**：scripted/replay provider 本身不再是模拟例外；只有显式注入的无副作用模拟执行器才允许 legacy 调度（见 `workflow-boundary-fixes-delivery-2026-11-24.md`）。
 - 未打开 `execution_safety_ready`，未新增开闸 UI。
 
 ### 卡 4：幂等与第一轮出口
@@ -40,7 +40,7 @@
 
 - 新增 `app/workflow/invalidation.py`：比较已批准 SPEC/DESIGN/PLAN/DecisionPackage 与当前产物哈希；只对存在人工批准记录（`artifacts.approvals`）的 run 生效，避免测试夹具的占位哈希误报。
 - 漂移时：run 暂停、`workflow_invalidations` 追加历史、active grant 标 `stale`、投影为 `invalidated`/`baseline_stale`；`schedule`/执行/`accept` 一致拒绝。
-- 重新批准生成新哈希；旧 grant 不复活，必须新建覆盖新基线的 grant；历史失效记录保留。
+- 重新批准生成新哈希；旧 grant 不复活，必须新建覆盖新基线的 grant；历史失效记录保留。**更正**：失效时会自动新建 pending `PLAN基线确认` 门，经既有 `POST /gates/{id}/resolve` 采用新基线；不再需要手工 append 门或改 paused。
 
 ### 卡 6：P5 返工适配与崩溃和解
 
@@ -91,7 +91,7 @@
 |---|---|---|---|
 | `/plan` 生成计划 | 必须 | 否 | session leader 且为项目 Leader；不授权执行 |
 | 确认 PLAN 门 | 规格基线有效 | 本动作 | CAS `expected_revision`；不开总闸、不发 grant |
-| scripted/replay 模拟 schedule/执行 | 必须 | 必须（讨论 run） | 无真实副作用；证据标 scripted/simulated |
+| 注入的无副作用模拟执行器 schedule/执行 | 必须 | 必须（讨论 run） | 仅 e2e/测试显式注入；证据标 simulated；产品默认无此执行器 |
 | 真实模型调用 | 视阶段 | 视阶段 | Bot 自身 key；缺失即 `missing_bot_key`，不回退默认钥匙 |
 | 真实写仓库/跑命令 | 必须 | 必须 | `granted_v1` + active grant 覆盖 + 基线一致 + `execution_safety_ready==True`（当前仍 False） |
 | 复用已有 grant | — | — | 范围覆盖、基线未过期、状态 active |
@@ -133,3 +133,7 @@
 
 - 工作区仅保留用户原有：`M Test3/config/models.yaml`、四个 `data*` 目录、`docs/screenshots/` 未跟踪。
 - 本任务提交不包含上述文件。
+
+## 10. 2026-11-24 边界修复后续
+
+本文件中“scripted/replay 模拟例外”“无真实副作用”“重新批准可继续”等表述已由 `workflow-boundary-fixes-delivery-2026-11-24.md` 修正：scripted 模型不授予执行能力，再批准走新 PLAN 门，崩溃未知执行不再自动重放。
