@@ -250,9 +250,21 @@ async def resolve_gate(gate_id: str, body: GateResolve, request: Request) -> dic
         raise HTTPException(400, str(exc)) from exc
 
 
+def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Task API view without task-scoped memory data.
+
+    Task/role memory is served by the membership-checked role-memory routes;
+    raw task endpoints must not bypass that read ACL.
+    """
+
+    public = dict(task)
+    public.pop("role_memory", None)
+    return public
+
+
 @router.get("/runs/{run_id}/tasks")
 async def tasks(run_id: str, request: Request) -> list[dict[str, Any]]:
-    return list(_run(request, run_id).tasks.values())
+    return [_public_task(task) for task in _run(request, run_id).tasks.values()]
 
 
 @router.get("/tasks/{task_id}")
@@ -260,7 +272,7 @@ async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
     for run in wb(request).runs.values():
         for task in run.tasks.values():
             if task["id"] == task_id or task["code"] == task_id:
-                return task
+                return _public_task(task)
     raise HTTPException(404, "task not found")
 
 
@@ -271,9 +283,10 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
         for code, task in run.tasks.items():
             if task["id"] == task_id or code == task_id:
                 try:
-                    return await bench.control_task(
+                    updated = await bench.control_task(
                         run, code, action, body.expected_revision, body.reason, payload=body.payload
                     )
+                    return _public_task(updated) if isinstance(updated, dict) else updated
                 except DeepSeekRetired as exc:
                     raise _retired(exc) from exc
                 except RevisionConflict as exc:

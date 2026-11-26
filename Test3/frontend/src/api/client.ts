@@ -104,6 +104,38 @@ export const api = {
   tasks: (id: string) => req(`/runs/${id}/tasks`),
   monitor: (id: string): Promise<import("./types").MonitorSnapshot> => req(`/runs/${id}/monitor`),
   task: (taskId: string) => req(`/tasks/${taskId}`),
+  taskRoleMemory: (
+    runId: string,
+    taskCode: string,
+    role: import("./types").TaskRole,
+    botId: string,
+  ): Promise<import("./types").TaskRoleMemory> =>
+    req(`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/role-memory/${role}`, {
+      headers: botHeader(botId),
+    }),
+  saveTaskRoleMemory: (
+    runId: string,
+    taskCode: string,
+    role: import("./types").TaskRole,
+    body: import("./types").TaskRoleMemoryUpdate,
+    botId: string,
+  ): Promise<import("./types").TaskRoleMemory> =>
+    req(`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/role-memory/${role}`, {
+      method: "PUT",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
+  deleteTaskRoleMemory: (
+    runId: string,
+    taskCode: string,
+    role: import("./types").TaskRole,
+    expectedRevision: number,
+    botId: string,
+  ): Promise<import("./types").TaskRoleMemory> =>
+    req(
+      `/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/role-memory/${role}?expected_revision=${expectedRevision}`,
+      { method: "DELETE", headers: botHeader(botId) },
+    ),
   budget: (id: string) => req(`/runs/${id}/budget`),
   trace: (id: string) => req(`/runs/${id}/trace`),
   events: (id: string, after = 0) => req(`/runs/${id}/events/history?after=${after}`),
@@ -203,27 +235,64 @@ export const api = {
     req(`/discussion-sessions/${sessionId}/messages?after=${Math.max(0, Math.floor(after))}`, {
       headers: botHeader(botId),
     }),
-  pauseDiscussion: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
+  pauseDiscussion: (
+    sessionId: string,
+    botId: string,
+    expectedRevision?: number,
+  ): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}/pause`, {
       method: "POST",
       headers: botHeader(botId),
-      body: JSON.stringify({}),
+      body: JSON.stringify(expectedRevision === undefined ? {} : { expected_revision: expectedRevision }),
     }),
   resumeDiscussion: (
     sessionId: string,
-    body: { skip_bot_ids?: string[] },
+    body: { skip_bot_ids?: string[]; expected_revision?: number },
     botId: string,
   ): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}/resume`, {
       method: "POST",
       headers: botHeader(botId),
-      body: JSON.stringify(body.skip_bot_ids?.length ? { skip_bot_ids: body.skip_bot_ids } : {}),
+      body: JSON.stringify({
+        ...(body.skip_bot_ids?.length ? { skip_bot_ids: body.skip_bot_ids } : {}),
+        ...(body.expected_revision === undefined ? {} : { expected_revision: body.expected_revision }),
+      }),
     }),
   terminateDiscussion: (sessionId: string, botId: string): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}/terminate`, {
       method: "POST",
       headers: botHeader(botId),
       body: JSON.stringify({ confirm: true }),
+    }),
+  addDiscussionIntervention: (
+    sessionId: string,
+    body: { expected_revision: number; text: string },
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/interventions`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
+  endDiscussionRound: (
+    sessionId: string,
+    body: { expected_revision: number; reason: string; confirm: true },
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/end-round`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
+  startDiscussionRound: (
+    sessionId: string,
+    body: { expected_revision: number; round?: number },
+    botId: string,
+  ): Promise<import("./types").DiscussionSession> =>
+    req(`/discussion-sessions/${sessionId}/rounds/start`, {
+      method: "POST",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
     }),
   supplementDiscussion: (sessionId: string, text: string, botId: string): Promise<import("./types").DiscussionSession> =>
     req(`/discussion-sessions/${sessionId}/supplement`, {

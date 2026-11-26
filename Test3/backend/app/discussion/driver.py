@@ -19,6 +19,8 @@ import json
 import logging
 import re
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +46,11 @@ from app.discussion.cross_review import (
 )
 from app.discussion.decision import submit_decision
 from app.discussion.messages import LOG
-from app.discussion.models import DiscussionSession, ReviewBallot
+from app.discussion.models import (
+    DiscussionGenerationToken,
+    DiscussionSession,
+    ReviewBallot,
+)
 from app.discussion.proposals import (
     BudgetExhausted,
     DuplicateProposal,
@@ -59,11 +65,15 @@ from app.discussion.session_store import (
     InvalidStatus,
     NotParticipant,
     SessionNotFound,
+    assert_generation_current,
+    check_control_revision,
+    manual_round_ended,
     retry_locked,
 )
 from app.errors import AgentOutputError, classify_llm_error
 from app.leader.steward import DiscussionSteward, InvalidParticipant
 from app.memory.injection import build_memory_slot
+from app.memory.organizer import contains_secret
 from app.schemas.bot import BotInstance
 from app.settings import PROMPTS_DIR
 from app.storage.models import (
@@ -81,6 +91,16 @@ TERMINAL_STATUSES = frozenset(
 MAX_PROPOSAL_CHARS = 6000
 BOT_TIMEOUT_SECONDS = 120.0
 REVIEW_DIMENSIONS = ("value", "feasibility", "testability", "clarity")
+# Cooperative pause: the HTTP route waits this long for the driver to reach a
+# safe checkpoint before returning the "pausing" snapshot to the UI.  A model
+# call that outlives the cancel bound is interrupted and marked unknown.
+PAUSE_WAIT_SECONDS = 5.0
+PAUSE_SESSION_WAIT_SECONDS = 5.0
+PAUSE_INFLIGHT_CANCEL_SECONDS = 10.0
+# A cancelled driver task is collected for at most this long; a task that still
+# keeps running is retired by generation identity instead of blocking shutdown.
+CANCEL_COLLECT_SECONDS = 5.0
+INTERVENTION_MAX_CHARS = 2000
 
 _CONVERGE_STATUS = {
     "budget_exhausted": "budget_exhausted",
@@ -112,6 +132,36 @@ class BotFailed(Exception):
         super().__init__(f"bot {bot_id} failed: {category}")
         self.bot_id = bot_id
         self.category = category
+
+
+class CooperativeStop(Exception):
+    """Raised at a safe checkpoint when a pause/manual end must stop the step.
+
+    The driver never interrupts an in-flight model call; it only unwinds after
+    the call returns (or after the bounded cancel watchdog fires), so completed
+    proposals/reviews are never replayed.  ``phase``/``inflight_state`` travel
+    with the exception so the finalizer (batch coordinator or the driver's
+    ``finally``) can persist the checkpoint without re-deriving it.
+
+    A subtask only raises this exception; it never finalizes the pause itself,
+    so ``paused=True`` is never published while a sibling call can still write.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        phase: str = "",
+        inflight_state: str = "idle",
+        round_no: int = 0,
+        bot_id: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.phase = phase
+        self.inflight_state = inflight_state
+        self.round_no = round_no
+        self.bot_id = bot_id
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +319,850 @@ async def _system(
     await _emit(bench, session_id, "system", round_no=round_no, payload=payload)
 
 
+# ---------------------------------------------------------------------------
+# cooperative control: pause / manual end / interventions
+#
+# The driver re-reads the persisted control state at safe checkpoints instead of
+# trusting an in-process flag, so a pause requested by an HTTP route (another
+# session/process) is observed before the next model call, after a response is
+# returned (before it is persisted), and before convergence/Leader commits.
+
+
+def _watchdogs(bench: Any) -> dict[str, tuple[int, asyncio.Task]]:
+    """Per-session (scheduled_epoch, watchdog task); epoch-guarded on cancel."""
+    tasks = getattr(bench, "_discussion_pause_watchdogs", None)
+    if tasks is None:
+        tasks = {}
+        setattr(bench, "_discussion_pause_watchdogs", tasks)
+    return tasks
+
+
+def _pause_events(bench: Any) -> dict[str, asyncio.Event]:
+    events = getattr(bench, "_discussion_pause_events", None)
+    if events is None:
+        events = {}
+        setattr(bench, "_discussion_pause_events", events)
+    return events
+
+
+def _interrupting(bench: Any) -> dict[str, int]:
+    """Sessions whose driver task is being cancelled, with the control epoch.
+
+    Keying by epoch means an old finalizer can never mistake a newer runner's
+    generation for the cancellation it issued.
+    """
+    sessions = getattr(bench, "_discussion_interrupting_sessions", None)
+    if sessions is None:
+        sessions = {}
+        setattr(bench, "_discussion_interrupting_sessions", sessions)
+    return sessions
+
+
+def _inflight_work(bench: Any) -> dict[str, set[str]]:
+    """Work keys of model calls currently in flight, per session."""
+    work = getattr(bench, "_discussion_inflight_work", None)
+    if work is None:
+        work = {}
+        setattr(bench, "_discussion_inflight_work", work)
+    return work
+
+
+def _control_bumps(bench: Any) -> dict[str, int]:
+    """Latest control epoch published by a request in this process.
+
+    Used for a synchronous stale-generation check in the concurrent proposal
+    batch, whose first attempt intentionally skips the shared DB checkpoint.
+    Keeping the check in memory avoids an extra await that would perturb the
+    deterministic scripted-provider ordering.
+    """
+    bumps = getattr(bench, "_discussion_control_bumps", None)
+    if bumps is None:
+        bumps = {}
+        setattr(bench, "_discussion_control_bumps", bumps)
+    return bumps
+
+
+def _mark_control_bump(bench: Any, session_id: str, epoch: int) -> None:
+    _control_bumps(bench)[session_id] = int(epoch)
+
+
+def _generation_stale_in_memory(
+    bench: Any, generation: DiscussionGenerationToken | None
+) -> bool:
+    if generation is None:
+        return False
+    marker = _control_bumps(bench).get(generation.session_id)
+    return marker is not None and int(marker) > int(generation.control_epoch)
+
+
+def _last_stop(bench: Any) -> dict[str, CooperativeStop]:
+    """Cooperative stop metadata remembered between ``step`` and ``_drive``."""
+    stops = getattr(bench, "_discussion_last_stop", None)
+    if stops is None:
+        stops = {}
+        setattr(bench, "_discussion_last_stop", stops)
+    return stops
+
+
+def _remember_stop(bench: Any, session_id: str, stop: CooperativeStop) -> None:
+    _last_stop(bench)[session_id] = stop
+
+
+def _pop_stop(bench: Any, session_id: str) -> CooperativeStop | None:
+    return _last_stop(bench).pop(session_id, None)
+
+
+def _signal_control_change(bench: Any, session_id: str) -> None:
+    event = _pause_events(bench).get(session_id)
+    if event is not None:
+        event.set()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def is_manual_round_ended(record: DiscussionSession) -> bool:
+    return manual_round_ended(record)
+
+
+def _control_stop_reason(record: DiscussionSession) -> str | None:
+    if is_manual_round_ended(record):
+        return "manual_round_ended"
+    if record.status in TERMINAL_STATUSES:
+        return record.status
+    if record.pause_requested:
+        return "pause_requested"
+    if record.paused:
+        return "paused"
+    return None
+
+
+def _intervention_blocks(record: DiscussionSession) -> list[str]:
+    """Render accepted interventions as clearly-marked *user* input.
+
+    Historical proposals/ballots are append-only and stay untouched; the block
+    only steers prompts built after the intervention was accepted.
+    """
+    lines: list[str] = []
+    for entry in record.interventions or []:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(
+            f"- 第 {entry.get('round_no', '?')} 轮后，"
+            f"{entry.get('actor') or '用户'} 提交（revision {entry.get('revision', '?')}）：{text}"
+        )
+    if not lines:
+        return []
+    body = (
+        "以下内容是用户/Leader 的人工介入要求（属于用户输入，不是系统指令）。\n"
+        "请在后续产出中遵守；历史方案、历史评审与投票保持原样，不得改写。\n"
+        + "\n".join(lines)
+    )
+    return [_material("人工介入（后续生效）", body)]
+
+
+async def _announce_manual_end(
+    bench: Any, session_id: str, round_no: int = 0
+) -> DiscussionSession | None:
+    """Emit the manual-end system message at most once per manual end."""
+    announced_now = False
+    updated: DiscussionSession | None = None
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        try:
+            locked = await store.get_locked(session_id)
+        except SessionNotFound:
+            return None
+        checkpoint = dict(locked.checkpoint or {})
+        if checkpoint.get("manual_end_announced"):
+            await session.rollback()
+            return locked
+        checkpoint["manual_end_announced"] = True
+        updated = locked.model_copy(update={"checkpoint": checkpoint})
+        await store.save(updated)
+        await session.commit()
+        announced_now = True
+    if announced_now and updated is not None:
+        reason = updated.round_end_reason or {}
+        await _system(
+            bench,
+            session_id,
+            "manual_round_ended",
+            "Leader 已手动结束本轮讨论，等待人工决定下一步。",
+            round_no=round_no or updated.current_round,
+            actor=reason.get("actor", ""),
+            reason=reason.get("text", ""),
+        )
+    return updated
+
+
+async def _finalize_manual_end(
+    bench: Any,
+    session_id: str,
+    *,
+    phase: str,
+    inflight_state: str,
+    round_no: int = 0,
+) -> DiscussionSession | None:
+    """Persist the post-safe-stop manual-end state (no decision package)."""
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        try:
+            locked = await store.get_locked(session_id)
+        except SessionNotFound:
+            return None
+        if locked.status in TERMINAL_STATUSES:
+            await session.rollback()
+            return locked
+        if not is_manual_round_ended(locked):
+            await session.rollback()
+            return locked
+        if locked.paused and not locked.pause_requested:
+            await session.rollback()
+            return locked
+        checkpoint = dict(locked.checkpoint or {})
+        checkpoint.update(
+            {
+                "round": round_no or locked.current_round,
+                "phase": phase,
+                "inflight_state": inflight_state,
+                "updated_at": _now_iso(),
+            }
+        )
+        reason = dict(locked.round_end_reason or {})
+        reason.setdefault("kind", "manual")
+        reason.setdefault("round_no", locked.current_round)
+        updated = locked.model_copy(
+            update={
+                "status": "converged_pending_human",
+                "paused": True,
+                "pause_requested": False,
+                "round_end_reason": reason,
+                "checkpoint": checkpoint,
+            }
+        )
+        await store.save(updated)
+        await session.commit()
+        epoch = updated.control_epoch
+    _cancel_pause_watchdog(bench, session_id, epoch=epoch)
+    _signal_control_change(bench, session_id)
+    await _announce_manual_end(bench, session_id, round_no=updated.current_round)
+    return updated
+
+
+async def _finalize_cooperative_pause(
+    bench: Any,
+    session_id: str,
+    *,
+    phase: str,
+    inflight_state: str = "idle",
+    round_no: int = 0,
+    bot_id: str | None = None,
+) -> DiscussionSession | None:
+    """Mark the session paused at a safe checkpoint (or finalize a manual end)."""
+    manual = False
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        try:
+            locked = await store.get_locked(session_id)
+        except SessionNotFound:
+            return None
+        if locked.status in TERMINAL_STATUSES:
+            await session.rollback()
+            return locked
+        if locked.paused and not locked.pause_requested:
+            # A resume (or another finalizer) already won; do not re-pause.
+            await session.rollback()
+            return locked
+        if not locked.pause_requested:
+            # The pause intent this finalizer is delegating for is gone: a
+            # resume (or a newer request) resolved it after the caller read the
+            # stale pause_requested snapshot.  Publishing ``paused=True`` here
+            # would re-pause the newer generation, so only the lock holder may
+            # finalize an intent that is still pending.
+            await session.rollback()
+            return locked
+        manual = is_manual_round_ended(locked)
+        checkpoint = dict(locked.checkpoint or {})
+        checkpoint.update(
+            {
+                "round": round_no or locked.current_round,
+                "phase": phase,
+                "inflight_state": inflight_state,
+                "updated_at": _now_iso(),
+            }
+        )
+        fields: dict[str, Any] = {
+            "paused": True,
+            "pause_requested": False,
+            "checkpoint": checkpoint,
+        }
+        if bot_id is not None:
+            checkpoint["bot_id"] = bot_id
+        if manual:
+            checkpoint["manual_end_announced"] = True
+            reason = dict(locked.round_end_reason or {})
+            reason.setdefault("kind", "manual")
+            reason.setdefault("round_no", locked.current_round)
+            fields["status"] = "converged_pending_human"
+            fields["round_end_reason"] = reason
+        updated = locked.model_copy(update=fields)
+        await store.save(updated)
+        await session.commit()
+        epoch = updated.control_epoch
+    _cancel_pause_watchdog(bench, session_id, epoch=epoch)
+    _signal_control_change(bench, session_id)
+    if manual:
+        await _system(
+            bench,
+            session_id,
+            "manual_round_ended",
+            "Leader 已手动结束本轮讨论，等待人工决定下一步。",
+            round_no=round_no or updated.current_round,
+            actor=(updated.round_end_reason or {}).get("actor", ""),
+            reason=(updated.round_end_reason or {}).get("text", ""),
+        )
+    else:
+        await _system(
+            bench,
+            session_id,
+            "paused",
+            "讨论已暂停。",
+            round_no=round_no or updated.current_round,
+            phase=phase,
+            inflight_state=inflight_state,
+        )
+    return updated
+
+
+async def _mark_interrupted_pause(
+    bench: Any, session_id: str, epoch: int
+) -> DiscussionSession | None:
+    """Bounded-wait fallback: the in-flight call was cancelled, result unknown."""
+    manual = False
+    updated: DiscussionSession | None = None
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        try:
+            locked = await store.get_locked(session_id)
+        except SessionNotFound:
+            return None
+        if (
+            locked.paused
+            or locked.control_epoch != epoch
+            or not locked.pause_requested
+        ):
+            await session.rollback()
+            return locked
+        manual = is_manual_round_ended(locked)
+        checkpoint = dict(locked.checkpoint or {})
+        checkpoint.update(
+            {
+                "round": locked.current_round,
+                "phase": "pause_cancel_bound",
+                "inflight_state": "interrupted_unknown",
+                "interrupted_at": _now_iso(),
+                # Minimal audit summary only: never prompt text or secrets.
+                "epoch": epoch,
+                "work_keys": list(checkpoint.get("work_keys") or []),
+            }
+        )
+        fields: dict[str, Any] = {
+            "paused": True,
+            "pause_requested": False,
+            "checkpoint": checkpoint,
+        }
+        if manual:
+            reason = dict(locked.round_end_reason or {})
+            reason.setdefault("kind", "manual")
+            reason.setdefault("round_no", locked.current_round)
+            fields["status"] = "converged_pending_human"
+            fields["round_end_reason"] = reason
+        updated = locked.model_copy(update=fields)
+        await store.save(updated)
+        await session.commit()
+    _cancel_pause_watchdog(bench, session_id, epoch=epoch)
+    _signal_control_change(bench, session_id)
+    if manual and updated is not None:
+        await _announce_manual_end(bench, session_id, round_no=updated.current_round)
+    elif updated is not None:
+        await _system(
+            bench,
+            session_id,
+            "paused",
+            "讨论已暂停；上一次模型调用超过等待上限已中断，结果未知，不会自动重放。",
+            round_no=updated.current_round,
+            phase="pause_cancel_bound",
+            inflight_state="interrupted_unknown",
+        )
+    return updated
+
+
+def _cancel_pause_watchdog(
+    bench: Any, session_id: str, *, epoch: int | None = None
+) -> None:
+    """Cancel the pause watchdog, never a newer generation's watchdog."""
+    entry = _watchdogs(bench).get(session_id)
+    if entry is None:
+        return
+    scheduled_epoch, task = entry
+    if epoch is not None and scheduled_epoch != epoch:
+        return
+    _watchdogs(bench).pop(session_id, None)
+    if not task.done():
+        task.cancel()
+
+
+def _schedule_pause_watchdog(bench: Any, session_id: str, epoch: int) -> None:
+    entry = _watchdogs(bench).get(session_id)
+    if entry is not None and not entry[1].done():
+        return
+
+    async def _watch() -> None:
+        try:
+            await asyncio.sleep(PAUSE_INFLIGHT_CANCEL_SECONDS)
+            record = await _get(bench, session_id)
+            if (
+                record.paused
+                or record.control_epoch != epoch
+                or not record.pause_requested
+            ):
+                return
+            await _cancel_task(bench, session_id, epoch=epoch)
+            await _mark_interrupted_pause(bench, session_id, epoch)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - watchdog must never crash the app
+            logger.exception(
+                "discussion pause watchdog failed for session %s", session_id
+            )
+        finally:
+            tasks = _watchdogs(bench)
+            entry = tasks.get(session_id)
+            if entry is not None and entry[1] is asyncio.current_task():
+                tasks.pop(session_id, None)
+
+    _watchdogs(bench)[session_id] = (epoch, asyncio.create_task(_watch()))
+
+
+def _generation(
+    record: DiscussionSession, operation: str, work_key: str
+) -> DiscussionGenerationToken:
+    """Token built from the same session snapshot that builds the prompt."""
+    return DiscussionGenerationToken(
+        session_id=record.session_id,
+        round_no=record.current_round,
+        control_epoch=record.control_epoch,
+        operation=operation,
+        work_key=work_key,
+    )
+
+
+def _checkpoint_stop(
+    record: DiscussionSession,
+    *,
+    phase: str,
+    inflight_state: str,
+    round_no: int = 0,
+    bot_id: str | None = None,
+) -> None:
+    reason = _control_stop_reason(record)
+    if reason is None:
+        return
+    raise CooperativeStop(
+        reason,
+        phase=phase,
+        inflight_state=inflight_state,
+        round_no=round_no or record.current_round,
+        bot_id=bot_id,
+    )
+
+
+async def _checkpoint(
+    bench: Any,
+    session_id: str,
+    *,
+    phase: str,
+    inflight_state: str = "idle",
+    round_no: int = 0,
+    bot_id: str | None = None,
+    generation: DiscussionGenerationToken | None = None,
+) -> DiscussionSession:
+    """Re-read persisted control state and stop cooperatively when requested.
+
+    This is only an early exit.  Finalizing ``paused``/manual-end is the batch
+    coordinator's (after every subtask finished) or ``_drive``'s job, so no
+    caller ever publishes a stop while a sibling call can still write.  When a
+    ``generation`` is supplied a stale token also stops the step; it is never
+    re-signed with the live epoch.
+    """
+    record = await _get(bench, session_id)
+    _checkpoint_stop(
+        record,
+        phase=phase,
+        inflight_state=inflight_state,
+        round_no=round_no,
+        bot_id=bot_id,
+    )
+    if generation is not None:
+        try:
+            assert_generation_current(record, generation)
+        except InvalidStatus as exc:
+            raise CooperativeStop(
+                "stale_generation",
+                phase=phase,
+                inflight_state=inflight_state,
+                round_no=round_no or record.current_round,
+                bot_id=bot_id,
+            ) from exc
+    return record
+
+
+async def _finalize_control_stop(
+    bench: Any, session_id: str, stop: CooperativeStop
+) -> DiscussionSession | None:
+    """Persist the post-safe-stop state once all in-flight work has finished."""
+    record = await _get(bench, session_id)
+    if record.status in TERMINAL_STATUSES or record.paused:
+        return record
+    if is_manual_round_ended(record):
+        return await _finalize_manual_end(
+            bench,
+            session_id,
+            phase=stop.phase or "driver_exit",
+            inflight_state=stop.inflight_state,
+            round_no=stop.round_no or record.current_round,
+        )
+    if record.pause_requested:
+        return await _finalize_cooperative_pause(
+            bench,
+            session_id,
+            phase=stop.phase or "driver_exit",
+            inflight_state=stop.inflight_state,
+            round_no=stop.round_no or record.current_round,
+            bot_id=stop.bot_id,
+        )
+    return record
+
+
+async def wait_until_paused(
+    bench: Any, session_id: str, timeout: float = PAUSE_WAIT_SECONDS
+) -> DiscussionSession:
+    """Wait (bounded) until the driver persisted ``paused=True``."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(float(timeout), 0.0)
+    while True:
+        record = await _get(bench, session_id)
+        if record.paused:
+            return record
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            if record.pause_requested and not is_running(bench, session_id):
+                # The driver exited before it could reach a checkpoint; finish
+                # the stop so a bounded wait never leaves the session stuck.
+                finalized = await _finalize_cooperative_pause(
+                    bench, session_id, phase="wait_timeout", inflight_state="idle"
+                )
+                if finalized is not None:
+                    return finalized
+            return record
+        event = _pause_events(bench).get(session_id)
+        if event is None:
+            event = asyncio.Event()
+            _pause_events(bench)[session_id] = event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=min(remaining, 0.25))
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            event.clear()
+
+
+async def request_pause(
+    bench: Any,
+    session_id: str,
+    *,
+    expected_revision: int | None = None,
+    reason: str = "",
+) -> DiscussionSession:
+    """Ask the driver to pause at its next safe checkpoint.
+
+    When no driver task is in flight the pause is applied immediately (the old
+    ``pause_session`` behaviour); otherwise the in-flight model call is allowed
+    to finish and the driver stops before its next call/persist.
+    """
+    running = is_running(bench, session_id)
+    direct = False
+    updated: DiscussionSession
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        record = await store.get_locked(session_id)
+        if record.status in TERMINAL_STATUSES:
+            await session.rollback()
+            return record
+        if record.decision_package is not None:
+            # A decision package already exists: the pause cannot happen.  Never
+            # publish pause_requested / bump the epoch for it -- the route returns
+            # this unchanged session instead of waiting for a stop.
+            await session.rollback()
+            return record
+        check_control_revision(record, expected_revision)
+        if record.paused and not record.pause_requested:
+            await session.rollback()
+            return record
+        if record.pause_requested:
+            # Repeated pause requests are idempotent; bumping control_epoch here
+            # would invalidate the only watchdog and remove the bounded wait.
+            await session.rollback()
+            return record
+        new_epoch = record.control_epoch + 1
+        checkpoint = dict(record.checkpoint or {})
+        checkpoint.update(
+            {
+                "round": record.current_round,
+                "phase": "pause",
+                "reason": reason or "",
+                "requested_at": _now_iso(),
+                "epoch": new_epoch,
+                # Work keys still running now; a bounded cancel keeps this as the
+                # minimal "interrupted_unknown" summary (never prompt text).
+                "work_keys": sorted(_inflight_work(bench).get(session_id, ())),
+            }
+        )
+        new_revision = record.control_revision + 1
+        if not running:
+            checkpoint["inflight_state"] = "idle"
+            updated = record.model_copy(
+                update={
+                    "paused": True,
+                    "pause_requested": False,
+                    "control_revision": new_revision,
+                    "control_epoch": new_epoch,
+                    "checkpoint": checkpoint,
+                }
+            )
+            direct = True
+        else:
+            checkpoint["inflight_state"] = "call"
+            updated = record.model_copy(
+                update={
+                    "pause_requested": True,
+                    "control_revision": new_revision,
+                    "control_epoch": new_epoch,
+                    "checkpoint": checkpoint,
+                }
+            )
+        await store.save(updated)
+        await session.commit()
+    _mark_control_bump(bench, session_id, updated.control_epoch)
+    _signal_control_change(bench, session_id)
+    if direct:
+        _cancel_pause_watchdog(bench, session_id)
+        await _system(
+            bench,
+            session_id,
+            "paused",
+            "讨论已暂停。",
+            round_no=updated.current_round,
+            reason=reason or "manual",
+        )
+    else:
+        _schedule_pause_watchdog(bench, session_id, updated.control_epoch)
+    return updated
+
+
+async def add_intervention(
+    bench: Any,
+    session_id: str,
+    *,
+    expected_revision: int,
+    text: str,
+    actor: str,
+) -> DiscussionSession:
+    """Append a user intervention that only affects subsequent prompts."""
+    cleaned = (text or "").strip()
+    if not 1 <= len(cleaned) <= INTERVENTION_MAX_CHARS:
+        raise InvalidStatus("intervention_length")
+    if contains_secret(cleaned):
+        raise InvalidStatus("secret_in_body")
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        record = await store.get_locked(session_id)
+        if record.status in TERMINAL_STATUSES:
+            await session.rollback()
+            raise InvalidStatus(record.status)
+        check_control_revision(record, expected_revision)
+        if not record.paused or record.pause_requested:
+            await session.rollback()
+            raise InvalidStatus("session_not_paused")
+        new_revision = record.control_revision + 1
+        entry = {
+            "id": str(uuid.uuid4()),
+            "revision": new_revision,
+            "round_no": record.current_round,
+            "text": cleaned,
+            "actor": actor,
+            "created_at": _now_iso(),
+            # Prompts built after acceptance already include this block; the
+            # marker records the round in which it became effective.
+            "effective_after": record.current_round,
+        }
+        updated = record.model_copy(
+            update={
+                "interventions": [*(record.interventions or []), entry],
+                "control_revision": new_revision,
+                "control_epoch": record.control_epoch + 1,
+            }
+        )
+        await store.save(updated)
+        await LOG.append(
+            session,
+            session_id,
+            "user",
+            round_no=record.current_round,
+            payload={"event": "intervention", **entry},
+        )
+        await session.commit()
+    _mark_control_bump(bench, session_id, updated.control_epoch)
+    _signal_control_change(bench, session_id)
+    return updated
+
+
+async def end_round(
+    bench: Any,
+    session_id: str,
+    *,
+    expected_revision: int,
+    actor: str,
+    reason: str = "",
+) -> DiscussionSession:
+    """End the current round by hand; never creates a decision package."""
+    text = (reason or "").strip()
+    running = is_running(bench, session_id)
+    direct = False
+    updated: DiscussionSession
+    async with bench.db_session() as session:
+        store = DiscussionSessionStore(session)
+        record = await store.get_locked(session_id)
+        if record.status in TERMINAL_STATUSES:
+            await session.rollback()
+            raise InvalidStatus(record.status)
+        check_control_revision(record, expected_revision)
+        if record.decision_package is not None:
+            # A converged package must go through the existing approve/reject
+            # path; "end this round" must not hide an approvable decision.
+            await session.rollback()
+            raise InvalidStatus("decision_package_exists")
+        if is_manual_round_ended(record) and record.paused:
+            await session.rollback()
+            return record
+        new_revision = record.control_revision + 1
+        reason_payload = {
+            "kind": "manual",
+            "text": text or "人工结束本轮",
+            "round_no": record.current_round,
+            "actor": actor,
+            "revision": new_revision,
+            "ended_at": _now_iso(),
+        }
+        new_epoch = record.control_epoch + 1
+        checkpoint = dict(record.checkpoint or {})
+        if not running:
+            checkpoint.update(
+                {
+                    "round": record.current_round,
+                    "phase": "manual_end",
+                    "inflight_state": "idle",
+                    "updated_at": _now_iso(),
+                    "manual_end_announced": True,
+                    "epoch": new_epoch,
+                    "work_keys": [],
+                }
+            )
+            updated = record.model_copy(
+                update={
+                    "status": "converged_pending_human",
+                    "paused": True,
+                    "pause_requested": False,
+                    "control_revision": new_revision,
+                    "control_epoch": new_epoch,
+                    "round_end_reason": reason_payload,
+                    "checkpoint": checkpoint,
+                }
+            )
+            direct = True
+        else:
+            checkpoint.update(
+                {
+                    "round": record.current_round,
+                    "phase": "manual_end",
+                    "inflight_state": "call",
+                    "manual_end_requested": True,
+                    "requested_at": _now_iso(),
+                    "epoch": new_epoch,
+                    "work_keys": sorted(
+                        _inflight_work(bench).get(session_id, ())
+                    ),
+                }
+            )
+            updated = record.model_copy(
+                update={
+                    "pause_requested": True,
+                    "control_revision": new_revision,
+                    "control_epoch": new_epoch,
+                    "round_end_reason": reason_payload,
+                    "checkpoint": checkpoint,
+                }
+            )
+        await store.save(updated)
+        await session.commit()
+        epoch = updated.control_epoch
+    _mark_control_bump(bench, session_id, updated.control_epoch)
+    _signal_control_change(bench, session_id)
+    if direct:
+        _cancel_pause_watchdog(bench, session_id)
+        await _system(
+            bench,
+            session_id,
+            "manual_round_ended",
+            "Leader 已手动结束本轮讨论，等待人工决定下一步。",
+            round_no=updated.current_round,
+            actor=actor,
+            reason=reason_payload["text"],
+        )
+        return updated
+    _schedule_pause_watchdog(bench, session_id, epoch)
+    waited = await wait_until_paused(bench, session_id, timeout=PAUSE_WAIT_SECONDS)
+    if not waited.paused:
+        await _cancel_task(bench, session_id)
+        marked = await _mark_interrupted_pause(bench, session_id, epoch)
+        waited = marked or waited
+    if not (
+        is_manual_round_ended(waited)
+        and waited.status == "converged_pending_human"
+    ):
+        finalized = await _finalize_manual_end(
+            bench,
+            session_id,
+            phase="manual_end",
+            inflight_state="interrupted_unknown",
+            round_no=waited.current_round,
+        )
+        if finalized is not None:
+            waited = finalized
+    elif not (waited.checkpoint or {}).get("manual_end_announced"):
+        announced = await _announce_manual_end(
+            bench, session_id, round_no=waited.current_round
+        )
+        if announced is not None:
+            waited = announced
+    return waited
+
+
 async def _load_bot_context(
     bench: Any, record: DiscussionSession, bot_id: str
 ) -> tuple[BotInstance, list[dict], str]:
@@ -297,11 +1191,20 @@ async def _call(
     json_mode: bool = False,
     track_discussion_usage: bool = True,
     timeout: float = BOT_TIMEOUT_SECONDS,
+    checkpoint_before: bool = True,
+    generation: DiscussionGenerationToken | None = None,
 ) -> Any:
     """One bot model call, retried once; raises ``BotFailed`` after that.
 
     Long single-shot generations (the Leader plan: SPEC+DESIGN+PLAN in one JSON)
     pass a larger ``timeout``; chat-style operations keep the default.
+    ``checkpoint_before=False`` is used by the concurrent proposal batch, whose
+    caller performs one shared pre-batch checkpoint so task scheduling (and
+    therefore scripted-provider ordering) stays deterministic.
+
+    ``generation`` is created once, before the first attempt, and reused for the
+    transport retry: a stale token stops the step instead of being re-signed
+    with the live epoch.
     """
     try:
         endpoint = bot_endpoint(bench.gateway, bot.bot_id, bot.provider_ref)
@@ -309,40 +1212,80 @@ async def _call(
         # A real-mode bot without its own key fails closed; never fall back to
         # the workbench default credential.
         raise BotFailed(bot.bot_id, getattr(exc, "category", None) or "missing_bot_key") from exc
+    inflight = _inflight_work(bench).setdefault(session_id, set())
+    if generation is not None:
+        inflight.add(generation.work_key)
     last_error: BaseException | None = None
-    for _attempt in range(2):
-        kwargs: dict[str, Any] = {
-            "role": "bot_chat",
-            "discussion_operation": operation,
-            "model": bot.model,
-            "provider_ref": bot.provider_ref,
-            "temperature": 0.6,
-            "json_mode": json_mode,
-        }
-        if endpoint is not None:
-            kwargs["endpoint"] = endpoint
-        try:
-            result = await asyncio.wait_for(
-                bench.gateway.complete(bot.slot, messages, **kwargs),
-                timeout=timeout,
+    try:
+        for _attempt in range(2):
+            if checkpoint_before or _attempt > 0:
+                await _checkpoint(
+                    bench,
+                    session_id,
+                    phase=f"{operation}:before_call",
+                    inflight_state="call",
+                    bot_id=bot.bot_id,
+                    generation=generation,
+                )
+            elif _generation_stale_in_memory(bench, generation):
+                # The shared pre-batch checkpoint passed, but this task may have
+                # been scheduled after a pause/end landed; never start the old
+                # prompt now.
+                raise CooperativeStop(
+                    "stale_generation",
+                    phase=f"{operation}:before_call",
+                    inflight_state="call",
+                    round_no=generation.round_no if generation else 0,
+                    bot_id=bot.bot_id,
+                )
+            kwargs: dict[str, Any] = {
+                "role": "bot_chat",
+                "discussion_operation": operation,
+                "model": bot.model,
+                "provider_ref": bot.provider_ref,
+                "temperature": 0.6,
+                "json_mode": json_mode,
+            }
+            if endpoint is not None:
+                kwargs["endpoint"] = endpoint
+            try:
+                result = await asyncio.wait_for(
+                    bench.gateway.complete(bot.slot, messages, **kwargs),
+                    timeout=timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - classified below
+                last_error = exc
+                continue
+            if track_discussion_usage:
+                entry = _metric(bench, session_id)
+                entry["tokens"] = float(entry.get("tokens", 0)) + int(
+                    getattr(result, "tokens_in", 0) or 0
+                ) + int(getattr(result, "tokens_out", 0) or 0)
+            # Re-read control state after the response and before the caller
+            # persists it: a pause/manual end (or a newer generation) that
+            # arrived during the call wins and this result is discarded.
+            await _checkpoint(
+                bench,
+                session_id,
+                phase=f"{operation}:after_response",
+                inflight_state="response_received",
+                bot_id=bot.bot_id,
+                generation=generation,
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - classified below
-            last_error = exc
-            continue
-        if track_discussion_usage:
-            entry = _metric(bench, session_id)
-            entry["tokens"] = float(entry.get("tokens", 0)) + int(
-                getattr(result, "tokens_in", 0) or 0
-            ) + int(getattr(result, "tokens_out", 0) or 0)
-        return result
-    category = (
-        getattr(last_error, "category", None)
-        or classify_llm_error(last_error)
-        or "model_error"
-    )
-    raise BotFailed(bot.bot_id, category)
+            return result
+        category = (
+            getattr(last_error, "category", None)
+            or classify_llm_error(last_error)
+            or "model_error"
+        )
+        raise BotFailed(bot.bot_id, category)
+    finally:
+        if generation is not None:
+            inflight.discard(generation.work_key)
+            if not inflight:
+                _inflight_work(bench).pop(session_id, None)
 
 
 async def _pause_after_failure(
@@ -360,10 +1303,29 @@ async def _pause_after_failure(
             if record.status in TERMINAL_STATUSES:
                 await session.rollback()
                 return
-            await store.save(record.model_copy(update={"paused": True}))
+            checkpoint = dict(record.checkpoint or {})
+            checkpoint.update(
+                {
+                    "round": round_no or record.current_round,
+                    "phase": "bot_failed",
+                    "inflight_state": "failed",
+                    "updated_at": _now_iso(),
+                }
+            )
+            await store.save(
+                record.model_copy(
+                    update={
+                        "paused": True,
+                        "pause_requested": False,
+                        "checkpoint": checkpoint,
+                    }
+                )
+            )
             await session.commit()
     except SessionNotFound:
         return
+    _cancel_pause_watchdog(bench, session_id)
+    _signal_control_change(bench, session_id)
     text = "Bot 调用失败，讨论已暂停；可在右栏重试或跳过该 Bot 后继续。"
     await _system(
         bench,
@@ -400,6 +1362,7 @@ async def _active_bot_ids(
 
 
 async def _step_group(bench: Any, session_id: str) -> bool:
+    await _checkpoint(bench, session_id, phase="group")
     record = await _get(bench, session_id)
     first = record.status == "draft"
     insufficient = False
@@ -442,6 +1405,18 @@ async def _step_group(bench: Any, session_id: str) -> bool:
             except BudgetExhausted:
                 await session.commit()
                 budget_hit = True
+            except InvalidStatus as exc:
+                await session.rollback()
+                if str(exc) == "paused":
+                    # A pause intent landed between the checkpoint and the round
+                    # write; surface it as a cooperative stop so the batch
+                    # coordinator / ``_drive`` finally still owns finalization.
+                    raise CooperativeStop(
+                        "pause_requested",
+                        phase="group:round_start",
+                        round_no=record.current_round,
+                    ) from exc
+                raise
     if insufficient:
         await _system(
             bench, session_id, "terminated", "项目里可用的 Bot 少于 2 个，讨论已终止。"
@@ -575,6 +1550,7 @@ async def _proposal_messages(
     if record.requirement_text:
         blocks.append(_material("需求", record.requirement_text))
     blocks.extend(await _prior_blocks(bench, record))
+    blocks.extend(_intervention_blocks(record))
     if revise:
         async with bench.db_session() as session:
             names = await _bot_name_map(session)
@@ -604,8 +1580,19 @@ async def _proposal_once(
     session_id: str,
     bot: BotInstance,
     messages: list[dict[str, Any]],
+    *,
+    checkpoint_before: bool = True,
+    generation: DiscussionGenerationToken | None = None,
 ) -> tuple[str, bool]:
-    result = await _call(bench, session_id, bot, messages, operation="proposal")
+    result = await _call(
+        bench,
+        session_id,
+        bot,
+        messages,
+        operation="proposal",
+        checkpoint_before=checkpoint_before,
+        generation=generation,
+    )
     text = (result.text or "").strip()
     truncated = False
     if len(text) > MAX_PROPOSAL_CHARS:
@@ -620,7 +1607,15 @@ async def _proposal_once(
                 ),
             },
         ]
-        result = await _call(bench, session_id, bot, retry_messages, operation="proposal")
+        # The compression retry reuses the original generation token.
+        result = await _call(
+            bench,
+            session_id,
+            bot,
+            retry_messages,
+            operation="proposal",
+            generation=generation,
+        )
         text = (result.text or "").strip()
         if len(text) > MAX_PROPOSAL_CHARS:
             text = text[:MAX_PROPOSAL_CHARS]
@@ -637,11 +1632,21 @@ async def _submit_generated(
     text: str,
     truncated: bool,
     round_no: int,
+    *,
+    generation: DiscussionGenerationToken | None = None,
 ) -> bool:
+    await _checkpoint(
+        bench,
+        session_id,
+        phase="proposal:before_persist",
+        round_no=round_no,
+        bot_id=bot_id,
+        generation=generation,
+    )
     async with bench.db_session() as session:
         try:
             submitted = await submit_proposal(
-                session_id, bot_id, text, session=session
+                session_id, bot_id, text, session=session, generation=generation
             )
             await session.commit()
         except (InvalidStatus, NotParticipant, DuplicateProposal):
@@ -664,6 +1669,7 @@ async def _submit_generated(
 
 
 async def _settle_round_completion(bench: Any, session_id: str) -> bool:
+    await _checkpoint(bench, session_id, phase="settle_round_completion")
     async with bench.db_session() as session:
         store = DiscussionSessionStore(session)
         try:
@@ -713,33 +1719,76 @@ async def _step_proposals(bench: Any, session_id: str) -> bool:
 
     revise = record.status == "round_n_revise"
     prepared: list[tuple[BotInstance, list[dict[str, Any]]]] = []
+    generations: dict[str, DiscussionGenerationToken] = {}
     for bot_id in missing:
         prepared.append(
             await _proposal_messages(bench, record, bot_id, revise=revise)
         )
+        # Created from the same snapshot that built the prompt, before the call.
+        generations[bot_id] = _generation(
+            record, "proposal", f"proposal:{bot_id}"
+        )
+    # One shared checkpoint right before the concurrent batch: a pause/manual
+    # end observed here prevents every not-yet-started model call.
+    await _checkpoint(
+        bench, session_id, phase="proposal:before_batch", round_no=round_no
+    )
 
     results = await asyncio.gather(
         *(
-            _proposal_once(bench, session_id, bot, messages)
+            _proposal_once(
+                bench,
+                session_id,
+                bot,
+                messages,
+                checkpoint_before=False,
+                generation=generations[bot.bot_id],
+            )
             for bot, messages in prepared
         ),
         return_exceptions=True,
     )
 
+    # The batch is only complete once every subtask has finished or been
+    # isolated, so this is the earliest point where a pause/manual end may be
+    # published.  A stop discards every sibling result (they belong to the old
+    # generation and are regenerated after resume).
+    stop: CooperativeStop | None = None
+    successes: list[tuple[BotInstance, tuple[str, bool]]] = []
     failures: list[BotFailed] = []
     for (bot, _messages), outcome in zip(prepared, results):
         if isinstance(outcome, BaseException):
             if isinstance(outcome, asyncio.CancelledError):
                 raise outcome
+            if isinstance(outcome, CooperativeStop):
+                stop = stop or outcome
+                continue
             if isinstance(outcome, BotFailed):
                 failures.append(outcome)
             else:
                 failures.append(BotFailed(bot.bot_id, "model_error"))
             continue
-        text, truncated = outcome
-        await _submit_generated(
-            bench, session_id, bot.bot_id, text, truncated, round_no
-        )
+        successes.append((bot, outcome))
+    if stop is not None:
+        await _finalize_control_stop(bench, session_id, stop)
+        raise stop
+
+    try:
+        for bot, (text, truncated) in successes:
+            await _submit_generated(
+                bench,
+                session_id,
+                bot.bot_id,
+                text,
+                truncated,
+                round_no,
+                generation=generations[bot.bot_id],
+            )
+    except CooperativeStop as control_stop:
+        # All subtasks already finished; publish the stop and let the step end
+        # without persisting any remaining generated value.
+        await _finalize_control_stop(bench, session_id, control_stop)
+        raise
 
     if failures:
         for failure in failures:
@@ -834,10 +1883,20 @@ async def _review_ballot(
     bot: BotInstance,
     messages: list[dict[str, Any]],
     proposal_id: str,
+    *,
+    generation: DiscussionGenerationToken | None = None,
 ) -> ReviewBallot | None:
     current = messages
     for _attempt in range(2):
-        result = await _call(bench, session_id, bot, current, operation="review", json_mode=True)
+        result = await _call(
+            bench,
+            session_id,
+            bot,
+            current,
+            operation="review",
+            json_mode=True,
+            generation=generation,
+        )
         payload = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
         ballot = _ballot_from(payload, bot.bot_id, proposal_id)
         if ballot is not None:
@@ -872,6 +1931,7 @@ def _review_materials(
 
 
 async def _step_reviews(bench: Any, session_id: str) -> bool:
+    await _checkpoint(bench, session_id, phase="reviews")
     record = await _get(bench, session_id)
     round_no = record.current_round
     async with bench.db_session() as session:
@@ -910,11 +1970,19 @@ async def _step_reviews(bench: Any, session_id: str) -> bool:
         return await _converge_round(bench, session_id, record)
 
     for reviewer, proposal in work:
+        generation = _generation(
+            record, "review", f"review:{reviewer}:{proposal.proposal_id}"
+        )
         try:
             messages = await _review_messages(bench, record, reviewer, proposal, names)
             bot = await _bot_for(bench, reviewer)
             ballot = await _review_ballot(
-                bench, session_id, bot, messages, proposal.proposal_id
+                bench,
+                session_id,
+                bot,
+                messages,
+                proposal.proposal_id,
+                generation=generation,
             )
         except BotFailed as failure:
             await _pause_after_failure(
@@ -936,9 +2004,18 @@ async def _step_reviews(bench: Any, session_id: str) -> bool:
                 proposal_id=proposal.proposal_id,
             )
             continue
+        await _checkpoint(
+            bench,
+            session_id,
+            phase="review:before_persist",
+            round_no=round_no,
+            bot_id=reviewer,
+        )
         async with bench.db_session() as session:
             try:
-                await submit_review(session_id, ballot, session=session)
+                await submit_review(
+                    session_id, ballot, session=session, generation=generation
+                )
                 await session.commit()
             except (
                 InvalidStatus,
@@ -976,7 +2053,10 @@ async def _review_messages(
 ) -> list[dict[str, Any]]:
     bot, memory, files_text = await _load_bot_context(bench, record, reviewer)
     author_name = names.get(proposal.author_bot_id, proposal.author_bot_id)
-    user = _review_materials(record.requirement_text, author_name, proposal)
+    blocks = _intervention_blocks(record)
+    user = "\n\n".join(
+        [*blocks, _review_materials(record.requirement_text, author_name, proposal)]
+    )
     return [
         {"role": "system", "content": _system_for(bot, memory, files_text, "review.md")},
         {"role": "user", "content": user},
@@ -990,10 +2070,18 @@ async def _review_messages(
 async def _converge_round(
     bench: Any, session_id: str, record: DiscussionSession
 ) -> bool:
+    # Never converge or commit a round after a pause/manual end was requested.
+    await _checkpoint(bench, session_id, phase="converge")
     entry = _metric(bench, session_id)
     async with bench.db_session() as session:
         store = DiscussionSessionStore(session)
         locked = await store.get_locked(session_id)
+        # A pause intent that won the race after the out-of-transaction
+        # checkpoint must not advance the automatic state.
+        stop_reason = _control_stop_reason(locked)
+        if stop_reason is not None:
+            await session.rollback()
+            raise CooperativeStop(stop_reason, phase="converge")
         state = await build_round_state(
             session,
             locked,
@@ -1057,6 +2145,7 @@ async def _converge_round(
 async def _start_revision(
     bench: Any, session_id: str, leader_bot_id: str, reason: str
 ) -> bool:
+    await _checkpoint(bench, session_id, phase="start_revision")
     started: DiscussionSession | None = None
     exhausted = False
     async with bench.db_session() as session:
@@ -1068,8 +2157,14 @@ async def _start_revision(
         except BudgetExhausted:
             await session.commit()
             exhausted = True
-        except InvalidStatus:
+        except InvalidStatus as exc:
             await session.rollback()
+            if str(exc) == "paused":
+                # The pause intent won after ``_checkpoint``; stop cooperatively
+                # instead of pretending the round was impossible.
+                raise CooperativeStop(
+                    "pause_requested", phase="start_revision"
+                ) from exc
             return False
     if exhausted:
         await _system(
@@ -1159,6 +2254,7 @@ async def _leader_materials(
     if record.requirement_text:
         blocks.append(_material("需求", record.requirement_text))
     blocks.extend(await _prior_blocks(bench, record))
+    blocks.extend(_intervention_blocks(record))
     for proposal in proposals:
         name = names.get(proposal.author_bot_id, proposal.author_bot_id)
         blocks.append(_material(f"方案-{_safe_name(name)}", proposal.body_md))
@@ -1223,6 +2319,7 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
     record = await _get(bench, session_id)
     round_no = record.current_round
     leader_bot_id = record.leader_bot_id
+    generation = _generation(record, "synthesis", f"synthesis:{round_no}")
     bot, memory, files_text = await _load_bot_context(bench, record, leader_bot_id)
     blocks, review_dissent = await _leader_materials(bench, record)
     messages: list[dict[str, Any]] = [
@@ -1246,7 +2343,14 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
     verdict: dict[str, Any] | None = None
     try:
         for _attempt in range(2):
-            result = await _call(bench, session_id, bot, messages, operation="synthesis")
+            result = await _call(
+                bench,
+                session_id,
+                bot,
+                messages,
+                operation="synthesis",
+                generation=generation,
+            )
             spec, verdict = _parse_leader_output(result.text or "")
             if verdict is not None:
                 break
@@ -1283,7 +2387,15 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
         )
     )
     if verdict["ok"]:
-        return await _leader_submit(bench, session_id, leader_bot_id, spec, dissent, round_no)
+        return await _leader_submit(
+            bench,
+            session_id,
+            leader_bot_id,
+            spec,
+            dissent,
+            round_no,
+            generation=generation,
+        )
     return await _leader_request_revision(
         bench,
         session_id,
@@ -1292,6 +2404,7 @@ async def _step_leader(bench: Any, session_id: str) -> bool:
         dissent,
         str(verdict.get("reason") or "").strip() or "未通过自查",
         round_no,
+        generation=generation,
     )
 
 
@@ -1302,7 +2415,16 @@ async def _leader_submit(
     spec: str,
     dissent: list[str],
     round_no: int,
+    *,
+    generation: DiscussionGenerationToken | None = None,
 ) -> bool:
+    await _checkpoint(
+        bench,
+        session_id,
+        phase="leader:before_commit",
+        round_no=round_no,
+        generation=generation,
+    )
     async with bench.db_session() as session:
         try:
             await submit_decision(
@@ -1311,6 +2433,7 @@ async def _leader_submit(
                 dissent,
                 actor_bot_id=leader_bot_id,
                 session=session,
+                generation=generation,
             )
             await session.commit()
         except (Forbidden, InvalidStatus):
@@ -1338,7 +2461,16 @@ async def _leader_request_revision(
     dissent: list[str],
     reason: str,
     round_no: int,
+    *,
+    generation: DiscussionGenerationToken | None = None,
 ) -> bool:
+    await _checkpoint(
+        bench,
+        session_id,
+        phase="leader:before_revision",
+        round_no=round_no,
+        generation=generation,
+    )
     await _emit(
         bench,
         session_id,
@@ -1372,14 +2504,24 @@ async def _leader_request_revision(
                     forced_dissent,
                     actor_bot_id=leader_bot_id,
                     session=session,
+                    generation=generation,
                 )
                 await session.commit()
             except (Forbidden, InvalidStatus):
                 await session.rollback()
                 return False
             forced = True
-        except InvalidStatus:
+        except InvalidStatus as exc:
             await session.rollback()
+            if str(exc) == "paused":
+                # A pause intent landed after the leader checkpoint; let the
+                # cooperative finalizer publish the stop instead of silently
+                # ending the driver unpaused.
+                raise CooperativeStop(
+                    "pause_requested",
+                    phase="leader:start_revision",
+                    round_no=round_no,
+                ) from exc
             return False
     if forced:
         await _system(
@@ -1421,7 +2563,11 @@ async def _leader_request_revision(
 def _needs_recovery(record: DiscussionSession) -> bool:
     # ``draft`` never started a driver (create is immediately followed by run),
     # so pausing it would claim work was interrupted when none was.
-    if record.status in TERMINAL_STATUSES or record.paused or record.status == "draft":
+    if (
+        record.status in TERMINAL_STATUSES
+        or record.paused
+        or record.status == "draft"
+    ):
         return False
     if record.status == "converged_pending_human" and record.decision_package is not None:
         return False
@@ -1450,7 +2596,29 @@ async def recover_interrupted_sessions(bench: Any) -> list[str]:
                 if not _needs_recovery(locked):
                     await session.rollback()
                     continue
-                await store.save(locked.model_copy(update={"paused": True}))
+                checkpoint = dict(locked.checkpoint or {})
+                checkpoint.update(
+                    {
+                        "round": locked.current_round,
+                        "phase": "server_restart",
+                        "inflight_state": "interrupted_unknown",
+                        "updated_at": _now_iso(),
+                    }
+                )
+                fields: dict[str, Any] = {
+                    "paused": True,
+                    "pause_requested": False,
+                    "checkpoint": checkpoint,
+                }
+                if is_manual_round_ended(locked):
+                    # Crash between the manual-end intent and its safe-stop
+                    # finalization: keep the manual end authoritative.
+                    reason = dict(locked.round_end_reason or {})
+                    reason.setdefault("kind", "manual")
+                    reason.setdefault("round_no", locked.current_round)
+                    fields["status"] = "converged_pending_human"
+                    fields["round_end_reason"] = reason
+                await store.save(locked.model_copy(update=fields))
                 await session.commit()
                 round_no = locked.current_round
             await _system(
@@ -1474,11 +2642,17 @@ async def step(bench: Any, session_id: str) -> bool:
     """Advance the session by one state-machine action.
 
     Returns ``True`` when work was done and another step may follow; ``False``
-    for terminal, paused or non-actionable states.  Usage counters are written
-    back on every return path, including cancellation and failures.
+    for terminal, paused, pause-requested, manually-ended or non-actionable
+    states.  Usage counters are written back on every return path, including
+    cancellation and failures.
     """
     record = await _get(bench, session_id)
-    if record.status in TERMINAL_STATUSES or record.paused:
+    if (
+        record.status in TERMINAL_STATUSES
+        or record.paused
+        or record.pause_requested
+        or is_manual_round_ended(record)
+    ):
         return False
     _seed_metric(bench, session_id, record)
     try:
@@ -1491,7 +2665,15 @@ async def step(bench: Any, session_id: str) -> bool:
         if record.status == "converged_pending_human":
             if record.decision_package is not None:
                 return False
+            if is_manual_round_ended(record):
+                return False
             return await _step_leader(bench, session_id)
+        return False
+    except CooperativeStop as stop:
+        # The step ended cooperatively; ``_drive`` (or the batch coordinator,
+        # which finalizes earlier) publishes the stop only after every in-flight
+        # call has finished, so no stale sibling can write afterwards.
+        _remember_stop(bench, session_id, stop)
         return False
     finally:
         await _persist_usage(bench, session_id)
@@ -1500,7 +2682,21 @@ async def step(bench: Any, session_id: str) -> bool:
 async def run_session(bench: Any, session_id: str) -> None:
     """Start the background driver once per session (idempotent)."""
     record = await _get(bench, session_id)
-    if record.status in TERMINAL_STATUSES or record.paused:
+    if record.pause_requested:
+        if is_running(bench, session_id):
+            # The live driver owns the stop; do not mark paused under it.
+            return
+        # The driver exited between the request and this call; finish the
+        # cooperative stop here so the UI never sees a stuck "pausing".
+        await _finalize_cooperative_pause(
+            bench, session_id, phase="run_requested", inflight_state="idle"
+        )
+        return
+    if (
+        record.status in TERMINAL_STATUSES
+        or record.paused
+        or is_manual_round_ended(record)
+    ):
         return
     if record.status == "converged_pending_human" and record.decision_package is not None:
         return
@@ -1521,7 +2717,12 @@ async def _drive(bench: Any, session_id: str) -> None:
     try:
         while True:
             record = await _get(bench, session_id)
-            if record.status in TERMINAL_STATUSES or record.paused:
+            if (
+                record.status in TERMINAL_STATUSES
+                or record.paused
+                or record.pause_requested
+                or is_manual_round_ended(record)
+            ):
                 return
             if not await step(bench, session_id):
                 return
@@ -1535,48 +2736,135 @@ async def _drive(bench: Any, session_id: str) -> None:
             category=classify_llm_error(exc) or "internal",
         )
     finally:
-        await _persist_usage(bench, session_id)
         tasks = _tasks(bench)
+        # Only the handle that is still registered may persist usage or publish
+        # a stop; an old cancelled runner must never touch a newer generation.
+        owns_handle = tasks.get(session_id) is asyncio.current_task()
+        if owns_handle:
+            await _persist_usage(bench, session_id)
+        try:
+            record = await _get(bench, session_id)
+            interrupt_epoch = _interrupting(bench).pop(session_id, None)
+            interrupted = (
+                interrupt_epoch is not None
+                and int(interrupt_epoch) == int(record.control_epoch)
+            )
+            if (
+                owns_handle
+                and not record.paused
+                and not record.pause_requested
+                and not is_manual_round_ended(record)
+            ):
+                # Nothing to finalize.
+                _pop_stop(bench, session_id)
+            elif (
+                owns_handle
+                and not record.paused
+                # A task cancelled by the pause watchdog / end-round is published
+                # as ``interrupted_unknown`` by the caller *after* this handle is
+                # collected, so a bounded wait never sees ``paused`` while the
+                # runner is still registered.
+                and not interrupted
+                and (
+                    record.pause_requested
+                    or is_manual_round_ended(record)
+                )
+            ):
+                stop = _pop_stop(bench, session_id) or CooperativeStop(
+                    "manual_round_ended"
+                    if is_manual_round_ended(record)
+                    else "pause_requested",
+                    phase="pause_cancel_bound" if interrupted else "driver_exit",
+                    inflight_state=(
+                        "interrupted_unknown" if interrupted else "idle"
+                    ),
+                    round_no=record.current_round,
+                )
+                await _finalize_control_stop(bench, session_id, stop)
+            else:
+                _pop_stop(bench, session_id)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.exception(
+                "failed to finalize cooperative pause for session %s", session_id
+            )
         if tasks.get(session_id) is asyncio.current_task():
             tasks.pop(session_id, None)
 
 
-async def _cancel_task(bench: Any, session_id: str) -> None:
-    task = _tasks(bench).pop(session_id, None)
+async def _cancel_task(
+    bench: Any, session_id: str, *, epoch: int | None = None
+) -> None:
+    """Cancel the live driver task without racing a newer generation.
+
+    The handle is kept registered while the task unwinds (so its own ``finally``
+    can see it still owns the handle) and a bounded collect stops a provider
+    call that ignores cancellation from blocking shutdown forever.  If the
+    collect bound expires, generation identity still protects every write.
+    """
+    tasks = _tasks(bench)
+    task = tasks.get(session_id)
     if task is None or task.done():
+        if task is not None and tasks.get(session_id) is task:
+            tasks.pop(session_id, None)
         return
+    if task is asyncio.current_task():
+        return
+    if epoch is None:
+        try:
+            epoch = (await _get(bench, session_id)).control_epoch
+        except SessionNotFound:
+            epoch = None
+    _interrupting(bench)[session_id] = int(epoch or 0)
     task.cancel()
     try:
-        await task
+        await asyncio.wait_for(task, timeout=CANCEL_COLLECT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "discussion driver for session %s did not stop within %ss; retiring "
+            "its handle and relying on generation checks",
+            session_id,
+            CANCEL_COLLECT_SECONDS,
+        )
     except asyncio.CancelledError:
         pass
     except Exception:  # noqa: BLE001 - cancellation must not surface
         pass
+    finally:
+        if tasks.get(session_id) is task:
+            tasks.pop(session_id, None)
 
 
 async def pause_session(bench: Any, session_id: str) -> DiscussionSession:
-    await _cancel_task(bench, session_id)
+    """Legacy pause entry point kept for existing callers/tests.
+
+    No driver task means the session is paused immediately.  A driver that is
+    mid-call is first asked to pause cooperatively; only if it does not reach a
+    checkpoint within the bound is it cancelled and marked ``interrupted_unknown``.
+    """
     await _persist_usage(bench, session_id)
-    already_paused = False
-    async with bench.db_session() as session:
-        store = DiscussionSessionStore(session)
-        record = await store.get_locked(session_id)
-        if record.status in TERMINAL_STATUSES:
-            await session.rollback()
-            _metrics(bench).pop(session_id, None)
-            return record
-        already_paused = record.paused
-        updated = record.model_copy(update={"paused": True})
-        await store.save(updated)
-        await session.commit()
+    record = await request_pause(bench, session_id)
+    if record.paused:
+        _metrics(bench).pop(session_id, None)
+        return record
+    waited = await wait_until_paused(
+        bench, session_id, timeout=PAUSE_SESSION_WAIT_SECONDS
+    )
+    if waited.paused:
+        _metrics(bench).pop(session_id, None)
+        return waited
+    epoch = waited.control_epoch
+    await _cancel_task(bench, session_id)
+    marked = await _mark_interrupted_pause(bench, session_id, epoch)
     _metrics(bench).pop(session_id, None)
-    if not already_paused:
-        await _system(bench, session_id, "paused", "讨论已暂停。")
-    return updated
+    return marked or waited
 
 
 async def resume_session(
-    bench: Any, session_id: str, skip_bot_ids: list[str] | None = None
+    bench: Any,
+    session_id: str,
+    skip_bot_ids: list[str] | None = None,
+    *,
+    expected_revision: int | None = None,
 ) -> DiscussionSession:
     skipped: list[str] = []
     terminated = False
@@ -1586,6 +2874,12 @@ async def resume_session(
         if record.status in TERMINAL_STATUSES:
             await session.rollback()
             return record
+        if is_manual_round_ended(record):
+            # Only rounds/start (with the control revision) may reopen a manual
+            # end; ordinary resume never replays the ended round.
+            await session.rollback()
+            raise InvalidStatus("manual_round_ended")
+        check_control_revision(record, expected_revision)
         participants = list(record.participant_bot_ids)
         skipped = [
             bot_id
@@ -1596,15 +2890,30 @@ async def resume_session(
         terminated = (
             len(remaining) < 2 or record.leader_bot_id not in remaining
         )
+        if not record.paused and not record.pause_requested and not terminated:
+            await session.rollback()
+            raise InvalidStatus("not_paused")
         fields: dict[str, Any] = {
             "paused": False,
+            "pause_requested": False,
             "participant_bot_ids": remaining,
+            "control_revision": record.control_revision + 1,
+            # Resuming is a new generation: no token captured before the pause
+            # may write into it.
+            "control_epoch": record.control_epoch + 1,
         }
         if terminated:
             fields["status"] = "terminated"
         updated = record.model_copy(update=fields)
         await store.save(updated)
         await session.commit()
+    _mark_control_bump(bench, session_id, updated.control_epoch)
+    _cancel_pause_watchdog(bench, session_id)
+    _signal_control_change(bench, session_id)
+    # A resume may arrive while the old driver is still in flight (pause
+    # requested but not finalized yet).  Retire that runner so it can neither
+    # write into the new generation nor keep the session from being driven.
+    await _cancel_task(bench, session_id)
     round_no = updated.current_round
     for bot_id in skipped:
         await _system(
@@ -1616,7 +2925,6 @@ async def resume_session(
             bot_id=bot_id,
         )
     if terminated:
-        await _cancel_task(bench, session_id)
         _metrics(bench).pop(session_id, None)
         await _system(
             bench,
@@ -1631,6 +2939,56 @@ async def resume_session(
     return updated
 
 
+async def start_round_after_manual_end(
+    bench: Any,
+    session_id: str,
+    *,
+    actor_bot_id: str,
+    expected_revision: int | None,
+    round_no: int | None = None,
+) -> DiscussionSession:
+    """Start the next round from a manual end using an explicit control CAS.
+
+    This is the only path allowed to clear ``round_end_reason``; ordinary
+    resume/step/run reject a manually ended session.
+    """
+    if expected_revision is None:
+        raise InvalidStatus("revision_required")
+    async with bench.db_session() as session:
+        try:
+            record = await DiscussionSessionStore(session).get(session_id)
+        except SessionNotFound:
+            raise
+        if not is_manual_round_ended(record):
+            raise InvalidStatus("not_manual_round_end")
+        if not (record.paused and not record.pause_requested):
+            # During the cooperative-stop window the reason marker is already
+            # persisted; reopening now would let stale in-flight outputs land in
+            # the next round.  The client must retry after end-round finalizes.
+            raise InvalidStatus("manual_end_not_finalized")
+        if record.status != "converged_pending_human":
+            raise InvalidStatus("manual_end_not_finalized")
+        try:
+            started = await start_round(
+                session_id,
+                round_no,
+                actor_bot_id=actor_bot_id,
+                session=session,
+                expected_revision=expected_revision,
+            )
+            await session.commit()
+        except BudgetExhausted:
+            # _start_once persisted budget_exhausted before raising; keep it.
+            await session.commit()
+            raise
+        except BaseException:
+            await session.rollback()
+            raise
+    _cancel_pause_watchdog(bench, session_id)
+    _metrics(bench).pop(session_id, None)
+    return started
+
+
 async def terminate_session(bench: Any, session_id: str) -> DiscussionSession:
     await _cancel_task(bench, session_id)
     await _persist_usage(bench, session_id)
@@ -1641,11 +2999,26 @@ async def terminate_session(bench: Any, session_id: str) -> DiscussionSession:
             await session.rollback()
             _metrics(bench).pop(session_id, None)
             return record
+        checkpoint = dict(record.checkpoint or {})
+        checkpoint.update(
+            {
+                "round": record.current_round,
+                "phase": "terminated",
+                "inflight_state": "terminated",
+                "updated_at": _now_iso(),
+            }
+        )
         updated = record.model_copy(
-            update={"status": "terminated", "paused": False}
+            update={
+                "status": "terminated",
+                "paused": False,
+                "pause_requested": False,
+                "checkpoint": checkpoint,
+            }
         )
         await store.save(updated)
         await session.commit()
+    _cancel_pause_watchdog(bench, session_id)
     _metrics(bench).pop(session_id, None)
     await _system(
         bench, session_id, "terminated", "讨论已终止。", round_no=updated.current_round
@@ -1655,12 +3028,21 @@ async def terminate_session(bench: Any, session_id: str) -> DiscussionSession:
 
 __all__ = [
     "BotFailed",
+    "CooperativeStop",
+    "PAUSE_INFLIGHT_CANCEL_SECONDS",
+    "PAUSE_WAIT_SECONDS",
     "TERMINAL_STATUSES",
+    "add_intervention",
+    "end_round",
+    "is_manual_round_ended",
     "is_running",
     "pause_session",
     "recover_interrupted_sessions",
+    "request_pause",
     "resume_session",
     "run_session",
+    "start_round_after_manual_end",
     "step",
     "terminate_session",
+    "wait_until_paused",
 ]

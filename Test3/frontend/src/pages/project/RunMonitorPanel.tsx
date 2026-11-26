@@ -3,6 +3,7 @@ import { Alert, Button, Input, Modal, Tooltip, message } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { api, controlEnabled } from "../../api/client";
 import type { MonitorTask } from "../../api/types";
+import { TaskRoleMemoryPanel } from "./TaskRoleMemoryPanel";
 import { useRunEvents } from "../../hooks/useRunEvents";
 import { isTerminalRunStatus, pauseResumeKind } from "../workstationControls";
 import {
@@ -29,6 +30,8 @@ type Props = {
   tasks: FallbackMonitorTask[];
   onLocateTask?: (code: string) => void;
   onRefresh?: () => void;
+  actorBotId?: string;
+  actorIsLeader?: boolean;
 };
 
 function statusLabel(state: string): string {
@@ -48,7 +51,7 @@ function statusLabel(state: string): string {
   return labels[state] || state;
 }
 
-export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh }: Props) {
+export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBotId, actorIsLeader = false }: Props) {
   const monitor = useRunMonitor(runId);
   const { events, connection, connectionError, reconnect } = useRunEvents(runId, () => {
     void monitor.refresh(true);
@@ -381,6 +384,16 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh }: Props
                   );
                 })}
               </div>
+              {runId && actorBotId && (selectedTask.role === "coder" || selectedTask.role === "tester") && (
+                <TaskRoleMemoryPanel
+                  key={`${selectedTask.code}:${selectedTask.role}`}
+                  runId={runId}
+                  taskCode={selectedTask.code}
+                  role={selectedTask.role}
+                  actorBotId={actorBotId}
+                  isLeader={actorIsLeader}
+                />
+              )}
             </div>
           )}
 

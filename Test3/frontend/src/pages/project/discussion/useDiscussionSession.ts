@@ -126,8 +126,16 @@ export function useDiscussionSession(projectId: string, actorBotId: string) {
     };
 
     const maybeRefreshMeta = (message: DiscussionMessage) => {
-      const unsealed = message.kind === "system" && message.payload?.event === "proposals_unsealed";
-      if (!unsealed && message.kind !== "review" && message.kind !== "leader") return;
+      // Control events arrive as system messages (paused / resumed /
+      // manual_round_ended) but interventions are appended as kind "user" with
+      // payload.event "intervention", so both kinds must be inspected.
+      const event =
+        message.kind === "system" || message.kind === "user"
+          ? String(message.payload?.event || "")
+          : "";
+      const unsealed = event === "proposals_unsealed";
+      const control = ["paused", "manual_round_ended", "resumed", "intervention"].includes(event);
+      if (!unsealed && !control && message.kind !== "review" && message.kind !== "leader") return;
       void refreshMeta(message.session_id);
     };
 

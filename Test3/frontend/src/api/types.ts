@@ -125,6 +125,24 @@ export type DiscussionBudget = {
   score_gap_threshold: number | null;
 };
 
+export type DiscussionIntervention = {
+  id: string;
+  revision: number;
+  round_no: number;
+  text: string;
+  actor: string;
+  created_at: string;
+  effective_after: number;
+};
+
+export type DiscussionRoundEndReason = {
+  kind: "manual";
+  text: string;
+  round_no: number;
+  actor: string;
+  revision: number;
+};
+
 export type DiscussionSession = {
   session_id: string;
   project_id: string;
@@ -140,6 +158,12 @@ export type DiscussionSession = {
   resolution_comment: string | null;
   paused: boolean;
   created_at: string;
+  control_revision?: number;
+  pause_requested?: boolean;
+  control_epoch?: number;
+  checkpoint?: Record<string, unknown>;
+  interventions?: DiscussionIntervention[];
+  round_end_reason?: DiscussionRoundEndReason | null;
 };
 
 export type DiscussionSessionCreate = {
@@ -304,6 +328,49 @@ export type MonitorSnapshot = {
   tasks: MonitorTask[];
   agents: MonitorAgent[];
 };
+/** Task/role scoped memory (M). No bot identity is stored. */
+export type TaskRole = "coder" | "tester";
+
+export type ContextSectionView = {
+  kind: string;
+  source_id: string;
+  source_version: string;
+  text: string;
+  sha256: string;
+  summary?: string;
+};
+
+export type TaskRoleSourceRef = { kind: string; ref: string; sha256: string };
+
+export type TaskRoleSnapshot = {
+  text: string;
+  sources: TaskRoleSourceRef[];
+  matcher_version: string;
+};
+
+export type TaskRoleMemory = {
+  run_id: string;
+  project_id: string;
+  task_code: string;
+  role: TaskRole;
+  revision: number;
+  manual_text: string;
+  manual_updated_by: string | null;
+  manual_updated_at: string | null;
+  role_snapshot: TaskRoleSnapshot;
+  manual_section: ContextSectionView | null;
+  role_section: ContextSectionView;
+  context_hash: string;
+  frozen: boolean;
+  frozen_context: Record<string, unknown>;
+  effective: "current" | "next_attempt";
+};
+
+export type TaskRoleMemoryUpdate = {
+  expected_revision: number;
+  manual_text: string;
+};
+
 /** Memory (C.4 / C.5.5). Bodies never contain secret plaintext. */
 export type MemorySource = { kind: string; ref: string; sha: string };
 

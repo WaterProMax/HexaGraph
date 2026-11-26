@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 DiscussionSessionStatus = Literal[
     "draft",
@@ -76,6 +76,14 @@ class DiscussionSession(BaseModel):
     tokens_used: int = 0
     elapsed_seconds: int = 0
     created_at: str = ""
+    # Cooperative control state.  Every field has a default so payloads written
+    # before this change still validate when a session row is loaded.
+    control_revision: int = 0
+    pause_requested: bool = False
+    control_epoch: int = 0
+    checkpoint: dict = Field(default_factory=dict)
+    interventions: list[dict] = Field(default_factory=list)
+    round_end_reason: dict | None = None
 
 
 @dataclass
@@ -90,9 +98,29 @@ class DiscussionRoundState:
     score_spread: float | None = None
 
 
+@dataclass(frozen=True)
+class DiscussionGenerationToken:
+    """Identity of the work generation a model call was started for.
+
+    Created from the same ``DiscussionSession`` snapshot that built the prompt,
+    before the model call, and threaded through retries and the persist
+    transaction.  A write whose token no longer matches the locked session (new
+    round, new control epoch, paused/pause-requested/manual-ended/terminal) is a
+    stale generation and must be discarded instead of re-signed with the live
+    epoch.
+    """
+
+    session_id: str
+    round_no: int
+    control_epoch: int
+    operation: str
+    work_key: str
+
+
 __all__ = [
     "DecisionPackage",
     "DiscussionBudget",
+    "DiscussionGenerationToken",
     "DiscussionRoundState",
     "DiscussionSession",
     "DiscussionSessionStatus",

@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { CommentOutlined, SendOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
-import { api } from "../../../api/client";
+import { ApiError, api } from "../../../api/client";
 import type { BotInstance } from "../../../api/types";
 import type { TeamMember } from "../TeamStrip";
 import { ApprovalBanner } from "./ApprovalBanner";
 import { DiscussionChat } from "./DiscussionChat";
 import { IdeaComposer, MAX_IDEA_LENGTH } from "./IdeaComposer";
-import { DiscussionControls, ScorePanel } from "./ScorePanel";
+import { DiscussionControls, ScorePanel, type DiscussionPendingAction } from "./ScorePanel";
 import { SpecApprovalDialog } from "./SpecApprovalDialog";
 import { SpecViewer } from "./SpecViewer";
 import { StageBar } from "./StageBar";
-import { deriveStage, type DiscussionStage } from "./deriveStage";
+import { deriveStage, discussionControlFlags, type DiscussionStage } from "./deriveStage";
 import { useDiscussionSession } from "./useDiscussionSession";
 
 export type DiscussionViewProps = {
@@ -39,6 +39,37 @@ export const UNSEALED_BODY_TEXT = "正文尚未解封";
 function actionErrorText(err: unknown): string {
   const message = (err as { message?: unknown } | null)?.message;
   return typeof message === "string" && message.trim() ? message : "操作失败，请稍后重试";
+}
+
+/**
+ * Map a control failure to honest Chinese feedback. The discussion routes only
+ * expose some categories directly (`budget_exhausted`); others arrive as
+ * `invalid_status` with the real reason in the detail text, so we inspect the
+ * message instead of pretending a category exists.
+ */
+function classifyControlError(err: unknown): { text: string; refresh: boolean } {
+  if (err instanceof ApiError) {
+    if (err.status === 403) {
+      return { text: "没有权限执行该操作：只有本场讨论的 Leader 可以控制。", refresh: false };
+    }
+    if (err.status === 409) {
+      const detail = `${err.message || ""} ${err.summary || ""}`.toLowerCase();
+      if (err.category === "budget_exhausted" || detail.includes("budget_exhausted")) {
+        return { text: "轮数或预算已用尽，本次操作未执行。", refresh: true };
+      }
+      if (detail.includes("manual_end_not_finalized")) {
+        return { text: "本轮人工结束仍在安全停止中，请等待安全检查点完成后再试。", refresh: true };
+      }
+      if (err.category === "revision_conflict" || detail.includes("revision_conflict")) {
+        return { text: "控制版本冲突，已刷新最新状态，请重试。", refresh: true };
+      }
+      return { text: "当前讨论状态不允许该操作，已刷新最新状态。", refresh: true };
+    }
+    if (err.status >= 500) {
+      return { text: "控制请求未成功（服务器错误），请稍后重试。", refresh: false };
+    }
+  }
+  return { text: actionErrorText(err), refresh: false };
 }
 
 type PlanStatus = "running" | "failed" | "ready";
@@ -115,15 +146,30 @@ export function DiscussionView({
   const { loading, error, session, sessions, messages, timeline, reviews, connection, refresh } =
     useDiscussionSession(projectId, actorBotId);
   const stage = deriveStage(session);
+  const controlFlags = discussionControlFlags(session, actorBotId);
+  const activeSessionId = session?.session_id ?? "";
 
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [specOpen, setSpecOpen] = useState(false);
-  const [actionBusy, setActionBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<DiscussionPendingAction | null>(null);
   const [actionError, setActionError] = useState("");
   const [supplement, setSupplement] = useState("");
   const [planState, setPlanState] = useState<{ sessionId: string; status: PlanStatus }>();
   const headingId = useId();
   const actionBusyRef = useRef(false);
+  const actionBusy = pendingAction !== null;
+  // Latest session id, compared after every await so a response for a previous
+  // project/session can never write an error, refresh, or clear a new draft.
+  const sessionIdRef = useRef(activeSessionId);
+  sessionIdRef.current = activeSessionId;
+
+  useEffect(() => {
+    // Switching sessions abandons the old action UI; the old promise still
+    // resolves, but its guarded handlers will no longer touch this session.
+    actionBusyRef.current = false;
+    setPendingAction(null);
+    setActionError("");
+  }, [activeSessionId]);
 
   // Auto-open the approval dialog once per approval stage; a user close must not reopen it.
   const autoOpenedRef = useRef<string | null>(null);
@@ -168,27 +214,129 @@ export function DiscussionView({
     [sessionId, actorBotId],
   );
 
-  const withSession = async (action: (sessionId: string) => Promise<unknown>) => {
-    if (!session || actionBusyRef.current) return;
+  const withSession = async (
+    action: (sessionId: string) => Promise<unknown>,
+    pending: DiscussionPendingAction,
+  ) => {
+    if (!session || actionBusyRef.current) return false;
+    const requestSessionId = session.session_id;
     actionBusyRef.current = true;
-    setActionBusy(true);
+    setPendingAction(pending);
     setActionError("");
     try {
-      await action(session.session_id);
+      await action(requestSessionId);
+      if (sessionIdRef.current !== requestSessionId) return false;
       refresh();
       return true;
     } catch (err) {
-      setActionError(actionErrorText(err));
+      if (sessionIdRef.current !== requestSessionId) return false;
+      const { text, refresh: shouldRefresh } = classifyControlError(err);
+      if (shouldRefresh) refresh();
+      setActionError(text);
+      return false;
     } finally {
       actionBusyRef.current = false;
-      setActionBusy(false);
+      if (sessionIdRef.current === requestSessionId) setPendingAction(null);
     }
   };
 
-  const pause = () => withSession((id) => api.pauseDiscussion(id, actorBotId));
+  const pause = () =>
+    withSession((id) => {
+      const revision = session?.control_revision;
+      return revision === undefined
+        ? api.pauseDiscussion(id, actorBotId)
+        : api.pauseDiscussion(id, actorBotId, revision);
+    }, "pause");
   const resume = (skipBotIds?: string[]) =>
-    withSession((id) => api.resumeDiscussion(id, { skip_bot_ids: skipBotIds }, actorBotId));
-  const terminate = () => withSession((id) => api.terminateDiscussion(id, actorBotId));
+    withSession((id) => {
+      const revision = session?.control_revision;
+      return api.resumeDiscussion(
+        id,
+        {
+          skip_bot_ids: skipBotIds,
+          ...(revision === undefined ? {} : { expected_revision: revision }),
+        },
+        actorBotId,
+      );
+    }, "resume");
+  const terminate = () =>
+    withSession((id) => api.terminateDiscussion(id, actorBotId), "terminate");
+  const requireRevision = (): number => {
+    const revision = session?.control_revision;
+    if (revision === undefined) throw new Error("控制版本缺失，请刷新后重试");
+    return revision;
+  };
+  const intervene = (text: string) =>
+    withSession(
+      (id) =>
+        api.addDiscussionIntervention(
+          id,
+          { expected_revision: requireRevision(), text },
+          actorBotId,
+        ),
+      "intervene",
+    );
+  const endRound = (reason: string) =>
+    withSession(
+      (id) =>
+        api.endDiscussionRound(
+          id,
+          { expected_revision: requireRevision(), reason, confirm: true },
+          actorBotId,
+        ),
+      "end-round",
+    );
+  const startRound = async () => {
+    if (!session || actionBusyRef.current) return false;
+    const requestSessionId = session.session_id;
+    const revision = session.control_revision;
+    if (revision === undefined) {
+      setActionError("控制版本缺失，请刷新后重试。");
+      return false;
+    }
+    actionBusyRef.current = true;
+    setPendingAction("start-round");
+    setActionError("");
+    try {
+      try {
+        await api.startDiscussionRound(
+          requestSessionId,
+          { expected_revision: revision },
+          actorBotId,
+        );
+      } catch (err) {
+        if (sessionIdRef.current !== requestSessionId) return false;
+        const { text, refresh: shouldRefresh } = classifyControlError(err);
+        if (shouldRefresh) refresh();
+        setActionError(text);
+        return false;
+      }
+      if (sessionIdRef.current !== requestSessionId) return false;
+      try {
+        // rounds/start only prepares the round; the driver starts explicitly.
+        await api.runDiscussion(requestSessionId, actorBotId);
+      } catch {
+        if (sessionIdRef.current !== requestSessionId) return false;
+        // The round already exists: never re-issue rounds/start and create a
+        // second one; refresh the true state and let the user retry /run.
+        setActionError("新轮已创建，但未能成功启动；已刷新真实状态，请稍后重试启动。");
+        refresh();
+        return false;
+      }
+      if (sessionIdRef.current !== requestSessionId) return false;
+      refresh();
+      return true;
+    } finally {
+      actionBusyRef.current = false;
+      if (sessionIdRef.current === requestSessionId) setPendingAction(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!session?.pause_requested || session.paused) return;
+    const timer = window.setInterval(() => refresh(), 1500);
+    return () => window.clearInterval(timer);
+  }, [refresh, session?.pause_requested, session?.paused]);
 
   const activeMembers = members.filter((member) => member.status === "active");
   const participantBotIds = activeMembers.map((member) => member.bot_id);
@@ -227,16 +375,36 @@ export function DiscussionView({
           <header className="disc-conversation-head">
             <h2 id={headingId}><CommentOutlined aria-hidden /> 项目讨论</h2>
             <span className="disc-tag is-muted">
-              {stage === "terminated" ? "已结束" : session?.paused ? "已暂停" : stage === "approval" ? "等待确认" :
-                stage === "approved" ? "规格已确认" : stage === "idea" ? "待开始" : "讨论中"}
+              {stage === "terminated"
+                ? controlFlags.budgetExhausted
+                  ? "预算已用尽"
+                  : "已结束"
+                : controlFlags.manual
+                  ? controlFlags.settledManual
+                    ? "人工结束本轮"
+                    : "正在结束本轮"
+                  : session?.paused
+                    ? "已暂停"
+                    : stage === "approval"
+                      ? "等待确认"
+                      : stage === "approved"
+                        ? "规格已确认"
+                        : stage === "idea"
+                          ? "待开始"
+                          : "讨论中"}
             </span>
             {session && CHAT_STAGES.includes(stage) && (
               <DiscussionControls
                 session={session}
-                busy={actionBusy || stage === "terminated"}
+                busy={actionBusy}
+                canControl={controlFlags.canControl}
+                pendingAction={pendingAction}
                 onPause={pause}
                 onResume={resume}
                 onTerminate={terminate}
+                onIntervene={intervene}
+                onEndRound={endRound}
+                onStartRound={startRound}
               />
             )}
           </header>
@@ -266,7 +434,7 @@ export function DiscussionView({
             <form className="disc-composer disc-supplement" onSubmit={async (event) => {
               event.preventDefault();
               const value = supplement.trim();
-              if (value && await withSession((id) => api.supplementDiscussion(id, value, actorBotId))) {
+              if (value && await withSession((id) => api.supplementDiscussion(id, value, actorBotId), "supplement")) {
                 setSupplement("");
               }
             }}>
@@ -301,7 +469,11 @@ export function DiscussionView({
           {session && CHAT_STAGES.includes(stage) && (
             <>
               {stage === "terminated" && (
-                <p className="disc-readonly-note" role="status">讨论已终止，消息和评分仍可查看。</p>
+                <p className="disc-readonly-note" role="status" data-testid="disc-readonly-note">
+                  {controlFlags.budgetExhausted
+                    ? "轮数或预算已用尽，讨论已停止；消息和评分仍可查看，可查看历史或使用补充入口。"
+                    : "讨论已终止，消息和评分仍可查看。"}
+                </p>
               )}
               <ScorePanel
                 session={session}

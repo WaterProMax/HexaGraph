@@ -48,6 +48,9 @@ export type ProjectWorkstationProps = {
   onShowDiscussion?: () => void;
   onShowTasks?: () => void;
   onRefresh?: () => void;
+  /** Local actor header used by task-scoped memory panels. */
+  actorBotId?: string;
+  actorIsLeader?: boolean;
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
@@ -94,6 +97,8 @@ export function ProjectWorkstation({
   onShowDiscussion,
   onShowTasks,
   onRefresh,
+  actorBotId,
+  actorIsLeader = false,
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
   const [highlight, setHighlight] = useState("");
@@ -349,6 +354,8 @@ export function ProjectWorkstation({
                 tasks={tasks}
                 onLocateTask={locateTask}
                 onRefresh={onRefresh}
+                actorBotId={actorBotId}
+                actorIsLeader={actorIsLeader}
               />
               {memoryPanel && <div style={{ marginTop: 16 }}>{memoryPanel}</div>}
               <div style={{ marginTop: 16 }}>
@@ -573,6 +580,8 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         setShowDiscussion(false);
         void load();
       }}
+      actorBotId={actor}
+      actorIsLeader={Boolean(teamMembers.find((member) => member.bot_id === actor)?.is_leader)}
       discussionPanel={
         showDiscussion ? (
           <DiscussionView

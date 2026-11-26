@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import os
 import shutil
 import time
@@ -116,7 +117,7 @@ from app.schemas.docs import (
 from app.schemas.execution_grant import ExecutionGrant, ExecutionProfile
 from app.services import design_input as design_input_service
 from app.services.monitor import build_monitor_snapshot
-from app.settings import get_settings, load_limits, load_models, load_profile, load_roles
+from app.settings import CONFIG_DIR, get_settings, load_limits, load_models, load_profile, load_roles
 from app.stage.engine import StageEngine
 from app.storage.db import make_engine, session_factory, sqlite_url
 from app.storage.migrate import upgrade_database
@@ -136,6 +137,9 @@ from app.workspace.gitops import (
     rollback_merge,
     tag_build,
 )
+
+logger = logging.getLogger(__name__)
+SHARED_SKILLS_PATH = CONFIG_DIR / "shared-skills.md"
 
 
 @dataclass
@@ -387,9 +391,15 @@ class Workbench:
         if event["kind"] in _SNAPSHOT_KINDS or int(event["seq"]) % 20 == 0:
             self._persist_snapshot(run)
 
-    def _persist_snapshot(self, run: RunState) -> None:
+    def _persist_snapshot(self, run: RunState, *, tasks_override: dict[str, Any] | None = None) -> None:
         folder = self.data_dir / "runs" / run.id
         payload = self._serialize_run(run)
+        if tasks_override is not None:
+            # Stage only the task map in the serialized payload: every other
+            # field still comes from the live run and the live run itself is
+            # never mutated, so a failed write cannot leave a half-committed
+            # in-memory state behind.
+            payload["tasks"] = tasks_override
         payload["events"] = []
         payload["event_seq"] = len(run.events)
         _atomic_write(folder / "snapshot.json", json.dumps(payload, ensure_ascii=False))
@@ -3312,7 +3322,7 @@ class Workbench:
             existing = run.tasks.get(task.code)
             if existing and existing["state"] == "done":
                 continue
-            run.tasks[task.code] = {
+            rebuilt = {
                 "id": f"{run.id}:{task.code}",
                 "code": task.code,
                 "state": "pending",
@@ -3327,6 +3337,12 @@ class Workbench:
                 "prev_output": "",
                 "review_issues": [],
             }
+            # Task/role memory is a leader-authored artifact, not derived state.
+            # Rebuilding tasks on replan must not silently erase it.
+            memory = (existing or {}).get("role_memory")
+            if isinstance(memory, dict) and memory:
+                rebuilt["role_memory"] = copy.deepcopy(memory)
+            run.tasks[task.code] = rebuilt
             for src in task.sources:
                 run.trace.link(src, task.code, "spec_item → task")
         self._sync_task_ids(run)
@@ -3534,6 +3550,7 @@ class Workbench:
         repo: Path | None = None,
         branch: str = "",
         integration_hint: str = "",
+        context_meta: dict[str, Any] | None = None,
     ) -> None:
         history = task.setdefault("attempt_history", [])
         current = task.get("attempt")
@@ -3542,6 +3559,7 @@ class Workbench:
         }:
             history.append(copy.deepcopy(current))
         card = task.get("card") or {}
+        context_meta = context_meta or {}
         repo_path = repo or (self.data_dir / "runs" / run.id / "repo")
         integration_ref = ""
         integration_sha = ""
@@ -3590,6 +3608,12 @@ class Workbench:
             "task_code": code,
             "run_id": run.id,
             "project_id": run.project_id,
+            "role": str(card.get("role") or context_meta.get("role") or ""),
+            "role_hash": str(context_meta.get("role_hash") or ""),
+            "manual_revision": int(context_meta.get("manual_revision") or 0),
+            "skill_bundle_hash": str(context_meta.get("skill_bundle_hash") or ""),
+            "memory_context_hash": str(context_meta.get("memory_context_hash") or ""),
+            "context_hash": str(context_meta.get("context_hash") or ""),
         }
         self._persist_snapshot(run)
 
@@ -3648,6 +3672,67 @@ class Workbench:
             self._set_state(run, task, "accepted")
         return {"state": task["state"], "kind": "simulated", "evidence": evidence}
 
+    def _build_task_context(
+        self, run: RunState, code: str, card: TaskCard
+    ) -> tuple[Any, dict[str, Any]]:
+        """Assemble role/manual/shared sections and freeze metadata.
+
+        Shared-skill bundle failures are fail-closed: the invalid bundle is not
+        partially used, and the task still runs with role/manual context only.
+        Manual memory is never silently truncated; a budget overflow drops the
+        shared sections first (the assembler does that) and then fails closed
+        without injecting an over-budget manual block.
+        """
+
+        from app.agents.task_context import (
+            ContextBudgetExceeded,
+            ContextSection,
+            assemble_task_context,
+        )
+        from app.memory.task_context import build_task_role_sections
+        from app.skills.shared_bundle import load_shared_bundle, select_shared_skills
+
+        sections: list[ContextSection] = []
+        meta: dict[str, Any] = {}
+        memory_context_hash = ""
+        try:
+            sections, meta = build_task_role_sections(self, run, code)
+            memory_context_hash = str(meta.get("memory_context_hash") or meta.get("context_hash") or "")
+        except Exception:  # noqa: BLE001 - context must not break task execution
+            logger.warning("task role memory unavailable for %s", code, exc_info=True)
+            meta = {}
+        bundle_hash = ""
+        if SHARED_SKILLS_PATH.exists():
+            try:
+                bundle = load_shared_bundle(SHARED_SKILLS_PATH)
+                if bundle is not None:
+                    bundle_hash = bundle.sha256
+                    sections.extend(
+                        select_shared_skills(
+                            bundle,
+                            task_type=card.kind,
+                            tags=(card.role,),
+                            budget_chars=6000,
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - malformed local bundle is fail-closed
+                # A broken/updated bundle never silently activates; keep the
+                # previous context (empty here) and emit a visible warning.
+                logger.warning("shared skill bundle rejected", exc_info=True)
+                bundle_hash = ""
+        try:
+            snapshot = assemble_task_context(sections)
+        except ContextBudgetExceeded:
+            logger.warning("mandatory task context exceeds budget for %s", code, exc_info=True)
+            snapshot = assemble_task_context([])
+        meta = {
+            **meta,
+            "skill_bundle_hash": bundle_hash,
+            "memory_context_hash": memory_context_hash,
+            "context_hash": snapshot.context_hash,
+        }
+        return snapshot, meta
+
     async def _execute_task_locked(self, run: RunState, code: str) -> dict[str, Any]:
         await self._invalidate_if_drifted(run)
         await self._require_execution_authorization(run, "execute")
@@ -3665,8 +3750,9 @@ class Workbench:
             return {"state": task["state"], "kind": "已终止"}
         if task.get("locked_by") and not task.get("takeover_submit"):
             return {"state": task["state"], "kind": "locked"}
+        context_snapshot, context_meta = self._build_task_context(run, code, card)
         if getattr(self, "simulated_executor", None) is not None:
-            self._begin_attempt(run, task, code)
+            self._begin_attempt(run, task, code, context_meta=context_meta)
             return await self._execute_simulated_task(run, task, code, card)
         # Real execution boundary: granted_v1 is validated before any revision
         # bump, state transition, worktree or command.  No Grant / missing spec
@@ -3715,6 +3801,7 @@ class Workbench:
             repo=repo,
             branch=attempt_branch,
             integration_hint=integration_hint,
+            context_meta=context_meta,
         )
         if granted_spec is not None and grant is not None:
             return await self._execute_granted_task(run, code, task, card, granted_spec, grant)
@@ -3755,6 +3842,7 @@ class Workbench:
                         registry=self.registry,
                         gateway=self._gateway_for(run),
                         max_steps=int(card.budget.max_tool_steps or (run.limits.get("orchestrator") or {}).get("max_tool_steps") or 30),
+                        context_block=context_snapshot.render() if context_snapshot else "",
                     )
                     break
                 except Exception as exc:  # noqa: BLE001

@@ -237,9 +237,17 @@ async def run_tool_agent(
     registry: RoleRegistry,
     gateway: Gateway,
     max_steps: int = 30,
+    context_block: str = "",
 ) -> Any:
     role = registry.get(name)
     messages: list[dict[str, Any]] = render_prompt(role, inputs)
+    if context_block:
+        # Task context is data attached next to the user material, never a new
+        # system instruction and never part of the tool policy.
+        messages[-1] = {
+            **messages[-1],
+            "content": messages[-1]["content"] + "\n\n" + context_block,
+        }
     for _ in range(max_steps):
         result = await gateway.complete(
             role.slot,

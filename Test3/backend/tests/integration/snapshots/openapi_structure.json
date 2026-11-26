@@ -22,6 +22,19 @@
         "422"
       ]
     },
+    "DELETE /api/runs/{run_id}/tasks/{task_code}/role-memory/{role}": {
+      "body": null,
+      "params": [
+        "path:role*",
+        "path:run_id*",
+        "path:task_code*",
+        "query:expected_revision"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/bots": {
       "body": null,
       "params": [
@@ -334,6 +347,18 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/tasks/{task_code}/role-memory/{role}": {
+      "body": null,
+      "params": [
+        "path:role*",
+        "path:run_id*",
+        "path:task_code*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/todos": {
       "body": null,
       "params": [
@@ -476,7 +501,27 @@
         "422"
       ]
     },
+    "POST /api/discussion-sessions/{session_id}/end-round": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "POST /api/discussion-sessions/{session_id}/group": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/interventions": {
       "body": null,
       "params": [
         "path:session_id*"
@@ -860,6 +905,18 @@
     "PUT /api/config/models": {
       "body": "object",
       "params": [],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PUT /api/runs/{run_id}/tasks/{task_code}/role-memory/{role}": {
+      "body": null,
+      "params": [
+        "path:role*",
+        "path:run_id*",
+        "path:task_code*"
+      ],
       "responses": [
         "200",
         "422"

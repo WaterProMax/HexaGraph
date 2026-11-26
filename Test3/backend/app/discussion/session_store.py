@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.discussion.models import DiscussionSession
+from app.discussion.models import DiscussionGenerationToken, DiscussionSession
 from app.storage.models import DiscussionSessionRow
 
 
@@ -36,6 +36,60 @@ class NotParticipant(Exception):
 def _is_locked(exc: OperationalError) -> bool:
     message = str(exc).lower()
     return "locked" in message or "busy" in message
+
+
+def manual_round_ended(record: DiscussionSession) -> bool:
+    """True when the leader explicitly ended the current round by hand."""
+    reason = record.round_end_reason
+    return isinstance(reason, dict) and reason.get("kind") == "manual"
+
+
+def check_control_revision(
+    record: DiscussionSession, expected_revision: int | None
+) -> None:
+    """CAS guard shared by every control mutation.
+
+    ``None`` keeps the pre-revision callers working; an explicit revision that
+    no longer matches raises ``InvalidStatus`` so the HTTP layer answers 409.
+    """
+    if expected_revision is None:
+        return
+    if int(expected_revision) != int(record.control_revision):
+        raise InvalidStatus("revision_conflict")
+
+
+def assert_generation_current(
+    record: DiscussionSession,
+    generation: DiscussionGenerationToken | None,
+) -> None:
+    """Pure generation identity/control check for writes made under a lock.
+
+    ``None`` keeps the public manual paths (which never started a model call)
+    working.  A mismatch means the row belongs to an older round/epoch or the
+    session stopped/paused/manual-ended/went terminal meanwhile, so the write
+    must not be persisted.  Raises ``InvalidStatus`` (non-retryable) so callers
+    can roll back and discard the generated value.
+    """
+    if generation is None:
+        return
+    if (
+        generation.session_id != record.session_id
+        or int(generation.round_no) != int(record.current_round)
+        or int(generation.control_epoch) != int(record.control_epoch)
+    ):
+        raise InvalidStatus("stale_generation")
+    if (
+        record.paused
+        or record.pause_requested
+        or manual_round_ended(record)
+        or record.status in {
+            "approved",
+            "rejected",
+            "terminated",
+            "budget_exhausted",
+        }
+    ):
+        raise InvalidStatus("stale_generation")
 
 
 async def retry_locked(session: AsyncSession, operation):
@@ -134,5 +188,8 @@ __all__ = [
     "InvalidStatus",
     "NotParticipant",
     "SessionNotFound",
+    "assert_generation_current",
+    "check_control_revision",
+    "manual_round_ended",
     "retry_locked",
 ]

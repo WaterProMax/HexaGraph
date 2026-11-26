@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
+from app.discussion import driver as discussion_driver
 from app.discussion.converge import build_round_state, should_converge
 from app.discussion.cross_review import (
     DuplicateReview,
@@ -63,6 +64,7 @@ class GroupBody(BaseModel):
 
 class StartRoundBody(BaseModel):
     round: int | None = None
+    expected_revision: int | None = None
 
 
 class ProposalBody(BaseModel):
@@ -223,10 +225,39 @@ async def start_session_round(session_id: str, request: Request) -> Any:
         body = StartRoundBody.model_validate(payload)
     except ValidationError as exc:
         return _json_error(400, "validation_error", str(exc))
+    # A manually ended round is a hard stop: reopening it requires the explicit
+    # control revision (CAS) through this route, never resume/step/run.
+    async with bench.db_session() as session:
+        try:
+            current = await DiscussionSessionStore(session).get(session_id)
+        except SessionNotFound:
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+    if discussion_driver.is_manual_round_ended(current):
+        try:
+            record = await discussion_driver.start_round_after_manual_end(
+                bench,
+                session_id,
+                actor_bot_id=actor,
+                expected_revision=body.expected_revision,
+                round_no=body.round,
+            )
+        except SessionNotFound:
+            return _json_error(404, "session_not_found", f"session not found: {session_id}")
+        except Forbidden as exc:
+            return _json_error(403, "forbidden", str(exc))
+        except InvalidStatus as exc:
+            return _json_error(409, "invalid_status", str(exc))
+        except BudgetExhausted as exc:
+            return _json_error(409, "budget_exhausted", str(exc))
+        return record.model_dump()
     async with bench.db_session() as session:
         try:
             record = await start_round(
-                session_id, body.round, actor_bot_id=actor, session=session
+                session_id,
+                body.round,
+                actor_bot_id=actor,
+                session=session,
+                expected_revision=body.expected_revision,
             )
             await session.commit()
         except SessionNotFound:

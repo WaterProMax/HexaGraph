@@ -41,3 +41,61 @@ export function deriveStage(session: DiscussionSession | null): DiscussionStage 
       return "idea";
   }
 }
+
+export type DiscussionControlFlags = {
+  /** Only the session's leader may use the write controls. */
+  canControl: boolean;
+  /** A finished discussion never offers recoverable controls again. */
+  terminal: boolean;
+  /** A manual end marker exists; it is not proof that the safe stop finished. */
+  manual: boolean;
+  /** Manual end + converged + safely paused + no decision package + revision. */
+  settledManual: boolean;
+  /** The next round fits in the known round budget. */
+  roundsAvailable: boolean;
+  manualPending: boolean;
+  budgetExhausted: boolean;
+};
+
+const TERMINAL_STATUSES = new Set(["terminated", "budget_exhausted", "approved", "rejected"]);
+
+/**
+ * Single derivation for the discussion button matrix. It deliberately keeps
+ * `settledManual` separate from a bare `manual` marker: `round_end_reason.kind
+ * === "manual"` can arrive before the backend finished the safe stop, and
+ * `rounds/start` would then fail with `manual_end_not_finalized`.
+ */
+export function discussionControlFlags(
+  session: DiscussionSession | null,
+  actorBotId = "",
+): DiscussionControlFlags {
+  if (!session) {
+    return {
+      canControl: false,
+      terminal: false,
+      manual: false,
+      settledManual: false,
+      roundsAvailable: false,
+      manualPending: false,
+      budgetExhausted: false,
+    };
+  }
+  const terminal = TERMINAL_STATUSES.has(session.status);
+  const manual = session.round_end_reason?.kind === "manual";
+  const settledManual =
+    manual &&
+    session.status === "converged_pending_human" &&
+    session.paused &&
+    !session.pause_requested &&
+    !session.decision_package;
+  const roundsAvailable = session.current_round < session.budget.max_rounds;
+  return {
+    canControl: Boolean(actorBotId) && session.leader_bot_id === actorBotId,
+    terminal,
+    manual,
+    settledManual,
+    roundsAvailable,
+    manualPending: manual && !settledManual && !terminal,
+    budgetExhausted: session.status === "budget_exhausted",
+  };
+}

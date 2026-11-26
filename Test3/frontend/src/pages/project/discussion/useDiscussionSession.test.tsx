@@ -210,6 +210,73 @@ describe("useDiscussionSession", () => {
     await waitFor(() => expect(result.current.reviews).toHaveLength(2));
   });
 
+  it("refreshes session meta from a user intervention event", async () => {
+    const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const stream = FakeEventSource.instances[0];
+    act(() => stream.open());
+
+    const refreshed = { ...s2, paused: true, control_revision: 9 };
+    apiMock.discussionSession.mockResolvedValue(refreshed);
+    apiMock.discussionSession.mockClear();
+
+    act(() =>
+      stream.message(
+        makeMessage("s2", 3, "user", {
+          event: "intervention",
+          text: "先收敛接口边界",
+          revision: 9,
+        }),
+      ),
+    );
+
+    await waitFor(() => expect(apiMock.discussionSession).toHaveBeenCalledWith("s2", "leader-1"));
+    await waitFor(() => expect(result.current.session?.control_revision).toBe(9));
+
+    // Non-control user messages keep the previous "no meta refresh" behaviour.
+    apiMock.discussionSession.mockClear();
+    act(() => stream.message(makeMessage("s2", 4, "user", { event: "supplement", text: "补充" })));
+    await flushPromises(5);
+    expect(apiMock.discussionSession).not.toHaveBeenCalled();
+  });
+
+  it("refreshes session meta for paused, resumed and manual_round_ended control events", async () => {
+    const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const stream = FakeEventSource.instances[0];
+    act(() => stream.open());
+    apiMock.discussionSession.mockClear();
+
+    const paused = { ...s2, paused: true, pause_requested: false, control_revision: 10 };
+    apiMock.discussionSession.mockResolvedValue(paused);
+    act(() => stream.message(makeMessage("s2", 3, "system", { event: "paused", text: "已暂停" })));
+    await waitFor(() => expect(result.current.session?.control_revision).toBe(10));
+    expect(result.current.session?.paused).toBe(true);
+
+    const manual = {
+      ...paused,
+      status: "converged_pending_human" as DiscussionSessionStatus,
+      round_end_reason: {
+        kind: "manual" as const,
+        text: "人工结束",
+        round_no: 1,
+        actor: "leader-1",
+        revision: 11,
+      },
+    };
+    apiMock.discussionSession.mockResolvedValue(manual);
+    act(() =>
+      stream.message(makeMessage("s2", 4, "system", { event: "manual_round_ended", text: "人工结束" })),
+    );
+    await waitFor(() => expect(result.current.session?.round_end_reason?.kind).toBe("manual"));
+
+    const resumed = { ...s2, paused: false, control_revision: 12 };
+    apiMock.discussionSession.mockResolvedValue(resumed);
+    act(() => stream.message(makeMessage("s2", 5, "system", { event: "resumed", text: "继续" })));
+    await waitFor(() => expect(result.current.session?.control_revision).toBe(12));
+    expect(result.current.session?.paused).toBe(false);
+  });
+
   it("reconnects after a drop, backfilling from the last seen seq", async () => {
     const { result } = renderHook(() => useDiscussionSession("p-1", "leader-1"));
     await waitFor(() => expect(result.current.loading).toBe(false));

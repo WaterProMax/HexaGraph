@@ -5,10 +5,18 @@ declare const process: { env: Record<string, string | undefined> };
 /**
  * Real frontend + real offline backend for the multi-bot discussion flow.
  * Ports 8766 / 5174 stay clear of the other integration suite (8765 / 5173).
+ *
+ * The list is explicit on purpose: `playwright.integration.config.ts` matches
+ * `**\/integration/*.pw.ts`, and that suite runs a different backend/fixture on
+ * 8765/5173. The specs below self-skip unless their 8766/5174 servers are up.
  */
 export default defineConfig({
   testDir: './e2e',
-  testMatch: '**/integration/discussion-flow.pw.ts',
+  testMatch: [
+    '**/integration/discussion-flow.pw.ts',
+    '**/integration/discussion-human-intervention.pw.ts',
+    '**/integration/role-memory-workstation.pw.ts',
+  ],
   fullyParallel: false,
   workers: 1,
   retries: 0,

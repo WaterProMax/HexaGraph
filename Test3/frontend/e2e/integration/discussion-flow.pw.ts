@@ -157,10 +157,9 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   });
   expect(premature.status()).toBe(409);
   await dialog.getByRole("button", { name: "关闭" }).click();
-  await page.getByRole("button", { name: "暂停", exact: true }).click();
-  await expect(page.getByRole("button", { name: "继续", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "继续", exact: true }).click();
-  await expect(page.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
+  // 待审批阶段已经存在 decision package：F4 起“暂停”必然无效（后端返回未变更的
+  // 200），UI 也不再渲染暂停/继续，因此这里不再断言暂停→继续。讨论控制的暂停/
+  // 恢复链路由 DiscussionView.test.tsx 覆盖；此处保留补充需求流程。
   await page.getByLabel("补充信息", { exact: true }).fill(SUPPLEMENT);
   expect(await page.getByTestId("disc-layout").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await page.screenshot({ path: test.info().outputPath("discussion-02-chat.png"), fullPage: true });

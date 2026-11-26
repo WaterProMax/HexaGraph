@@ -3097,3 +3097,32 @@
   cursor: pointer;
 }
 .ws .graph-back:hover { background: #fff; }
+
+/* H: cooperative pause, intervention and manual end-round controls. */
+:is(.ws, .ws-page) .disc-manual-end {
+  flex: 1 0 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(141, 69, 19, .22);
+  border-radius: var(--glass-radius-item, 16px);
+  background: #ffead6;
+  color: #8d4513;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:is(.ws, .ws-page) .disc-intervention {
+  flex: 1 0 100%;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(82, 115, 140, .18);
+  border-radius: var(--glass-radius-field, 14px);
+  background: var(--glass-field, rgba(255, 255, 255, .72));
+}
+
+:is(.ws, .ws-page) .disc-intervention .disc-btn {
+  justify-self: start;
+  min-height: 36px;
+}

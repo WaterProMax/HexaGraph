@@ -12,12 +12,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.discussion.models import DiscussionSession, ReviewBallot
+from app.discussion.models import (
+    DiscussionGenerationToken,
+    DiscussionSession,
+    ReviewBallot,
+)
 from app.discussion.proposals import open_cross_review as _open_cross_review
 from app.discussion.session_store import (
     DiscussionSessionStore,
     InvalidStatus,
     NotParticipant,
+    assert_generation_current,
     retry_locked,
 )
 from app.storage.models import DiscussionProposalRow, DiscussionReviewRow
@@ -36,10 +41,16 @@ class DuplicateReview(Exception):
 
 
 async def _submit_once(
-    session: AsyncSession, session_id: str, ballot: ReviewBallot
+    session: AsyncSession,
+    session_id: str,
+    ballot: ReviewBallot,
+    generation: DiscussionGenerationToken | None = None,
 ) -> dict:
     store = DiscussionSessionStore(session)
     record = await store.get_locked(session_id)
+    if generation is not None:
+        # Stale ballots never land in a newer round/epoch or a stopped session.
+        assert_generation_current(record, generation)
     if record.status != "cross_review":
         raise InvalidStatus(record.status)
     if ballot.reviewer_bot_id not in record.participant_bot_ids:
@@ -85,10 +96,15 @@ async def _submit_once(
 
 
 async def submit_review(
-    session_id: str, ballot: ReviewBallot, *, session: AsyncSession
+    session_id: str,
+    ballot: ReviewBallot,
+    *,
+    session: AsyncSession,
+    generation: DiscussionGenerationToken | None = None,
 ) -> dict:
     return await retry_locked(
-        session, lambda: _submit_once(session, session_id, ballot)
+        session,
+        lambda: _submit_once(session, session_id, ballot, generation=generation),
     )
 
 

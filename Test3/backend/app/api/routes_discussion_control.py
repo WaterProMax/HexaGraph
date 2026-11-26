@@ -13,7 +13,11 @@ from app.bots.registry import BotNotFound
 from app.discussion import driver, planning
 from app.discussion.decision import _resolve_lock
 from app.discussion.messages import LOG
-from app.discussion.session_store import DiscussionSessionStore, SessionNotFound
+from app.discussion.session_store import (
+    DiscussionSessionStore,
+    InvalidStatus,
+    SessionNotFound,
+)
 from app.errors import ValidationFailed, user_message_for_category
 from app.leader.steward import DiscussionSteward, InvalidParticipant, LeaderNotInProject
 from app.memory.organizer import contains_secret
@@ -25,10 +29,27 @@ router = APIRouter()
 
 class ResumeBody(BaseModel):
     skip_bot_ids: list[str] = Field(default_factory=list)
+    expected_revision: int | None = None
+
+
+class PauseBody(BaseModel):
+    expected_revision: int | None = None
+    reason: str = Field(default="", max_length=2000)
 
 
 class SupplementBody(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
+
+
+class InterventionBody(BaseModel):
+    expected_revision: int
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class EndRoundBody(BaseModel):
+    expected_revision: int
+    reason: str = Field(default="", max_length=2000)
+    confirm: bool = False
 
 
 def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
@@ -49,6 +70,17 @@ def _actor(request: Request) -> tuple[str | None, JSONResponse | None]:
 async def _body(request: Request) -> dict[str, Any] | None:
     try:
         payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _optional_body(request: Request) -> dict[str, Any] | None:
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
@@ -85,6 +117,10 @@ async def run_discussion(session_id: str, request: Request) -> Any:
     assert record is not None
     if record.status in driver.TERMINAL_STATUSES:
         return _json_error(409, "invalid_status", record.status)
+    if driver.is_manual_round_ended(record):
+        # A manual end has no decision package and no auto-approval path; only
+        # POST /rounds/start with the control revision may reopen it.
+        return _json_error(409, "invalid_status", "manual_round_ended")
     if record.status == "converged_pending_human" and record.decision_package is not None:
         return _json_error(409, "invalid_status", record.status)
     if record.paused:
@@ -106,7 +142,33 @@ async def pause_discussion(session_id: str, request: Request) -> Any:
     assert record is not None
     if record.status in driver.TERMINAL_STATUSES:
         return _json_error(409, "invalid_status", record.status)
-    updated = await driver.pause_session(bench, session_id)
+    payload = await _optional_body(request)
+    if payload is None:
+        return _json_error(
+            400, "validation_error", "request body must be a JSON object"
+        )
+    try:
+        body = PauseBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    try:
+        requested = await driver.request_pause(
+            bench,
+            session_id,
+            expected_revision=body.expected_revision,
+            reason=body.reason,
+        )
+    except InvalidStatus as exc:
+        return _json_error(409, "invalid_status", str(exc))
+    if requested.decision_package is not None:
+        # A decision package already exists, so no pause can happen.  Return the
+        # current session immediately instead of waiting for an impossible stop.
+        return requested.model_dump()
+    # Bounded cooperative wait: the UI polls the returned snapshot when the
+    # in-flight model call has not reached a safe checkpoint within the bound.
+    updated = await driver.wait_until_paused(
+        bench, session_id, timeout=driver.PAUSE_WAIT_SECONDS
+    )
     return updated.model_dump()
 
 
@@ -131,9 +193,86 @@ async def resume_discussion(session_id: str, request: Request) -> Any:
             body = ResumeBody.model_validate(payload).model_dump()
         except ValidationError as exc:
             return _json_error(400, "validation_error", str(exc))
-    updated = await driver.resume_session(
-        bench, session_id, body.get("skip_bot_ids") or []
-    )
+    try:
+        updated = await driver.resume_session(
+            bench,
+            session_id,
+            body.get("skip_bot_ids") or [],
+            expected_revision=body.get("expected_revision"),
+        )
+    except InvalidStatus as exc:
+        return _json_error(409, "invalid_status", str(exc))
+    return updated.model_dump()
+
+
+@router.post("/discussion-sessions/{session_id}/interventions")
+async def add_discussion_intervention(session_id: str, request: Request) -> Any:
+    actor, record, error = await _leader_session(request)
+    if error is not None:
+        return error
+    assert record is not None and actor is not None
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(
+            400, "validation_error", "request body must be a JSON object"
+        )
+    try:
+        body = InterventionBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    text = body.text.strip()
+    if not 1 <= len(text) <= 2000:
+        return _json_error(400, "validation_error", "请填写 1-2000 字的介入内容")
+    if contains_secret(text):
+        return _json_error(400, "secret_in_body", "请删除介入内容中的密钥后重试")
+    if record.status in driver.TERMINAL_STATUSES:
+        return _json_error(409, "invalid_status", record.status)
+    bench = request.app.state.workbench
+    try:
+        updated = await driver.add_intervention(
+            bench,
+            session_id,
+            expected_revision=body.expected_revision,
+            text=text,
+            actor=actor,
+        )
+    except InvalidStatus as exc:
+        if str(exc) == "secret_in_body":
+            return _json_error(400, "secret_in_body", "请删除介入内容中的密钥后重试")
+        return _json_error(409, "invalid_status", str(exc))
+    return updated.model_dump()
+
+
+@router.post("/discussion-sessions/{session_id}/end-round")
+async def end_discussion_round(session_id: str, request: Request) -> Any:
+    actor, record, error = await _leader_session(request)
+    if error is not None:
+        return error
+    assert record is not None and actor is not None
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(
+            400, "validation_error", "request body must be a JSON object"
+        )
+    try:
+        body = EndRoundBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    if body.confirm is not True:
+        return _json_error(400, "validation_error", "confirm must be true")
+    if record.status in driver.TERMINAL_STATUSES:
+        return _json_error(409, "invalid_status", record.status)
+    bench = request.app.state.workbench
+    try:
+        updated = await driver.end_round(
+            bench,
+            session_id,
+            expected_revision=body.expected_revision,
+            actor=actor,
+            reason=body.reason,
+        )
+    except InvalidStatus as exc:
+        return _json_error(409, "invalid_status", str(exc))
     return updated.model_dump()
 
 

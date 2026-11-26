@@ -9,11 +9,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.discussion.converge import current_round_gate_summary
-from app.discussion.models import DecisionPackage, DiscussionSession, ReviewBallot
+from app.discussion.models import (
+    DecisionPackage,
+    DiscussionGenerationToken,
+    DiscussionSession,
+    ReviewBallot,
+)
 from app.discussion.session_store import (
     DiscussionSessionStore,
     Forbidden,
     InvalidStatus,
+    assert_generation_current,
+    manual_round_ended,
     retry_locked,
 )
 from app.execution.baseline import hash_artifact
@@ -50,13 +57,25 @@ async def _submit_once(
     body_md: str,
     dissent_items: list[str],
     actor_bot_id: str,
+    generation: DiscussionGenerationToken | None = None,
 ) -> DecisionPackage:
     store = DiscussionSessionStore(session)
     record = await store.get_locked(session_id)
     if actor_bot_id != record.leader_bot_id:
         raise Forbidden("only the session leader can submit a decision")
+    # Authoritative linearization point: a pause intent that arrived after the
+    # driver's out-of-transaction checkpoint still vetoes the commit, and only
+    # the generation captured before the model call may write the package.
+    if record.pause_requested:
+        raise InvalidStatus("paused")
+    if generation is not None:
+        assert_generation_current(record, generation)
     if record.status != "converged_pending_human":
         raise InvalidStatus(record.status)
+    if manual_round_ended(record):
+        # A manual end never produces a decision package; only an explicit new
+        # round (rounds/start with the control revision) may resume the flow.
+        raise InvalidStatus("manual_round_ended")
     if record.decision_package is not None:
         raise InvalidStatus("decision package already exists")
     proposal_rows = list(
@@ -113,11 +132,17 @@ async def submit_decision(
     *,
     actor_bot_id: str,
     session: AsyncSession,
+    generation: DiscussionGenerationToken | None = None,
 ) -> DecisionPackage:
     return await retry_locked(
         session,
         lambda: _submit_once(
-            session, session_id, body_md, dissent_items, actor_bot_id
+            session,
+            session_id,
+            body_md,
+            dissent_items,
+            actor_bot_id,
+            generation=generation,
         ),
     )
 
@@ -168,6 +193,8 @@ async def _resolve_once(
     record = await store.get(session_id)
     if actor_bot_id != record.leader_bot_id:
         raise Forbidden("only the session leader can resolve a decision")
+    if manual_round_ended(record):
+        raise InvalidStatus("manual_round_ended")
     if record.status == "approved" and decision == "approved":
         return record
     if record.status != "converged_pending_human" or record.decision_package is None:

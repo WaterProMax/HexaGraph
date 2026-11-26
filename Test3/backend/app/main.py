@@ -16,6 +16,7 @@ from app.api.routes_discussion_events import router as discussion_events_router
 from app.api.routes_memberships import router as memberships_router
 from app.api.routes_memory import router as memory_router
 from app.api.routes_skills import router as skills_router
+from app.api.routes_task_agent_memory import router as task_agent_memory_router
 from app.discussion.driver import recover_interrupted_sessions
 from app.llm.gateway import Gateway, build_provider
 from app.services.runtime import Workbench
@@ -79,6 +80,7 @@ def create_app(*, execution_policy=None) -> FastAPI:
     app.include_router(bots_router, prefix="/api")
     app.include_router(memberships_router, prefix="/api")
     app.include_router(memory_router, prefix="/api")
+    app.include_router(task_agent_memory_router, prefix="/api")
     app.include_router(discussion_router, prefix="/api")
     app.include_router(discussion_control_router, prefix="/api")
     app.include_router(discussion_events_router, prefix="/api")

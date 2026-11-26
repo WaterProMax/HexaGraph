@@ -175,3 +175,125 @@ describe("discussion API methods", () => {
     );
   });
 });
+
+describe("task role memory API methods", () => {
+  it("reads the role memory with encoded scope and the actor header", async () => {
+    const fetchMock = mockFetch({});
+
+    await api.taskRoleMemory("run/1", "T 1", "tester", "leader-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/run%2F1/tasks/T%201/role-memory/tester");
+    expect(init.method).toBeUndefined();
+    expect(init.body).toBeUndefined();
+    expect(init.headers).toMatchObject({ "X-Bot-Id": "leader-1" });
+  });
+
+  it("saves with expected_revision, manual_text and the actor header", async () => {
+    const fetchMock = mockFetch({});
+
+    await api.saveTaskRoleMemory(
+      "r1",
+      "T1",
+      "coder",
+      { expected_revision: 3, manual_text: "优先覆盖空输入" },
+      "leader-1",
+    );
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/r1/tasks/T1/role-memory/coder");
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toMatchObject({ "X-Bot-Id": "leader-1" });
+    expect(JSON.parse(init.body)).toEqual({
+      expected_revision: 3,
+      manual_text: "优先覆盖空输入",
+    });
+  });
+
+  it("deletes with the expected revision in the query string", async () => {
+    const fetchMock = mockFetch({});
+
+    await api.deleteTaskRoleMemory("r1", "T1", "coder", 4, "leader-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/r1/tasks/T1/role-memory/coder?expected_revision=4");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers).toMatchObject({ "X-Bot-Id": "leader-1" });
+  });
+
+  it("exposes run_busy as the parsed 409 category", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error_category: "run_busy", detail: "run_busy" }),
+      }),
+    );
+
+    await expect(
+      api.saveTaskRoleMemory("r1", "T1", "coder", { expected_revision: 1, manual_text: "x" }, "leader-1"),
+    ).rejects.toMatchObject({ status: 409, category: "run_busy" });
+  });
+});
+
+describe("discussion control API methods", () => {
+  it("sends the control revision on pause, resume, intervention, end-round and start-round", async () => {
+    const fetchMock = mockFetch({ session_id: "s-1" });
+
+    await api.pauseDiscussion("s-1", "leader-1", 4);
+    await api.resumeDiscussion("s-1", { expected_revision: 4, skip_bot_ids: ["bot-2"] }, "leader-1");
+    await api.addDiscussionIntervention(
+      "s-1",
+      { expected_revision: 9, text: "先收敛接口边界" },
+      "leader-1",
+    );
+    await api.endDiscussionRound(
+      "s-1",
+      { expected_revision: 5, reason: "方向已足够清楚", confirm: true },
+      "leader-1",
+    );
+    await api.startDiscussionRound("s-1", { expected_revision: 8 }, "leader-1");
+
+    const calls = fetchMock.mock.calls;
+    expect(calls[0][0]).toBe("/api/discussion-sessions/s-1/pause");
+    expect(JSON.parse(calls[0][1].body)).toEqual({ expected_revision: 4 });
+
+    expect(calls[1][0]).toBe("/api/discussion-sessions/s-1/resume");
+    expect(JSON.parse(calls[1][1].body)).toEqual({
+      expected_revision: 4,
+      skip_bot_ids: ["bot-2"],
+    });
+
+    expect(calls[2][0]).toBe("/api/discussion-sessions/s-1/interventions");
+    expect(JSON.parse(calls[2][1].body)).toEqual({
+      expected_revision: 9,
+      text: "先收敛接口边界",
+    });
+
+    expect(calls[3][0]).toBe("/api/discussion-sessions/s-1/end-round");
+    expect(JSON.parse(calls[3][1].body)).toEqual({
+      expected_revision: 5,
+      reason: "方向已足够清楚",
+      confirm: true,
+    });
+
+    expect(calls[4][0]).toBe("/api/discussion-sessions/s-1/rounds/start");
+    expect(JSON.parse(calls[4][1].body)).toEqual({ expected_revision: 8 });
+
+    for (const [, init] of calls) {
+      expect(init.method).toBe("POST");
+      expect(init.headers).toMatchObject({ "X-Bot-Id": "leader-1" });
+    }
+  });
+
+  it("returns the wrapped { running, session } run payload", async () => {
+    const fetchMock = mockFetch({ running: true, session: { session_id: "s-1" } });
+
+    const result = await api.runDiscussion("s-1", "leader-1");
+
+    expect(result).toEqual({ running: true, session: { session_id: "s-1" } });
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/discussion-sessions/s-1/run");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+  });
+});

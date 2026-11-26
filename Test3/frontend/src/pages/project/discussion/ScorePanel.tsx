@@ -6,7 +6,18 @@ import type {
   ReviewBallot,
 } from "../../../api/types";
 import { BotAvatar } from "../../../components/BotAvatar";
+import { discussionControlFlags } from "./deriveStage";
 import { resolveBubbleBot } from "./MessageBubble";
+
+/** Which write request is currently in flight, for honest button labels. */
+export type DiscussionPendingAction =
+  | "pause"
+  | "resume"
+  | "intervene"
+  | "end-round"
+  | "start-round"
+  | "terminate"
+  | "supplement";
 
 export type ScorePanelProps = {
   session: DiscussionSession;
@@ -15,9 +26,15 @@ export type ScorePanelProps = {
   bots: BotInstance[];
   busy?: boolean;
   showControls?: boolean;
+  /** Only the session leader may write; the server remains authoritative. */
+  canControl?: boolean;
+  pendingAction?: DiscussionPendingAction | null;
   onPause: () => void;
   onResume: (skipBotIds?: string[]) => void;
   onTerminate: () => void;
+  onIntervene?: (text: string) => Promise<boolean | undefined> | boolean;
+  onEndRound?: (reason: string) => Promise<boolean | undefined> | boolean;
+  onStartRound?: () => void;
 };
 
 const HARD_GATES = [
@@ -57,9 +74,14 @@ export function ScorePanel({
   bots,
   busy = false,
   showControls = true,
+  canControl = true,
+  pendingAction = null,
   onPause,
   onResume,
   onTerminate,
+  onIntervene,
+  onEndRound,
+  onStartRound,
 }: ScorePanelProps) {
   const botName = (botId: string) => bots.find((bot) => bot.bot_id === botId)?.display_name || botId;
 
@@ -280,40 +302,153 @@ export function ScorePanel({
       )}
 
       {showControls && (
-        <DiscussionControls session={session} busy={busy} onPause={onPause} onResume={onResume} onTerminate={onTerminate} />
+        <DiscussionControls
+          session={session}
+          busy={busy}
+          canControl={canControl}
+          pendingAction={pendingAction}
+          onPause={onPause}
+          onResume={onResume}
+          onTerminate={onTerminate}
+          onIntervene={onIntervene}
+          onEndRound={onEndRound}
+          onStartRound={onStartRound}
+        />
       )}
     </section>
   );
 }
 
 export default ScorePanel;
-export function DiscussionControls({ session, busy, onPause, onResume, onTerminate }: Pick<
-  ScorePanelProps, "session" | "busy" | "onPause" | "onResume" | "onTerminate"
->) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+/**
+ * Shared focus/keyboard behaviour for the three confirmation dialogs: focus the
+ * dialog when it opens, close on Escape, and keep the Escape listener scoped to
+ * the open dialog. `onClose` is read through a ref so typing inside a dialog
+ * field cannot re-run the focus effect (which would steal focus on every key).
+ */
+function useDialogKeyboard(open: boolean, onClose: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
-    if (!confirmOpen) return;
-    dialogRef.current?.focus();
+    if (!open) return;
+    ref.current?.focus();
     function handleKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setConfirmOpen(false);
+      if (event.key === "Escape") onCloseRef.current();
     }
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [confirmOpen]);
+  }, [open]);
+
+  return ref;
+}
+
+export function DiscussionControls({
+  session,
+  busy = false,
+  canControl = true,
+  pendingAction = null,
+  onPause,
+  onResume,
+  onTerminate,
+  onIntervene,
+  onEndRound,
+  onStartRound,
+}: Pick<ScorePanelProps, "session" | "busy" | "canControl" | "pendingAction" | "onPause" | "onResume" | "onTerminate"> & {
+  onIntervene?: (text: string) => Promise<boolean | undefined> | boolean;
+  onEndRound?: (reason: string) => Promise<boolean | undefined> | boolean;
+  onStartRound?: () => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [endOpen, setEndOpen] = useState(false);
+  const [startOpen, setStartOpen] = useState(false);
+  const [intervention, setIntervention] = useState("");
+  const [endReason, setEndReason] = useState("");
+  const confirmRef = useDialogKeyboard(confirmOpen, () => setConfirmOpen(false));
+  const endRef = useDialogKeyboard(endOpen, () => setEndOpen(false));
+  const startRef = useDialogKeyboard(startOpen, () => setStartOpen(false));
+
+  const { terminal, manual, settledManual, roundsAvailable, manualPending } =
+    discussionControlFlags(session);
+  const pausing = Boolean(session.pause_requested) && !session.paused;
+  const hasRevision = session.control_revision !== undefined;
+  // A terminal discussion keeps its history and scores but offers no action.
+  if (terminal) return null;
+  if (!canControl) {
+    return (
+      <span className="disc-control-readonly" data-testid="disc-control-readonly" role="status">
+        只有本场讨论的 Leader 可以操作。
+      </span>
+    );
+  }
+
+  const mayStartRound = settledManual && roundsAvailable && hasRevision && !busy;
+  const pauseLabel =
+    pendingAction === "pause"
+      ? "正在请求暂停…"
+      : pendingAction === "resume"
+        ? "正在请求继续…"
+        : pausing
+          ? "正在暂停…"
+          : session.paused
+            ? "继续"
+            : "暂停";
 
   return (
     <>
+      {manual && (
+        <div className="disc-manual-end" role="status" data-testid="disc-manual-end">
+          人工结束本轮（未自动收敛、未批准）。
+          {settledManual ? " 已安全停止。" : " 正在等待安全检查点完成。"}
+          {settledManual && !roundsAvailable
+            ? " 轮数预算已用尽，不能开始新一轮；可查看历史或补充需求。"
+            : ""}
+          {settledManual && !hasRevision ? " 控制版本缺失，请刷新后重试。" : ""}
+        </div>
+      )}
+      {manualPending && (
+        <div className="disc-manual-ending" role="status" data-testid="disc-manual-ending">
+          正在结束本轮，等待安全检查点完成…
+        </div>
+      )}
+
       <div className="disc-actions">
-        <button
-          type="button"
-          className="disc-btn"
-          disabled={busy}
-          onClick={() => (session.paused ? onResume() : onPause())}
-        >
-          {session.paused ? "继续" : "暂停"}
-        </button>
+        {settledManual ? (
+          mayStartRound ? (
+            <button
+              type="button"
+              className="disc-btn"
+              data-testid="disc-start-round"
+              disabled={busy || pendingAction === "start-round"}
+              onClick={() => setStartOpen(true)}
+            >
+              {pendingAction === "start-round" ? "正在开始新一轮…" : "开始新一轮"}
+            </button>
+          ) : null
+        ) : !manual && !session.decision_package ? (
+          <button
+            type="button"
+            className="disc-btn"
+            data-testid="disc-pause-resume"
+            disabled={busy || pausing}
+            onClick={() => (session.paused ? onResume() : onPause())}
+          >
+            {pauseLabel}
+          </button>
+        ) : null}
+        {!manual && !session.decision_package && (
+          <button
+            type="button"
+            className="disc-btn"
+            data-testid="disc-end-round"
+            disabled={busy}
+            onClick={() => setEndOpen(true)}
+          >
+            结束本轮
+          </button>
+        )}
         <button
           type="button"
           className="disc-btn disc-btn-danger"
@@ -323,6 +458,40 @@ export function DiscussionControls({ session, busy, onPause, onResume, onTermina
           终止
         </button>
       </div>
+
+      {session.paused && !session.pause_requested && !manual && !session.decision_package && (
+        <div className="disc-intervention" data-testid="disc-intervention">
+          <label className="disc-composer-field">
+            <span className="disc-composer-label">插话 / 调整方向（恢复后生效）</span>
+            <textarea
+              className="disc-composer-input"
+              aria-label="讨论插话"
+              rows={2}
+              maxLength={2000}
+              value={intervention}
+              onChange={(event) => setIntervention(event.target.value)}
+              placeholder="补充约束或指出需要调整的方向；不会改写已有评语。"
+              disabled={busy}
+            />
+          </label>
+          <button
+            type="button"
+            className="disc-btn"
+            data-testid="disc-send-intervention"
+            disabled={busy || !intervention.trim()}
+            onClick={() => {
+              const text = intervention.trim();
+              if (!text) return;
+              void (async () => {
+                const saved = await onIntervene?.(text);
+                if (saved === true) setIntervention("");
+              })();
+            }}
+          >
+            发送介入
+          </button>
+        </div>
+      )}
 
       {confirmOpen && (
         <div
@@ -338,7 +507,7 @@ export function DiscussionControls({ session, busy, onPause, onResume, onTermina
             aria-labelledby="disc-terminate-title"
             aria-describedby="disc-terminate-desc"
             tabIndex={-1}
-            ref={dialogRef}
+            ref={confirmRef}
             data-testid="disc-terminate-dialog"
           >
             <h3 id="disc-terminate-title" className="disc-dialog-title">
@@ -365,6 +534,102 @@ export function DiscussionControls({ session, busy, onPause, onResume, onTermina
                 }}
               >
                 确认终止
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {endOpen && (
+        <div
+          className="disc-dialog-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setEndOpen(false);
+          }}
+        >
+          <div
+            className="disc-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="disc-end-title"
+            aria-describedby="disc-end-desc"
+            tabIndex={-1}
+            ref={endRef}
+            data-testid="disc-end-round-dialog"
+          >
+            <h3 id="disc-end-title" className="disc-dialog-title">人工结束本轮？</h3>
+            <p id="disc-end-desc" className="disc-dialog-text">
+              即使分差未达标也可以结束；讨论会停在当前成果，等待人工处理。不会自动批准规格或进入执行。
+            </p>
+            <label className="disc-composer-field">
+              <span className="disc-composer-label">结束原因（可选，最多 2000 字）</span>
+              <textarea
+                className="disc-composer-input"
+                aria-label="结束本轮原因"
+                rows={2}
+                maxLength={2000}
+                value={endReason}
+                onChange={(event) => setEndReason(event.target.value)}
+              />
+            </label>
+            <div className="disc-dialog-actions">
+              <button type="button" className="disc-btn disc-btn-quiet" onClick={() => setEndOpen(false)}>取消</button>
+              <button
+                type="button"
+                className="disc-btn disc-btn-danger"
+                data-testid="disc-confirm-end-round"
+                disabled={busy}
+                onClick={() => {
+                  setEndOpen(false);
+                  void (async () => {
+                    const saved = await onEndRound?.(endReason.trim());
+                    if (saved === true) setEndReason("");
+                  })();
+                }}
+              >
+                确认结束本轮
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {startOpen && (
+        <div
+          className="disc-dialog-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setStartOpen(false);
+          }}
+        >
+          <div
+            className="disc-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="disc-start-title"
+            aria-describedby="disc-start-desc"
+            tabIndex={-1}
+            ref={startRef}
+            data-testid="disc-start-round-dialog"
+          >
+            <h3 id="disc-start-title" className="disc-dialog-title">开始新一轮？</h3>
+            <p id="disc-start-desc" className="disc-dialog-text">
+              这会明确开始新一轮讨论；人工结束标记会被清除，但仍不会自动批准规格。
+            </p>
+            <div className="disc-dialog-actions">
+              <button type="button" className="disc-btn disc-btn-quiet" onClick={() => setStartOpen(false)}>取消</button>
+              <button
+                type="button"
+                className="disc-btn"
+                data-testid="disc-confirm-start-round"
+                disabled={busy}
+                onClick={() => {
+                  setStartOpen(false);
+                  onStartRound?.();
+                }}
+              >
+                确认开始
               </button>
             </div>
           </div>
