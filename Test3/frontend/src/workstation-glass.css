@@ -247,31 +247,31 @@
 .ws .chip .count { color: inherit; opacity: 1; }
 .ws .legend { color: var(--glass-secondary); font-weight: 500; gap: 12px; }
 .ws .dot.pending { box-shadow: inset 0 0 0 1.5px #718b9f; }
-.ws .react-flow__controls { border-radius: 10px; padding: 3px; background: #f8fbfcf2; box-shadow: none !important; border: 1px solid #e0e8ed; gap: 2px; }
-.ws .react-flow__controls-button { width: 28px !important; height: 28px !important; border: 0 !important; border-radius: 7px; color: var(--glass-secondary); background: transparent; fill: currentColor; }
-.ws .react-flow__controls-button:hover { background: #e7eff3; }
-.ws .react-flow__controls-button:disabled { opacity: 1; color: #607486; background: #e1eaf1; }
-.ws .react-flow__controls-button:disabled svg { fill-opacity: 1; }
+:is(.ws, .ws-page) .react-flow__controls { border-radius: 10px; padding: 3px; background: #f8fbfcf2; box-shadow: none !important; border: 1px solid #e0e8ed; gap: 2px; }
+:is(.ws, .ws-page) .react-flow__controls-button { width: 28px !important; height: 28px !important; border: 0 !important; border-radius: 7px; color: var(--glass-secondary); background: transparent; fill: currentColor; }
+:is(.ws, .ws-page) .react-flow__controls-button:hover { background: #e7eff3; }
+:is(.ws, .ws-page) .react-flow__controls-button:disabled { opacity: 1; color: #607486; background: #e1eaf1; }
+:is(.ws, .ws-page) .react-flow__controls-button:disabled svg { fill-opacity: 1; }
 
 /* Light graph surfaces; stable node dimensions prevent hover edge movement. */
-.ws .flow-group { border-radius: 0; background: transparent; background-image: none; box-shadow: none; border-top: 1px solid #dce6ec; padding: 10px 14px; }
-.ws .flow-group .label { height: 24px; padding-inline: 0; background: transparent; color: var(--glass-secondary); box-shadow: none; font-weight: 550; }
-.ws .flow-group .label .no, .ws .flow-group .label .pct { color: var(--glass-muted); }
-.ws .flow-node { padding: 7px 9px; border: 1px solid #cfdee7; border-radius: 10px; background: #fcfefef7; color: var(--glass-ink); box-shadow: none; }
-.ws .flow-node:hover { border-color: #9fb8c9; box-shadow: none; }
-.ws .flow-node.selected { border-color: #7fa6c4; box-shadow: none; }
-.ws .flow-node .head { gap: 6px; margin-bottom: 3px; }
-.ws .flow-node .code { color: var(--glass-secondary); font-size: 9px; font-weight: 500; }
-.ws .flow-node .title { color: var(--glass-ink); font-size: 12px; font-weight: 550; }
-.ws .flow-node .sub { height: 14px; margin-top: 3px; color: var(--glass-muted); line-height: 14px; visibility: hidden; }
-.ws .flow-node:hover .sub, .ws .flow-node.selected .sub { visibility: visible; }
-.ws .flow-node .state { font-size: 8px; padding: 0; border-radius: 0; background: transparent; color: var(--glass-muted); }
-.ws .flow-node[data-status="completed"] .state { background: transparent; color: #21643f; }
-.ws .flow-node[data-status="in_progress"] .state { background: transparent; color: #0054b8; }
-.ws .flow-node[data-status="error"] .state { background: transparent; color: #8d4513; }
-.ws .flow-node[data-status="skipped"] .state { background: transparent; color: #526e82; }
-.ws .flow-node[data-status="skipped"] { opacity: 1; }
-.ws .flow-node .react-flow__handle { border-color: #7893a6; }
+:is(.ws, .ws-page) .flow-group { border-radius: 0; background: transparent; background-image: none; box-shadow: none; border-top: 1px solid #dce6ec; padding: 10px 14px; }
+:is(.ws, .ws-page) .flow-group .label { height: 24px; padding-inline: 0; background: transparent; color: var(--glass-secondary); box-shadow: none; font-weight: 550; }
+:is(.ws, .ws-page) .flow-group .label .no, :is(.ws, .ws-page) .flow-group .label .pct { color: var(--glass-muted); }
+:is(.ws, .ws-page) .flow-node { padding: 7px 9px; border: 1px solid #cfdee7; border-radius: 10px; background: #fcfefef7; color: var(--glass-ink); box-shadow: none; }
+:is(.ws, .ws-page) .flow-node:hover { border-color: #9fb8c9; box-shadow: none; }
+:is(.ws, .ws-page) .flow-node.selected { border-color: #7fa6c4; box-shadow: none; }
+:is(.ws, .ws-page) .flow-node .head { gap: 6px; margin-bottom: 3px; }
+:is(.ws, .ws-page) .flow-node .code { color: var(--glass-secondary); font-size: 9px; font-weight: 500; }
+:is(.ws, .ws-page) .flow-node .title { color: var(--glass-ink); font-size: 12px; font-weight: 550; }
+:is(.ws, .ws-page) .flow-node .sub { height: 14px; margin-top: 3px; color: var(--glass-muted); line-height: 14px; visibility: hidden; }
+:is(.ws, .ws-page) .flow-node:hover .sub, :is(.ws, .ws-page) .flow-node.selected .sub { visibility: visible; }
+:is(.ws, .ws-page) .flow-node .state { font-size: 8px; padding: 0; border-radius: 0; background: transparent; color: var(--glass-muted); }
+:is(.ws, .ws-page) .flow-node[data-status="completed"] .state { background: transparent; color: #21643f; }
+:is(.ws, .ws-page) .flow-node[data-status="in_progress"] .state { background: transparent; color: #0054b8; }
+:is(.ws, .ws-page) .flow-node[data-status="error"] .state { background: transparent; color: #8d4513; }
+:is(.ws, .ws-page) .flow-node[data-status="skipped"] .state { background: transparent; color: #526e82; }
+:is(.ws, .ws-page) .flow-node[data-status="skipped"] { opacity: 1; }
+:is(.ws, .ws-page) .flow-node .react-flow__handle { border-color: #7893a6; }
 
 .ws .dock { padding: 8px 10px; border-radius: 12px; background: #f7fafced; box-shadow: none; border: 1px solid #e0e8ed; }
 .ws .dock-info { white-space: normal; gap: 8px; }
@@ -454,25 +454,25 @@
 .ws .graph-empty { position: absolute; z-index: 4; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; color: var(--glass-secondary); font-size: 12px; line-height: 1.7; pointer-events: none; }
 .ws .graph-empty strong { color: var(--glass-ink); font-size: 14px; }
 .ws .graph-empty.tone-error strong { color: #9b1c27; }
-.ws .graph-reset { position: absolute; z-index: 5; right: 12px; bottom: 12px; height: 30px; padding: 0 12px; border: 1px solid #e0e8ed; border-radius: 999px; background: #f8fbfcf2; color: var(--glass-secondary); font: inherit; font-size: 11px; font-weight: 550; cursor: pointer; }
-.ws .graph-reset:hover { background: #fff; color: #004dbb; }
+:is(.ws, .ws-page) .graph-reset { position: absolute; z-index: 5; right: 12px; bottom: 12px; height: 30px; padding: 0 12px; border: 1px solid #e0e8ed; border-radius: 999px; background: #f8fbfcf2; color: var(--glass-secondary); font: inherit; font-size: 11px; font-weight: 550; cursor: pointer; }
+:is(.ws, .ws-page) .graph-reset:hover { background: #fff; color: #004dbb; }
 
 /* Nodes: fixed card size so the layered layout can reserve space, labels truncate with a title. */
-.ws .flow-node, .static-demo .flow-node { box-sizing: border-box; width: 224px; height: 88px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; padding: 8px 12px; }
-.ws .flow-node:focus-visible, .ws .react-flow__node:focus-visible .flow-node { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
-.ws .react-flow__node:focus { outline: none; }
-.ws .react-flow__node:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 3px; border-radius: 10px; }
-.ws .flow-node .head { margin-bottom: 4px; }
-.ws .flow-node .code { font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.ws .flow-node .state { max-width: 82px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 9px; }
-.ws .flow-node .title { font-size: 12.5px; }
-.ws .flow-node .sub { height: auto; line-height: 1.4; visibility: visible; font-size: 10.5px; }
-.ws .flow-node[data-status="error"] { border-color: #e3a0a6; background: #fff8f8; }
-.ws .flow-node[data-status="error"] .state { color: #9b1c27; font-weight: 600; }
-.ws .flow-node[data-status="awaiting"] { border-color: #ecc77a; background: #fffaf0; }
-.ws .flow-node[data-status="awaiting"] .state { color: #7a4d00; font-weight: 600; }
-.ws .flow-node.selected { border-color: #4f86b3; box-shadow: 0 0 0 3px rgba(0, 102, 250, 0.14); }
-.ws .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
+:is(.ws, .ws-page) .flow-node, .static-demo .flow-node { box-sizing: border-box; width: 224px; height: 88px; display: flex; flex-direction: column; justify-content: center; overflow: hidden; padding: 8px 12px; }
+:is(.ws, .ws-page) .flow-node:focus-visible, :is(.ws, .ws-page) .react-flow__node:focus-visible .flow-node { outline: 2px solid var(--glass-accent); outline-offset: 2px; }
+:is(.ws, .ws-page) .react-flow__node:focus { outline: none; }
+:is(.ws, .ws-page) .react-flow__node:focus-visible { outline: 2px solid var(--glass-accent); outline-offset: 3px; border-radius: 10px; }
+:is(.ws, .ws-page) .flow-node .head { margin-bottom: 4px; }
+:is(.ws, .ws-page) .flow-node .code { font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:is(.ws, .ws-page) .flow-node .state { max-width: 82px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 9px; }
+:is(.ws, .ws-page) .flow-node .title { font-size: 12.5px; }
+:is(.ws, .ws-page) .flow-node .sub { height: auto; line-height: 1.4; visibility: visible; font-size: 10.5px; }
+:is(.ws, .ws-page) .flow-node[data-status="error"] { border-color: #e3a0a6; background: #fff8f8; }
+:is(.ws, .ws-page) .flow-node[data-status="error"] .state { color: #9b1c27; font-weight: 600; }
+:is(.ws, .ws-page) .flow-node[data-status="awaiting"] { border-color: #ecc77a; background: #fffaf0; }
+:is(.ws, .ws-page) .flow-node[data-status="awaiting"] .state { color: #7a4d00; font-weight: 600; }
+:is(.ws, .ws-page) .flow-node.selected { border-color: #4f86b3; box-shadow: 0 0 0 3px rgba(0, 102, 250, 0.14); }
+:is(.ws, .ws-page) .react-flow__edge-path { stroke-linecap: round; stroke-linejoin: round; }
 
 .ws .canvas-body:has(.architecture-pane) { container-type: inline-size; }
 /* 架构图占满整个标签页：细标题行 + 整幅画布；模块详情改为悬浮卡片，可关闭。 */
@@ -804,6 +804,25 @@
   border-color: var(--glass-accent, #0066fa);
   box-shadow: var(--glass-focus);
 }
+
+/* v1.38: 项目页的提示条 / 空状态 / 事件卡与运行工作台共用同一套冰玻璃语言。 */
+.ws-page .well {
+  border: 1px solid #d8e8f2;
+  border-radius: 18px;
+  background: rgba(247, 252, 255, 0.85);
+  color: var(--glass-secondary);
+  box-shadow: var(--glass-shadow);
+}
+.ws-page .section-title { color: var(--glass-ink); font-weight: 600; }
+.ws-page .section-title .hint,
+.ws-page .muted,
+.ws-page .event .seq,
+.ws-page .event .payload,
+.ws-page .ant-empty-description { color: var(--glass-muted); }
+.ws-page .event { margin-bottom: 8px; padding: 14px; border-radius: 18px; background: #f7fcffb8; }
+.ws-page .event:hover { background: #fff; }
+.ws-page .task-dependency-graph { position: relative; }
+.ws-page .task-dependency-graph .react-flow__attribution { background: transparent; color: var(--glass-muted); }
 
 /* Dock: the full title must be readable without a mouse. */
 .ws .dock-info .title { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
@@ -1421,8 +1440,11 @@
 :is(.ws, .ws-page) .disc-composer .disc-composer-error .ant-alert-icon { color: #b4233a; }
 :is(.ws, .ws-page) .disc-composer .disc-composer-error .ant-alert-message { color: #8f1b2e; }
 
-/* Conversation, progress and review share a single tinted work surface. */
-.shell .page.ws-page:has(.ws-discussion) {
+/* Conversation, progress and review share a single tinted work surface.
+   The whole project workspace (讨论 AND 开发任务) uses one wide canvas so the
+   full-width 详情 / 任务图 panels are not squeezed back into the 980px `.page`
+   column, and toggling 讨论 ↔ 任务 no longer jumps the page width. */
+.shell .page.ws-page {
   max-width: 1360px;
   padding-inline: clamp(14px, 3vw, 40px);
 }
@@ -1570,7 +1592,7 @@
 
 /* First paint keeps the tinted work surface instead of flashing a white page. */
 .shell .page.ws-page:has(.ws-page-skeleton) {
-  max-width: 1240px;
+  max-width: 1360px;
   padding-inline: clamp(14px, 3vw, 40px);
 }
 :is(.ws, .ws-page) .ws-page-skeleton {
@@ -2717,6 +2739,97 @@
   font-weight: 600;
 }
 
+/* 设计规格确认（讨论流第 5 步）：模块摘要 + 批准/驳回，沿用 disc 分区令牌。 */
+:is(.ws, .ws-page) .disc-design-review {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+:is(.ws, .ws-page) .disc-design-heading {
+  margin: 0;
+  color: var(--glass-ink);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+:is(.ws, .ws-page) .disc-design-modules {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border-radius: var(--glass-radius-field);
+  background: var(--glass-field);
+  max-height: 180px;
+  overflow-y: auto;
+}
+:is(.ws, .ws-page) .disc-design-modules li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--glass-secondary);
+}
+:is(.ws, .ws-page) .disc-design-modules .mono {
+  flex: 0 0 auto;
+  color: var(--glass-muted);
+  font-size: 11px;
+}
+:is(.ws, .ws-page) .disc-design-module-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:is(.ws, .ws-page) .disc-design-meta {
+  margin: 0;
+  color: var(--glass-muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+:is(.ws, .ws-page) .disc-design-reject-field {
+  display: grid;
+  gap: 4px;
+  color: var(--glass-secondary);
+  font-size: 11.5px;
+}
+:is(.ws, .ws-page) .disc-design-reject-field textarea {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid rgba(82, 115, 140, 0.28);
+  border-radius: var(--glass-radius-field);
+  background: var(--glass-field);
+  color: var(--glass-ink);
+  font-size: 12px;
+  resize: vertical;
+}
+:is(.ws, .ws-page) .disc-design-reject-field textarea:focus-visible {
+  outline: 2px solid var(--glass-accent);
+  outline-offset: 2px;
+}
+:is(.ws, .ws-page) .disc-design-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+:is(.ws, .ws-page) .disc-design-actions > * {
+  width: 100%;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+:is(.ws, .ws-page) .disc-design-actions .disc-button-secondary { margin-left: 0; }
+:is(.ws, .ws-page) .disc-design-full-link {
+  color: var(--glass-accent);
+  font-size: 11.5px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+:is(.ws, .ws-page) .disc-design-full-link:hover { text-decoration: underline; }
+:is(.ws, .ws-page) .disc-design-full-link:focus-visible {
+  outline: 2px solid var(--glass-accent);
+  outline-offset: 3px;
+}
+:is(.ws, .ws-page) .disc-design-spec-link { margin-top: 8px; margin-left: 0; width: 100%; }
+
 /* Spec viewer: meta line, scrollable body, version history. */
 :is(.ws, .ws-page) .disc-spec-current {
   display: flex;
@@ -3071,7 +3184,7 @@
 .ws-left .node-list .row.active { background: rgba(255, 255, 255, 0.82); box-shadow: 0 0 0 1px rgba(126, 182, 228, 0.5); }
 
 /* v1.27: work-package graph — top level groups, click to open its leaf subgraph. */
-.ws .flow-node.package-node {
+:is(.ws, .ws-page) .flow-node.package-node {
   width: 224px;
   min-height: 76px;
   padding: 10px 12px;
@@ -3080,10 +3193,10 @@
   box-shadow: 0 12px 28px -24px rgba(0, 84, 201, 0.7);
   cursor: pointer;
 }
-.ws .flow-node.package-node:hover { border-color: rgba(0, 102, 250, 0.5); }
-.ws .flow-node.package-node .title { font-size: 13px; font-weight: 650; }
-.ws .flow-node.package-node .state { color: #0054c9; font-weight: 600; }
-.ws .flow-node.package-node .sub { height: auto; margin-top: 6px; line-height: 1.5; visibility: visible; color: var(--glass-secondary); }
+:is(.ws, .ws-page) .flow-node.package-node:hover { border-color: rgba(0, 102, 250, 0.5); }
+:is(.ws, .ws-page) .flow-node.package-node .title { font-size: 13px; font-weight: 650; }
+:is(.ws, .ws-page) .flow-node.package-node .state { color: #0054c9; font-weight: 600; }
+:is(.ws, .ws-page) .flow-node.package-node .sub { height: auto; margin-top: 6px; line-height: 1.5; visibility: visible; color: var(--glass-secondary); }
 .ws .stage-caption { display: inline-flex; align-items: center; gap: 8px; }
 .ws .graph-back {
   padding: 3px 10px;
@@ -3098,7 +3211,7 @@
 }
 .ws .graph-back:hover { background: #fff; }
 
-/* H: cooperative pause, intervention and manual end-round controls. */
+/* H: cooperative pause and manual end-round controls. */
 :is(.ws, .ws-page) .disc-manual-end {
   flex: 1 0 100%;
   margin: 8px 0;
@@ -3111,18 +3224,336 @@
   line-height: 1.55;
 }
 
-:is(.ws, .ws-page) .disc-intervention {
-  flex: 1 0 100%;
-  display: grid;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 10px 12px;
+/* A5: observation style switch + export inside ExecutionTracePanel.
+   Reuses the shared .shell glass tokens; scoped to .exec-trace only. */
+.exec-trace .obs-style-switch {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
   border: 1px solid rgba(82, 115, 140, .18);
-  border-radius: var(--glass-radius-field, 14px);
+  border-radius: 999px;
   background: var(--glass-field, rgba(255, 255, 255, .72));
 }
 
-:is(.ws, .ws-page) .disc-intervention .disc-btn {
-  justify-self: start;
+.exec-trace .obs-style-option {
   min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--glass-secondary, #304b60);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
+
+.exec-trace .obs-style-option:hover { background: var(--glass-hover, rgba(255, 255, 255, .62)); }
+.exec-trace .obs-style-option[aria-pressed="true"] { background: var(--glass-accent, #0066fa); color: #fff; }
+
+.exec-trace .obs-export {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(82, 115, 140, .22);
+  border-radius: 999px;
+  background: var(--glass-field, rgba(255, 255, 255, .72));
+  color: var(--glass-secondary, #304b60);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.exec-trace .obs-export:hover:not(:disabled) { background: var(--glass-hover, rgba(255, 255, 255, .62)); }
+.exec-trace .obs-export:disabled { background: #e1eaf1; color: #607486; cursor: default; }
+
+.exec-trace .obs-style-option:focus-visible,
+.exec-trace .obs-export:focus-visible {
+  outline: 2px solid var(--glass-accent, #0066fa);
+  outline-offset: 2px;
+}
+
+.exec-trace .obs-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.exec-trace .obs-table th,
+.exec-trace .obs-table td {
+  padding: 5px 7px;
+  border: 1px solid #e3edf5;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.exec-trace .obs-table th {
+  background: rgba(255, 255, 255, .6);
+  color: var(--glass-muted, #405c71);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.exec-trace .obs-pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #e3edf5;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .6);
+  color: var(--glass-secondary, #304b60);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* --- A2 任务派发板（项目主路径，复用 glass token，36px 控件） --- */
+.assignment-board .assignment-team {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.assignment-board .assignment-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.assignment-board .assignment-table th,
+.assignment-board .assignment-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(82, 115, 140, .14);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.assignment-board .assignment-table th {
+  color: var(--glass-secondary, #304b60);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.assignment-board .assignment-table select {
+  height: 36px;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(82, 115, 140, .28);
+  background: rgba(255, 255, 255, .92);
+  color: var(--glass-ink, #122d42);
+  font-size: 12.5px;
+}
+
+.assignment-board .assignment-table select:focus-visible {
+  outline: 2px solid var(--glass-accent, #2f7fb8);
+  outline-offset: 1px;
+}
+
+.assignment-board .assignment-table select:disabled {
+  color: var(--glass-muted, #405c71);
+  background: rgba(240, 246, 250, .7);
+  cursor: not-allowed;
+}
+
+.assignment-board .assignment-assignee-name {
+  display: block;
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
+/* A2 任务图节点上的只读派发徽标 */
+.flow-node .assignee {
+  margin-top: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(82, 115, 140, .2);
+  background: rgba(255, 255, 255, .72);
+  color: var(--glass-secondary, #304b60);
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- V1: 完整已批准规格与任务约束同屏（项目页详情 / 后续演示左栏） --- */
+.ws-page .ws-details-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
+  gap: 16px;
+  align-items: start;
+}
+.ws-page .ws-details-main { min-width: 0; }
+.ws-page .ws-details-spec {
+  display: flex;
+  min-width: 0;
+  max-height: calc(100vh - 230px);
+}
+.ws-page .approved-spec {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 100%;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 1px solid #dce6ec;
+  border-radius: var(--glass-radius-panel, 16px);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: var(--glass-shadow, 0 10px 30px -24px rgba(18, 45, 66, 0.45));
+}
+.ws-page .approved-spec .section-title { margin-bottom: 8px; }
+.ws-page .approved-spec-req {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 102, 250, 0.06);
+  color: var(--glass-secondary, #304b60);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ws-page .approved-spec-req strong { color: var(--glass-ink, #122d42); font-size: 11.5px; }
+.ws-page .approved-spec-source { margin: 0 0 10px; font-size: 11.5px; line-height: 1.55; }
+.ws-page .approved-spec .disc-spec-history { margin-top: 12px; max-height: 22vh; }
+.ws-page .approved-spec-section h4 {
+  margin: 12px 0 4px;
+  color: var(--glass-ink, #122d42);
+  font-size: 12px;
+  font-weight: 650;
+}
+.ws-page .approved-spec-section h4 .hint { font-weight: 500; }
+.ws-page .approved-spec-section ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 18px;
+}
+.ws-page .approved-spec-section li {
+  color: var(--glass-secondary, #304b60);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.ws-page .input-spec-full-link { height: 28px; margin-top: 8px; font-size: 11.5px; }
+
+@media (max-width: 1100px) {
+  .ws-page .ws-details-grid { grid-template-columns: minmax(0, 1fr); }
+  .ws-page .ws-details-spec { max-height: none; }
+  .ws-page .approved-spec { max-height: none; }
+}
+
+
+/* ============================================================================
+   V5 · 项目工作台共享分区结构
+   原「课上演示」网格布局已下线：演示内容搬到只读静态项目
+   「小红书项目搭建（静态）」，与真实项目一样按拆分 tabs 展示。
+   这里保留约束 / 时间线 / 派发面板的共享结构、页头胶囊与上下文条。
+   ============================================================================ */
+
+/* --- 5.0 约束/时间线/派发面板的共享结构 --- */
+.input-constraints .input-head-code {
+  flex: none;
+  color: var(--glass-muted);
+  font-size: 11px;
+}
+.input-constraints .input-body { min-width: 0; }
+.input-task-title {
+  margin: 2px 0 12px;
+  color: var(--glass-ink);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.input-meta { display: grid; gap: 7px; margin: 0; }
+.input-meta-row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; }
+.input-meta-label { color: var(--glass-muted); font-size: 12px; }
+.input-meta-value {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--glass-ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.input-task-description {
+  margin: 12px 0 0;
+  color: var(--glass-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.input-section { margin-top: 16px; }
+.input-note { margin: 0; color: var(--glass-muted); font-size: 12px; line-height: 1.6; }
+.input-acceptance { display: grid; gap: 6px; margin: 0; padding-left: 18px; }
+.input-acceptance li { color: var(--glass-secondary); font-size: 12.5px; line-height: 1.6; }
+.input-acceptance-note { margin-left: 8px; }
+.input-context-state {
+  margin: 0;
+  color: var(--glass-secondary);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.input-context-state[data-tone="warn"] { color: #8d4513; }
+.input-context-state strong { color: var(--glass-ink); }
+.input-spec-line { margin: 0; color: var(--glass-ink); font-size: 12.5px; }
+.input-spec-counts { margin: 4px 0 0; color: var(--glass-muted); font-size: 12px; }
+.input-spec-features { display: grid; gap: 2px; margin: 6px 0 0; padding-left: 18px; }
+.input-spec-features li { color: var(--glass-secondary); font-size: 12.5px; }
+
+.run-event-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 300px;
+  margin: 8px 0 12px;
+}
+.run-event-filter > .muted { font-size: 11px; }
+
+.assignment-board .assignment-title {
+  margin: 0;
+  color: var(--glass-ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+.assignment-board .assignment-count { color: var(--glass-muted); font-size: 11px; }
+.assignment-board .assignment-note {
+  margin: 8px 0;
+  color: var(--glass-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.assignment-board .assignment-empty { padding: 14px 16px; }
+.assignment-board .assignment-error { margin-bottom: 10px; padding: 10px 12px; }
+
+/* --- 5.2 页头与上下文条：统一成轻胶囊，去掉第二层描边 --- */
+.ws-page .ws-page-bar-actions { gap: 8px; }
+.demo-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 0 12px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--glass-secondary);
+  font-size: 11.5px;
+}
+.demo-context > span + span::before {
+  content: "·";
+  margin-right: 10px;
+  color: #8aa6ba;
+}
+.demo-context-leader { color: var(--glass-ink); font-weight: 650; }
+.demo-context .chip {
+  height: 24px;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--glass-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.demo-context .chip:hover { background: rgba(0, 102, 250, 0.08); }
+

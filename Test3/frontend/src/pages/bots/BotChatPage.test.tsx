@@ -120,6 +120,16 @@ describe("BotChatPage", () => {
     expect(screen.getByRole("button", { name: "资料文件" })).toBeTruthy();
   });
 
+  it("says the chat page does not run repository tools and points at the workstation", async () => {
+    stubApi(() => json({ reply: "x", model: "m" }));
+    renderChat();
+    await screen.findByLabelText("消息");
+    const note = screen.getByText(/不执行仓库工具/);
+    expect(note.textContent).toContain("单次模型问答");
+    expect(note.textContent).toContain("项目工作台");
+    expect(note.textContent).toContain("执行监控");
+  });
+
   it("renders assistant replies as markdown and user messages as plain text", async () => {
     stubApi(() => json({ reply: "**先写测试**\n\n- 一\n- 二", model: "m" }));
     renderChat();

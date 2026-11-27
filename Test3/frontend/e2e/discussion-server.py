@@ -8,10 +8,11 @@ E2E server (no product code): it is open by default so the existing
 ``discussion-flow.pw.ts`` case is unaffected, it never blocks the event loop, and
 it releases itself after a safety timeout.
 
-It also installs ``POST /api/e2e/seed-workstation-run`` (test-only): seed exists
-only because ``POST /discussion-sessions/{id}/plan`` currently 500s due to an
-uncommitted backend WIP checkpoint regression; the workstation page and task
-role-memory API exercised by the specs are the real ones.
+It also installs ``POST /api/e2e/seed-workstation-run`` (test-only): the seed
+predates the fix for the ``POST /discussion-sessions/{id}/plan`` checkpoint
+regression (planning calls now run with ``checkpoint=False`` after approval) and
+is kept so the role-memory specs can exercise the workstation without driving a
+full discussion; the workstation page and task role-memory API are the real ones.
 """
 import asyncio
 import os
@@ -132,9 +133,9 @@ def install_gate(app) -> None:
 def install_seed(app) -> None:
     """TEST-ONLY workstation seed route (see the docstring for why it exists).
 
-    Seed exists only because POST /discussion-sessions/{id}/plan currently 500s
-    due to an uncommitted backend WIP checkpoint regression; the workstation page
-    and task role-memory API exercised here are the real ones.
+    The seed predates the fix for the POST /discussion-sessions/{id}/plan
+    checkpoint regression and is kept for deterministic isolation: the
+    workstation page and task role-memory API exercised here are the real ones.
 
     It uses only real internal bench helpers (``create_project``, ``BotRegistry``,
     ``MembershipService``, ``create_run``, ``_materialize_tasks``,
@@ -219,7 +220,7 @@ def install_seed(app) -> None:
             for code, task in sorted(run.tasks.items())
         ]
         return {
-            "seed": "test-only: bypasses the broken POST /plan (backend WIP regression)",
+            "seed": "test-only: deterministic workstation seed (no discussion required)",
             "run_id": run.id,
             "project_id": project["id"],
             "leader_bot_id": leader.bot_id,

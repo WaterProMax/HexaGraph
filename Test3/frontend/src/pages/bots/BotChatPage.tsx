@@ -247,6 +247,9 @@ export default function BotChatPage() {
       </div>
 
       <div className="bot-chat-dock">
+        <div className="bot-chat-notice" data-testid="bot-chat-scope-note">
+          {"这个对话页是单次模型问答，不执行仓库工具。要查看 Agent 的工具调用过程，请打开项目工作台的开发任务 → 执行监控。"}
+        </div>
         {error && (
           <div className="bot-chat-error" role="alert">
             {error}

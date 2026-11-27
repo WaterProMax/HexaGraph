@@ -9,9 +9,9 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
  * no real sandbox/repo write.
  *
  * The run is created by the test-only `POST /api/e2e/seed-workstation-run` route.
- * Seed exists only because POST /discussion-sessions/{id}/plan currently 500s
- * due to an uncommitted backend WIP checkpoint regression; the workstation page
- * and task role-memory APIs exercised here are the real ones (the seed uses the
+ * The seed predates the fix for the POST /discussion-sessions/{id}/plan
+ * checkpoint regression and is kept for deterministic isolation; the workstation
+ * page and task role-memory APIs exercised here are the real ones (the seed uses the
  * real bench helpers and the published discussion-e2e fixture plan, and it never
  * fakes a memory response).
  */
@@ -99,6 +99,7 @@ async function showTaskPanel(page: Page, taskCode: string): Promise<Locator> {
   const tasksNav = page.getByRole("button", { name: "开发任务" });
   await expect(tasksNav).toBeVisible({ timeout: 30000 });
   await tasksNav.click();
+  // 开发任务 now opens the split tabs directly (classroom grid retired).
   await expect(page.getByTestId("tab-monitor")).toBeVisible({ timeout: 20000 });
   await page.getByTestId("tab-monitor").click();
   return selectTask(page, taskCode);
@@ -151,7 +152,7 @@ test("scripted: Leader saves, restores and clears task role memory", async ({ pa
   test.info().annotations.push({
     type: "fixture",
     description:
-      "scripted provider + simulated executor; seeded run (POST /plan backend regression); no real model/sandbox",
+      "scripted provider + simulated executor; seeded run (deterministic isolation); no real model/sandbox",
   });
   if (!(await requireDiscussionSuite(request))) return;
   await resetGateIfPresent(request);
@@ -238,7 +239,7 @@ test("scripted: non-leader member reads task role memory read-only", async ({ pa
   test.info().annotations.push({
     type: "fixture",
     description:
-      "scripted provider + simulated executor; seeded run (POST /plan backend regression); no real model/sandbox",
+      "scripted provider + simulated executor; seeded run (deterministic isolation); no real model/sandbox",
   });
   if (!(await requireDiscussionSuite(request))) return;
   await resetGateIfPresent(request);

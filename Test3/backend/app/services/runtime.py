@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlalchemy import select
+
 from app.agents.runtime import RoleRegistry, call_agent, run_tool_agent
 from app.change.classify import classify_cr, evaluation_pass
 from app.discussion import planning as discussion_planning
@@ -84,6 +86,12 @@ from app.execution.run_state_store import (
     read_run_execution_state,
 )
 from app.execution.tool_policy import authorize_granted_command
+from app.execution.trace_log import (
+    EXECUTION_PATH_GRANTED,
+    EXECUTION_PATH_LEGACY,
+    EXECUTION_PATH_SIMULATED,
+    ExecutionTraceRecorder,
+)
 from app.ids import IdAllocator
 from app.listening.cluster import cluster
 from app.listening.distill import validate_distill
@@ -100,6 +108,7 @@ from app.orchestrator.scheduler import select_tasks
 from app.orchestrator.states import can_transition
 from app.orchestrator.transition import apply_transition, restore_task_state
 from app.orchestrator.validator import judge_output
+from app.schemas.bot import BotInstance
 from app.schemas.common import IdeaCheck, IdeaDraft
 from app.schemas.design_input import DesignSource
 from app.schemas.docs import (
@@ -121,7 +130,7 @@ from app.settings import CONFIG_DIR, get_settings, load_limits, load_models, loa
 from app.stage.engine import StageEngine
 from app.storage.db import make_engine, session_factory, sqlite_url
 from app.storage.migrate import upgrade_database
-from app.storage.models import EventRow
+from app.storage.models import BotRow, EventRow, ProjectMembershipRow
 from app.tools.sandbox import in_write_set, run_command
 from app.tools.taskset import TaskToolset
 from app.trace.service import TraceGraph
@@ -140,6 +149,26 @@ from app.workspace.gitops import (
 
 logger = logging.getLogger(__name__)
 SHARED_SKILLS_PATH = CONFIG_DIR / "shared-skills.md"
+
+# A1 assignment overlay: like role memory, a short write must not queue behind
+# a whole execution batch holding the per-run lock; answer run_busy instead.
+ASSIGNMENT_WRITE_BUSY_SECONDS = 0.5
+
+
+class AssignmentBotNotFound(Exception):
+    """The declaring actor bot does not exist in the local bot directory."""
+
+
+class AssignmentForbidden(Exception):
+    """The actor is not the current project Leader (membership.is_leader)."""
+
+
+class AssigneeNotMember(Exception):
+    """The target bot is not an active (non-archived) member of the project."""
+
+
+class AssignmentRunReadOnly(Exception):
+    """The run is done/terminated; the assignment overlay is read-only."""
 
 
 @dataclass
@@ -1242,30 +1271,29 @@ class Workbench:
         self.emit(run, "stage.started", "0", {"idea": idea})
         return run
 
-    def create_discussion_plan_run(
-        self, record: DiscussionSession, output: discussion_planning.LeaderPlan, run_id: str
+    def create_discussion_design_run(
+        self, record: DiscussionSession, spec: Any, run_id: str
     ) -> None:
+        """SPEC 已批准的讨论进入第 5 步（设计规格），DESIGN 由 run_design 生成并开关卡。"""
         package = record.decision_package
         assert package is not None
         run = RunState(
             id=run_id, project_id=record.project_id, idea=record.requirement_text,
             limits=copy.deepcopy(self.limits), execution_profile=PROFILE_LEGACY,
         )
-        run.engine.current = "6"
+        run.engine.current = "5"
+        run.engine.history.append({"from": "4", "event": "spec_confirmed", "to": "5"})
         run.artifacts.update(
             idea_raw=record.requirement_text,
             discussion_session_id=record.session_id,
             decision_package=package.model_dump(),
-            spec=output.spec.model_dump(),
-            design=output.design.model_dump(),
-            plan=output.plan.model_dump(),
-            plan_errors=[],
+            spec=spec.model_dump(),
+            issues=[],
             provenance=self._provenance(),
         )
         store_approved_baseline_hash(run, "DecisionPackage", package.sha256)
         store_approved_baseline_hash(run, "SPEC", hash_artifact(run.artifacts["spec"]))
         run.artifacts["baseline_SPEC"] = "1.0"
-        self._gate(run, "PLAN基线确认", {"plan": run.artifacts["plan"], "design": run.artifacts["design"]})
         self.runs[run.id] = run
 
     # --- ExecutionGrant domain (P1) ---------------------------------------------
@@ -2946,7 +2974,11 @@ class Workbench:
             if decision != "approve":
                 run.artifacts["plan_rewrite"] = {"reason": payload.get("reason") or "驳回", "errors": ["人工驳回"]}
                 return await self.run_plan(run)
-            if run.artifacts.get("discussion_session_id"):
+            if run.artifacts.get("discussion_session_id") and not any(
+                g.get("kind") == "DESIGN基线确认" for g in run.gates
+            ):
+                # 兼容旧讨论运行：它们没有 DESIGN 关卡，DESIGN 随 PLAN 一并定版。
+                # 新讨论运行必须先批准 DESIGN 基线，这里不再搭车冻结。
                 self._record_approved_baseline(run, "DESIGN", run.artifacts["design"])
                 self._freeze(run, "DESIGN")
             self._record_approved_baseline(run, "PLAN", run.artifacts.get("plan") or {})
@@ -3342,6 +3374,10 @@ class Workbench:
             memory = (existing or {}).get("role_memory")
             if isinstance(memory, dict) and memory:
                 rebuilt["role_memory"] = copy.deepcopy(memory)
+            # The A1 dispatch overlay is leader-authored too: replan keeps it.
+            assignment = (existing or {}).get("assignment")
+            if isinstance(assignment, dict) and assignment:
+                rebuilt["assignment"] = copy.deepcopy(assignment)
             run.tasks[task.code] = rebuilt
             for src in task.sources:
                 run.trace.link(src, task.code, "spec_item → task")
@@ -3614,6 +3650,12 @@ class Workbench:
             "skill_bundle_hash": str(context_meta.get("skill_bundle_hash") or ""),
             "memory_context_hash": str(context_meta.get("memory_context_hash") or ""),
             "context_hash": str(context_meta.get("context_hash") or ""),
+            # I0 trace contract: filled by the execution path before steps are
+            # recorded.  ``context_injected`` stays False for simulated/granted,
+            # which freeze hashes without ever injecting a prompt block.
+            "execution_path": "",
+            "context_injected": False,
+            "execution_steps": [],
         }
         self._persist_snapshot(run)
 
@@ -3660,6 +3702,12 @@ class Workbench:
         self, run: RunState, task: dict[str, Any], code: str, card: TaskCard
     ) -> dict[str, Any]:
         """Side-effect-free result: no worktree, files, git, subprocess or network."""
+        # Honest trace metadata only: the simulated executor never calls a model
+        # or a tool, so it must not claim an injected prompt or any step.
+        attempt = task.get("attempt")
+        if isinstance(attempt, dict):
+            attempt["execution_path"] = EXECUTION_PATH_SIMULATED
+            attempt["context_injected"] = False
         task["revision"] = int(task.get("revision") or 1) + 1
         if task["state"] == "ready":
             self._set_state(run, task, "scheduled")
@@ -3829,6 +3877,19 @@ class Workbench:
             on_denied=lambda _kind, rel: self.emit(run, "task.write_denied", code, {"path": rel}),
             forbidden=self._forbidden(),
         )
+        # Legacy tool-agent path: the only path that injects a task context block
+        # into the prompt, so ``context_injected`` is true (even when the block
+        # renders empty).  Configured only once the worktree exists, right before
+        # the agent call it observes.  Steps live on the current attempt and are
+        # pushed on the run event bus; recording never changes the tool policy.
+        recorder = ExecutionTraceRecorder(
+            execution_path=EXECUTION_PATH_LEGACY,
+            context_injected=True,
+            attempt=task["attempt"],
+            emit=lambda kind, payload: self.emit(run, kind, code, payload),
+        )
+        task["attempt"]["execution_path"] = EXECUTION_PATH_LEGACY
+        task["attempt"]["context_injected"] = True
         env_retries = 0
         max_env = int((run.limits.get("orchestrator") or {}).get("max_env_retries") or 3)
         result: Any = None
@@ -3843,6 +3904,7 @@ class Workbench:
                         gateway=self._gateway_for(run),
                         max_steps=int(card.budget.max_tool_steps or (run.limits.get("orchestrator") or {}).get("max_tool_steps") or 30),
                         context_block=context_snapshot.render() if context_snapshot else "",
+                        on_step=recorder.observe,
                     )
                     break
                 except Exception as exc:  # noqa: BLE001
@@ -3870,6 +3932,19 @@ class Workbench:
         grant: ExecutionGrant,
     ) -> dict[str, Any]:
         """granted_v1 branch: write only inside an isolated per-task worktree."""
+        attempt = task.get("attempt")
+        recorder: ExecutionTraceRecorder | None = None
+        if isinstance(attempt, dict):
+            # granted_v1 never injects a prompt block: its single recorded step
+            # (when a command really runs) is the authorized command itself.
+            recorder = ExecutionTraceRecorder(
+                execution_path=EXECUTION_PATH_GRANTED,
+                context_injected=False,
+                attempt=attempt,
+                emit=lambda kind, payload: self.emit(run, kind, code, payload),
+            )
+            attempt["execution_path"] = EXECUTION_PATH_GRANTED
+            attempt["context_injected"] = False
         generation_id = self._generations.new_id(run.id)
         command = [str(part) for part in (spec.get("command") or [])]
         # F-08 re-check at the wrapper boundary, before any worktree or write.
@@ -3898,6 +3973,7 @@ class Workbench:
             if isinstance(item, dict)
         ]
         command = [str(part) for part in (spec.get("command") or [])]
+        command_started = time.perf_counter()
         try:
             result = await execute_task_granted(
                 run.id,
@@ -3919,6 +3995,19 @@ class Workbench:
             task["last_error"] = "isolation_preflight_failed"
             self.emit(run, "task.isolation_blocked", code, {"reason": exc.reason, "backend": exc.backend})
             return {"state": task["state"], "kind": "BLOCKED", "isolation_backend": exc.backend, "reason": exc.reason}
+        # Exactly one command step, and only when the authorized command really
+        # ran.  granted_v1 is never expanded into a fake multi-step tool loop.
+        # A result object without command details (test double / no command)
+        # records 0 steps instead of inventing one.
+        ran_argv = getattr(result, "argv", None)
+        if recorder is not None and ran_argv:
+            exit_code = getattr(result, "exit_code", None)
+            recorder.observe_granted_command(
+                list(ran_argv),
+                {"output": getattr(result, "output", ""), "exit_code": exit_code},
+                duration_ms=max(int((time.perf_counter() - command_started) * 1000), 0),
+                exit_code=exit_code,
+            )
         if not self._generations.is_current(run.id, generation_id):
             # P5: pause/terminate/replan bumped the generation.  A late tool or
             # LLM reply must not write evidence, state or files.
@@ -4380,6 +4469,151 @@ class Workbench:
         self._refresh_ready(run)
         return task
 
+    async def assign_task(
+        self,
+        run: RunState,
+        code: str,
+        assignee_bot_id: str | None,
+        expected_revision: int,
+        *,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Leader-only dispatch overlay write (A1).
+
+        The overlay is a classroom-visible annotation on the run task: it never
+        changes the PLAN TaskCard, the scheduler selection, the model slots or
+        the role-memory subject (run_id + task_code + role).  Execution keeps
+        running by role through run_tool_agent / the simulated executor.
+
+        CAS source (declared and locked by tests): the task-level
+        ``task["revision"]`` — the same source ``control_task`` uses.  A
+        successful write bumps both the task revision and ``run.revision``.
+        ``assignee_bot_id=None`` clears the overlay.
+        """
+
+        task = run.tasks.get(code)
+        if not isinstance(task, dict):
+            raise KeyError(code)
+        assignee_name = ""
+        async with self.db_session() as session:
+            actor_row = await session.get(BotRow, actor)
+            if actor_row is None:
+                raise AssignmentBotNotFound(actor)
+            leader_row = await session.get(ProjectMembershipRow, (run.project_id, actor))
+            if leader_row is None or int(leader_row.is_leader or 0) != 1:
+                raise AssignmentForbidden(f"bot {actor} is not the project leader")
+            if assignee_bot_id is not None:
+                member_row = await session.get(ProjectMembershipRow, (run.project_id, assignee_bot_id))
+                bot_row = await session.get(BotRow, assignee_bot_id)
+                archived = (
+                    bot_row is not None
+                    and BotInstance.model_validate(bot_row.payload).status == "archived"
+                )
+                if member_row is None or bot_row is None or archived:
+                    raise AssigneeNotMember(f"bot {assignee_bot_id} is not an active project member")
+                assignee_name = str(bot_row.display_name or assignee_bot_id)
+        if run.status in {"done", "terminated"}:
+            raise AssignmentRunReadOnly(f"run {run.id} is {run.status}; assignment is read-only")
+        try:
+            expected = int(expected_revision)
+        except (TypeError, ValueError) as exc:
+            raise ValidationFailed("expected_revision must be an integer") from exc
+        async with self._run_locks.write_scope(run.id, busy_timeout=ASSIGNMENT_WRITE_BUSY_SECONDS):
+            return self._commit_assignment(
+                run, code, assignee_bot_id, expected, actor=actor, assignee_name=assignee_name
+            )
+
+    def _commit_assignment(
+        self,
+        run: RunState,
+        code: str,
+        assignee_bot_id: str | None,
+        expected_revision: int,
+        *,
+        actor: str,
+        assignee_name: str,
+    ) -> dict[str, Any]:
+        """Copy-on-write commit; the caller holds the per-run write lock.
+
+        The canonical task is not mutated until the snapshot write succeeds;
+        on failure the run revision is restored and nothing is published.
+        """
+
+        task = run.tasks[code]
+        if int(task.get("revision") or 1) != expected_revision:
+            raise RevisionConflict("revision mismatch")
+        previous = task.get("assignment")
+        previous = previous if isinstance(previous, dict) else None
+        previous_bot = (
+            str(previous["assignee_bot_id"]) if previous and previous.get("assignee_bot_id") else None
+        )
+        role = str((task.get("card") or {}).get("role") or "")
+        staged_tasks = copy.deepcopy(run.tasks)
+        staged_task = staged_tasks[code]
+        if assignee_bot_id is None:
+            staged_task["assignment"] = None
+        else:
+            staged_task["assignment"] = {
+                "assignee_bot_id": assignee_bot_id,
+                "assigned_by_bot_id": actor,
+                "assigned_at": datetime.now(timezone.utc).isoformat(),
+                "revision": int((previous or {}).get("revision") or 0) + 1,
+            }
+        staged_task["revision"] = int(task.get("revision") or 1) + 1
+        old_run_revision = run.revision
+        run.revision += 1
+        try:
+            self._persist_snapshot(run, tasks_override=staged_tasks)
+        except BaseException:
+            run.revision = old_run_revision
+            raise
+        task["assignment"] = staged_task["assignment"]
+        task["revision"] = staged_task["revision"]
+        # Events are read-only echoes of the overlay; the role payload never
+        # implies the memory subject changed.  Not part of _SNAPSHOT_KINDS.
+        if assignee_bot_id is None:
+            self.emit(
+                run,
+                "task.assignment_cleared",
+                code,
+                {
+                    "previous_assignee_bot_id": previous_bot,
+                    "assigned_by_bot_id": actor,
+                    "role": role,
+                },
+                actor,
+            )
+        else:
+            self.emit(
+                run,
+                "task.assigned",
+                code,
+                {
+                    "assignee_bot_id": assignee_bot_id,
+                    "assignee_display_name": assignee_name or assignee_bot_id,
+                    "assigned_by_bot_id": actor,
+                    "previous_assignee_bot_id": previous_bot,
+                    "role": role,
+                },
+                actor,
+            )
+        return task
+
+    async def member_display_names(self, project_id: str) -> dict[str, str]:
+        """Read-time display names for assignment overlays; falls back to id."""
+
+        names: dict[str, str] = {}
+        async with self.db_session() as session:
+            rows = (
+                await session.execute(
+                    select(ProjectMembershipRow).where(ProjectMembershipRow.project_id == project_id)
+                )
+            ).scalars()
+            for row in rows:
+                bot = await session.get(BotRow, row.bot_id)
+                names[str(row.bot_id)] = str((bot.display_name if bot is not None else "") or row.bot_id)
+        return names
+
     def set_run_control(self, run: RunState, action: str, actor: str = "owner", *, confirm: bool = False) -> RunState:
         if action == "terminate" and not confirm:
             raise ValidationFailed("终止运行需二次确认")
@@ -4452,8 +4686,8 @@ class Workbench:
             items.append({"kind": "pending_human", "revision": run.revision})
         return items
 
-    def monitor_snapshot(self, run: RunState) -> dict[str, Any]:
-        snapshot = build_monitor_snapshot(run, self.models, self.registry)
+    def monitor_snapshot(self, run: RunState, assignee_names: dict[str, str] | None = None) -> dict[str, Any]:
+        snapshot = build_monitor_snapshot(run, self.models, self.registry, assignee_names=assignee_names)
         snapshot["workflow"] = self.workflow_projection(run)
         return snapshot
 

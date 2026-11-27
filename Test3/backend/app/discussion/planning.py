@@ -20,6 +20,10 @@ from app.schemas.docs import DesignDoc, SpecDoc, TaskCard, TaskGraph, WorkPackag
 logger = logging.getLogger(__name__)
 
 
+class LeaderSpec(BaseModel):
+    spec: SpecDoc
+
+
 class LeaderOutline(BaseModel):
     spec: SpecDoc
     design: DesignDoc
@@ -210,6 +214,7 @@ async def generate(bench, record: DiscussionSession, *, spec=None, design=None, 
                 json_mode=True,
                 track_discussion_usage=False,
                 timeout=900.0,
+                checkpoint=False,
             )
             try:
                 parsed = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
@@ -275,6 +280,7 @@ async def generate(bench, record: DiscussionSession, *, spec=None, design=None, 
                     json_mode=True,
                     track_discussion_usage=False,
                     timeout=900.0,
+                    checkpoint=False,
                 )
                 try:
                     parsed = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
@@ -348,6 +354,7 @@ async def generate(bench, record: DiscussionSession, *, spec=None, design=None, 
             json_mode=True,
             track_discussion_usage=False,
             timeout=900.0,
+            checkpoint=False,
         )
         try:
             parsed = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
@@ -370,21 +377,90 @@ async def generate(bench, record: DiscussionSession, *, spec=None, design=None, 
     raise ValidationFailed("Leader 的任务计划未通过校验：" + "、".join(errors[:5]))
 
 
-async def prepare_run(bench, record: DiscussionSession) -> str:
+def _ensure_binding(existing, record: DiscussionSession) -> None:
+    """A deterministic run_id is only reusable for the same project and session."""
+    if getattr(existing, "project_id", "") != record.project_id:
+        raise ValidationFailed("讨论会话与既有计划运行的所属项目不一致")
+    linked = (getattr(existing, "artifacts", None) or {}).get("discussion_session_id")
+    if linked and str(linked) != record.session_id:
+        raise ValidationFailed("既有计划运行绑定了其它讨论会话")
+
+
+async def structure_spec(bench, record: DiscussionSession) -> SpecDoc:
+    """Leader structures the approved markdown specification into SPEC (no design)."""
+    package = record.decision_package
+    if record.status != "approved" or package is None:
+        raise ValidationFailed("需先确认需求规格")
+    bot, memory, files = await _load_bot_context(bench, record, record.leader_bot_id)
+    instructions = _system_for(bot, memory, files, "leader_spec.md")
+    errors: list[str] = []
+    for _ in range(2):
+        result = await _call(
+            bench,
+            record.session_id,
+            bot,
+            [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": json.dumps(
+                    {
+                        "approved_specification": package.body_md,
+                        "schema": LeaderSpec.model_json_schema(),
+                        "validation_feedback": errors,
+                    }, ensure_ascii=False,
+                )},
+            ],
+            operation="plan",
+            json_mode=True,
+            track_discussion_usage=False,
+            timeout=900.0,
+            checkpoint=False,
+        )
+        try:
+            parsed = result.parsed if isinstance(result.parsed, dict) else _extract_json(result.text)
+            spec = LeaderSpec.model_validate(parsed).spec
+        except ValidationError as exc:
+            errors = _schema_errors(exc)
+            continue
+        errors = check_spec(spec, [])
+        if not errors:
+            return spec
+    raise ValidationFailed("Leader 的需求规格整理未通过校验：" + "、".join(errors[:5]))
+
+
+async def prepare_design_run(bench, record: DiscussionSession) -> str:
+    """SPEC 批准后进入第 5 步：架构师写 DESIGN + 设计检查 + 双评审 + DESIGN 基线确认关卡。
+
+    Idempotent: an existing run bound to this session is returned unchanged, so a
+    reload or a second click never regenerates the design.
+    """
     run_id = run_id_for(record.session_id)
     locks = bench._discussion_plan_locks
     async with locks.setdefault(run_id, asyncio.Lock()):
         existing = bench.runs.get(run_id)
         if existing is not None:
-            # A deterministic run_id is only reusable for the same project and
-            # session; never let one session read/reuse another project's plan.
-            if getattr(existing, "project_id", "") != record.project_id:
-                raise ValidationFailed("讨论会话与既有计划运行的所属项目不一致")
-            linked = (getattr(existing, "artifacts", None) or {}).get("discussion_session_id")
-            if linked and str(linked) != record.session_id:
-                raise ValidationFailed("既有计划运行绑定了其它讨论会话")
+            _ensure_binding(existing, record)
             return run_id
-        output = await generate(bench, record)
-        bench.create_discussion_plan_run(record, output, run_id)
-        bench._persist_snapshot(bench.runs[run_id])
+        spec = await structure_spec(bench, record)
+        bench.create_discussion_design_run(record, spec, run_id)
+        run = bench.runs[run_id]
+        await bench.run_design(run)
+        bench._persist_snapshot(run)
+    return run_id
+
+
+async def prepare_run(bench, record: DiscussionSession) -> str:
+    """DESIGN 基线确认后，Leader 才把 SPEC/DESIGN 展开成工作包与任务（第 6 步）。"""
+    run_id = run_id_for(record.session_id)
+    locks = bench._discussion_plan_locks
+    async with locks.setdefault(run_id, asyncio.Lock()):
+        existing = bench.runs.get(run_id)
+        if existing is None:
+            raise ValidationFailed("需先完成设计规格整理与确认")
+        _ensure_binding(existing, record)
+        if existing.artifacts.get("plan"):
+            return run_id
+        if "DESIGN" not in (getattr(existing, "approved_baseline_hashes", None) or {}):
+            raise ValidationFailed("需先确认设计规格基线")
+        await bench._generate_plan(existing)
+        bench._persist_snapshot(existing)
     return run_id

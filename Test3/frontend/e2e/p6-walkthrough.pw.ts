@@ -151,8 +151,12 @@ test("P6 UI-A1 walkthrough", async ({ page }) => {
   await expect(page.getByRole("link", { name: /Leader A/ })).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/p6-t02-ready.png`, fullPage: true });
 
-  // 4. Project workstation tree with progress.
+  // 4. Project workstation tree with progress (the tree now lives on the 活动 tab;
+  // 详情 / 任务图 are full-width views with a header task picker instead).
   await page.goto("/projects/proj-1");
+  // The project lands on 项目讨论 now; switch to the task workspace first.
+  await page.getByRole("button", { name: "开发任务" }).click();
+  await page.getByTestId("tab-activity").click();
   const tree = page.getByTestId("task-tree");
   await expect(tree.getByText("T-01")).toBeVisible();
   await expect(page.getByRole("progressbar", { name: "T-01 进度" })).toHaveAttribute("aria-valuenow", "100");
@@ -167,7 +171,8 @@ test("P6 UI-A1 walkthrough", async ({ page }) => {
   await page.getByTestId("tab-details").click();
   await page.screenshot({ path: `${SHOTS}/p6-t03-workstation.png`, fullPage: true });
 
-  // 6. Splitter still drags.
+  // 6. Splitter still drags (only the 活动 tab keeps the side tree + splitter).
+  await page.getByTestId("tab-activity").click();
   const handle = page.getByTestId("ws-splitter");
   const before = Number(await handle.getAttribute("aria-valuenow"));
   const box = await handle.boundingBox();

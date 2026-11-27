@@ -331,15 +331,16 @@ async def supplement_discussion(session_id: str, body: SupplementBody, request: 
     return updated.model_dump()
 
 
-@router.post("/discussion-sessions/{session_id}/plan")
-async def plan_discussion(session_id: str, request: Request) -> Any:
+@router.post("/discussion-sessions/{session_id}/design")
+async def design_discussion(session_id: str, request: Request) -> Any:
+    """SPEC 批准后进入第 5 步：整理 SPEC → 架构师写 DESIGN → 检查 + 双评审 → DESIGN 关卡。"""
     actor, record, error = await _leader_session(request)
     if error is not None:
         return error
     assert record is not None
     bench = request.app.state.workbench
     try:
-        assert_phase_admission("plan", discussion=record)
+        assert_phase_admission("design", discussion=record)
     except WorkflowRejected as exc:
         return JSONResponse(
             status_code=exc.status_code,
@@ -347,6 +348,44 @@ async def plan_discussion(session_id: str, request: Request) -> Any:
                 "error_category": exc.category,
                 "detail": exc.message,
                 "workflow": bench.workflow_projection(None, discussion=record),
+            },
+        )
+    if record.status != "approved" or record.decision_package is None:
+        return _json_error(409, "invalid_status", "需先确认需求规格")
+    async with bench.db_session() as session:
+        member = await session.get(ProjectMembershipRow, (record.project_id, actor))
+        if member is None or not member.is_leader:
+            return _json_error(403, "forbidden", "只有项目 Leader 可以整理设计规格")
+    try:
+        run_id = await planning.prepare_design_run(bench, record)
+    except BotNotFound:
+        return _json_error(409, "leader_not_found", "找不到负责规划的 Leader")
+    except driver.BotFailed as exc:
+        return _json_error(502, exc.category, user_message_for_category(exc.category))
+    except ValidationFailed as exc:
+        return _json_error(422, "design_validation_failed", str(exc))
+    return {"run_id": run_id}
+
+
+@router.post("/discussion-sessions/{session_id}/plan")
+async def plan_discussion(session_id: str, request: Request) -> Any:
+    actor, record, error = await _leader_session(request)
+    if error is not None:
+        return error
+    assert record is not None
+    bench = request.app.state.workbench
+    from app.workflow.projection import find_run_for_session
+
+    run = find_run_for_session(bench.runs, record.session_id)
+    try:
+        assert_phase_admission("plan", discussion=record, run=run)
+    except WorkflowRejected as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error_category": exc.category,
+                "detail": exc.message,
+                "workflow": bench.workflow_projection(run, discussion=record),
             },
         )
     if record.status != "approved" or record.decision_package is None:

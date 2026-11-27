@@ -2,7 +2,7 @@ import type { DiscussionStage } from "./deriveStage";
 
 export type { DiscussionStage };
 
-const STEPS = ["想法", "独立方案", "互评", "Leader 审核", "你的审批", "任务拆解"] as const;
+const STEPS = ["想法", "独立方案", "互评", "Leader 审核", "你的审批", "设计规格", "任务拆解"] as const;
 
 const STAGE_STEP: Record<Exclude<DiscussionStage, "terminated">, number> = {
   idea: 0,
@@ -11,7 +11,8 @@ const STAGE_STEP: Record<Exclude<DiscussionStage, "terminated">, number> = {
   review: 2,
   leader: 3,
   approval: 4,
-  approved: 5,
+  design: 5,
+  approved: 6,
 };
 
 export type StageBarProps = {
@@ -37,7 +38,7 @@ function stageSubtitle(stage: DiscussionStage, round: number): string | null {
 
 /**
  * Discussion progress bar. `deriveStage` decides the stage; this component only
- * maps it to the six fixed steps and marks done / current / terminated.
+ * maps it to the seven fixed steps and marks done / current / terminated.
  */
 export function StageBar({ stage, round, planReady = false, planFailed = false }: StageBarProps) {
   const terminated = stage === "terminated";

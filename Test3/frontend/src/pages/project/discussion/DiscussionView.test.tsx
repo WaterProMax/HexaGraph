@@ -26,7 +26,11 @@ const apiMock = vi.hoisted(() => ({
   resumeDiscussion: vi.fn(),
   terminateDiscussion: vi.fn(),
   planDiscussion: vi.fn(),
+  designDiscussion: vi.fn(),
+  run: vi.fn(),
+  resolveGate: vi.fn(),
   addDiscussionIntervention: vi.fn(),
+  supplementDiscussion: vi.fn(),
   endDiscussionRound: vi.fn(),
   startDiscussionRound: vi.fn(),
   runDiscussion: vi.fn(),
@@ -200,6 +204,7 @@ beforeEach(() => {
   apiMock.resumeDiscussion.mockResolvedValue(makeSession());
   apiMock.terminateDiscussion.mockResolvedValue(makeSession({ status: "terminated" }));
   apiMock.addDiscussionIntervention.mockResolvedValue(makeSession({ paused: true }));
+  apiMock.supplementDiscussion.mockResolvedValue(makeSession({ status: "round_n_revise" }));
   apiMock.endDiscussionRound.mockResolvedValue(
     makeSession({ status: "converged_pending_human", paused: true, round_end_reason: { kind: "manual", text: "", round_no: 1, actor: "bot-a", revision: 2 } }),
   );
@@ -372,6 +377,125 @@ describe("DiscussionView approved spec", () => {
   });
 });
 
+describe("DiscussionView design stage", () => {
+  const DESIGN_RUN = {
+    id: "design-run",
+    stage: "5",
+    status: "waiting",
+    artifacts: {
+      design: {
+        modules: [
+          { code: "M1", name: "座位查询", responsibility: "返回空闲座位", sources: ["F1"], depends_on: [] },
+          { code: "M2", name: "学生端页面", responsibility: "展示座位", sources: ["F1"], depends_on: ["M1"] },
+        ],
+        interfaces: [{ code: "C1", provider: "M1", consumers: ["M2"] }],
+      },
+      design_reviews: [
+        { reviewer: "架构", dimension: "架构一致性", score: 5, opinions: [] },
+        { reviewer: "质量", dimension: "实现质量", score: 4, opinions: [] },
+      ],
+    },
+    gates: [{ id: "gate-design", kind: "DESIGN基线确认", status: "pending", payload: {} }],
+  };
+
+  function designSession(workflow: Record<string, unknown> = { design_approved: false }) {
+    return makeSession({
+      status: "approved",
+      decision_package: DECISION_PACKAGE,
+      workflow: { stage: "design_pending", run_id: null, ...workflow } as DiscussionSession["workflow"],
+    });
+  }
+
+  it("routes an approved spec without design approval to the design step", async () => {
+    apiMock.designDiscussion.mockResolvedValue({ run_id: "design-run" });
+    apiMock.run.mockResolvedValue(DESIGN_RUN);
+    const session = designSession();
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    expect(stageBarStage()).toBe("design");
+    expect(apiMock.designDiscussion).toHaveBeenCalledWith("s1", "bot-a");
+    const panel = await screen.findByTestId("disc-design-review");
+    expect(within(panel).getByText("设计规格待你确认")).toBeTruthy();
+    expect(within(panel).getByText("座位查询")).toBeTruthy();
+    expect(within(panel).getByText(/模块 2 个 · 接口 1 个/)).toBeTruthy();
+    expect(within(panel).getByText(/架构 5 分/)).toBeTruthy();
+    expect(apiMock.planDiscussion).not.toHaveBeenCalled();
+  });
+
+  it("approves the design baseline through the gate and refreshes", async () => {
+    apiMock.designDiscussion.mockResolvedValue({ run_id: "design-run" });
+    apiMock.run.mockResolvedValue(DESIGN_RUN);
+    apiMock.resolveGate.mockResolvedValue({ status: "need_human", gate: { kind: "PLAN基线确认" } });
+    const session = designSession();
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    fireEvent.click(await screen.findByRole("button", { name: "批准设计基线" }));
+
+    await waitFor(() =>
+      expect(apiMock.resolveGate).toHaveBeenCalledWith("gate-design", "approve", {}),
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+  });
+
+  it("requires a reason before rejecting and refetches the rewritten design", async () => {
+    const rewritten = {
+      ...DESIGN_RUN,
+      artifacts: {
+        ...DESIGN_RUN.artifacts,
+        design: {
+          ...DESIGN_RUN.artifacts.design,
+          modules: [{ code: "M1", name: "座位查询（含更新时间）", responsibility: "返回空闲座位", sources: ["F1"], depends_on: [] }],
+        },
+      },
+      gates: [
+        { id: "gate-design", kind: "DESIGN基线确认", status: "rejected", payload: {} },
+        { id: "gate-design-2", kind: "DESIGN基线确认", status: "pending", payload: {} },
+      ],
+    };
+    apiMock.designDiscussion.mockResolvedValue({ run_id: "design-run" });
+    apiMock.run.mockResolvedValueOnce(DESIGN_RUN).mockResolvedValue(rewritten);
+    apiMock.resolveGate.mockResolvedValue({ status: "need_human", gate: { kind: "DESIGN基线确认" } });
+    const session = designSession();
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    const rejectButton = await screen.findByRole("button", { name: "驳回重写" });
+    expect((rejectButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("设计驳回意见"), { target: { value: "模块职责需补充更新时间" } });
+    fireEvent.click(screen.getByRole("button", { name: "驳回重写" }));
+
+    await waitFor(() =>
+      expect(apiMock.resolveGate).toHaveBeenCalledWith("gate-design", "reject", { reason: "模块职责需补充更新时间" }),
+    );
+    expect(await screen.findByText("座位查询（含更新时间）")).toBeTruthy();
+  });
+
+  it("reuses an existing design run from the workflow projection without regenerating", async () => {
+    apiMock.run.mockResolvedValue(DESIGN_RUN);
+    const session = designSession({ design_approved: false, run_id: "design-run" });
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    expect(await screen.findByTestId("disc-design-review")).toBeTruthy();
+    expect(apiMock.designDiscussion).not.toHaveBeenCalled();
+    expect(apiMock.run).toHaveBeenCalledWith("design-run");
+  });
+
+  it("moves on to task splitting once the design baseline is approved", async () => {
+    apiMock.planDiscussion.mockResolvedValue({ run_id: "design-run" });
+    const session = designSession({ design_approved: true, run_id: "design-run", stage: "plan_pending" });
+    setHookState({ session, sessions: [session] });
+    renderView();
+
+    expect(stageBarStage()).toBe("approved");
+    expect(await screen.findByRole("link", { name: "查看任务编排" })).toBeTruthy();
+    expect(apiMock.designDiscussion).not.toHaveBeenCalled();
+  });
+});
+
 describe("DiscussionView terminated", () => {
   it("keeps the timeline and scores but does not offer recoverable controls", () => {
     const session = makeSession({ status: "terminated" });
@@ -465,24 +589,17 @@ describe("DiscussionView controls", () => {
     expect((screen.getByRole("button", { name: "正在暂停…" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("sends a same-session intervention with the current revision", async () => {
+  it("shows only the bottom supplement composer when paused (intervention box retired)", async () => {
     const session = makeSession({ status: "cross_review", paused: true, control_revision: 7 });
     setHookState({ session, sessions: [session] });
     renderView();
 
-    fireEvent.change(screen.getByLabelText("讨论插话"), {
-      target: { value: "先收敛接口边界" },
-    });
-    fireEvent.click(screen.getByTestId("disc-send-intervention"));
-
-    await waitFor(() =>
-      expect(apiMock.addDiscussionIntervention).toHaveBeenCalledWith(
-        "s1",
-        { expected_revision: 7, text: "先收敛接口边界" },
-        "bot-a",
-      ),
-    );
-    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    // 顶部「插话 / 调整方向」输入框已下线，只保留底部「补充信息」。
+    expect(screen.queryByTestId("disc-intervention")).toBeNull();
+    expect(screen.queryByLabelText("讨论插话")).toBeNull();
+    expect(screen.queryByTestId("disc-send-intervention")).toBeNull();
+    expect(await screen.findByLabelText("补充信息")).toBeTruthy();
+    expect(apiMock.addDiscussionIntervention).not.toHaveBeenCalled();
   });
 
   it("ends the round only after confirmation and never shows approval", async () => {
@@ -883,17 +1000,17 @@ describe("DiscussionView controls", () => {
     );
   });
 
-  it("keeps the intervention text when the request fails", async () => {
+  it("keeps the supplement text when the request fails", async () => {
     const session = makeSession({ status: "cross_review", paused: true, control_revision: 7 });
     setHookState({ session, sessions: [session] });
-    apiMock.addDiscussionIntervention.mockRejectedValueOnce(new Error("网络中断"));
+    apiMock.supplementDiscussion.mockRejectedValueOnce(new Error("网络中断"));
     renderView();
 
-    fireEvent.change(screen.getByLabelText("讨论插话"), { target: { value: "保留的介入" } });
-    fireEvent.click(screen.getByTestId("disc-send-intervention"));
+    fireEvent.change(await screen.findByLabelText("补充信息"), { target: { value: "保留的补充" } });
+    fireEvent.click(screen.getByRole("button", { name: /发送补充/ }));
 
     await waitFor(() => expect(screen.getByTestId("disc-action-error")).toBeTruthy());
-    expect((screen.getByLabelText("讨论插话") as HTMLTextAreaElement).value).toBe("保留的介入");
+    expect((screen.getByLabelText("补充信息") as HTMLTextAreaElement).value).toBe("保留的补充");
   });
 });
 

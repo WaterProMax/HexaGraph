@@ -439,3 +439,51 @@ npm run build         # tsc -b + vite build 通过；仅有既有的 >500kB chun
 - 方案与评分消息改为“独立头像 + 带尾巴气泡”；方案正文改为居中大弹窗，支持关闭按钮、遮罩、Esc 关闭和 Markdown 渲染。
 - 移除摘要哈希小字；需求规格卡只保留“查看任务编排 / 查看架构图 / 查看需求规格”三个按钮。
 - 验证：前端 427 项 Vitest、生产构建通过；真实项目页确认标题菜单、气泡、弹窗和三个规格按钮正常渲染。
+
+## v1.34 · 讨论流补齐设计规格确认步骤
+
+- 流程修复：讨论流此前在需求规格批准后直接由 Leader 一次生成 SPEC/DESIGN/PLAN，缺少 Design.md 第 5 步（架构师 + 设计检查 + 双评审 + DESIGN 基线确认）。现在 SPEC 批准先进入「设计规格」步骤，DESIGN 基线批准后才进入任务拆解；PLAN 批准不再搭车冻结 DESIGN（旧运行保留兼容）。
+- 讨论进度条改为七步：想法 / 独立方案 / 互评 / Leader 审核 / 你的审批 / 设计规格 / 任务拆解；审批弹窗主按钮改为「通过，进入设计规格」。
+- 侧栏新增设计确认面板（`disc-design-review`）：模块摘要列表、接口数与双评审得分、批准/驳回（驳回必填意见）、重写等待提示、失败时跳转工作台；沿用 `disc-*` 分区与 `.shell` 令牌，未新增全局色值。
+- 验证：前端 546 项 Vitest、tsc 生产构建通过；后端完整非 live 测试通过；scripted 后端（discussion-e2e fixture）浏览器回归 discussion-flow / human-intervention / role-memory 全部通过，含设计确认新步骤。截图：`../plans/screenshots/ui-redesign/ui-r34-design-approval.png`（scripted 后端）。
+
+## v1.35 · 课上演示工作台重做：单一画框与分区发丝线
+
+背景：用户反馈课上演示布局“边框的安排太糟糕”。本版只做视觉重做，不改数据源、派发写入、审批条件、阶段计算和 React Flow 的坐标/布局算法。
+
+- 版式：原来六个分区各自是“1px 边框 + 16px 圆角 + 阴影”的卡片，整页 6 条外框线，右侧任务图留下大片空白，执行监控只有 250px 高、执行步骤必须滚动，左侧约束卡在视口底部被截断。现在工作台本身是唯一带边框、圆角和阴影的表面（18px），六个分区用 1px 发丝线拼贴；每区固定 36px 眉题（分区名 + 右侧元信息/操作）和唯一滚动正文。工作台按视口剩余高度 flex 铺满，不再用 `calc(100vh - 248px)`。
+- 网格：左栏 30%（规格 1.28fr / 约束 1fr），右栏 70%（任务图 0.62fr / 派发+监控 1.3fr / 时间线 0.46fr）；派发:监控 = 1 : 1.18。任务图从 311px 收到约 210px，监控从 250px 增到约 440px，时间线从 366px 宽扩到整行 798px，执行步骤在默认视图即可读到第一步。
+- 减重：删掉每个 KPI 的独立描边卡，改为一整块浅蓝填充 + 竖向发丝线；执行步骤去掉每步的描边卡，改为单层分隔行；派发表格只保留表头线、行分隔线和选中底色，隐藏依赖/状态列与重复的“尚未派发（将按角色自动调度）”小字；事件时间线改单行（序号 / 类别 / 任务 / 摘要），过滤输入并入眉题；约束栏隐藏与左侧规格栏重复的「已批准 SPEC 摘要」，规格栏改为“标签列 + 内容列”的紧凑分区。
+- 页头：主分区切换「项目讨论 / 开发任务」保持实心蓝；布局切换「课上演示 / 单项查看」改为浅蓝底 + 深蓝字，消除两个并排实心蓝胶囊；上下文条从带边框的圆角块改为无底色 caption（Leader · 成员 · 规格来源 · 回到项目讨论）。
+- 监控头：演示布局显示「执行监控 + 运行短号 + 实时」，不再把整段 UUID 当标题；`终止` 从红色描边改为安静的危险文字按钮。
+- 视觉补丁：`ExecutionTracePanel` 的内联样式（卡片描边）在演示范围内用 `!important` 覆写为无卡片；`InputConstraintsPanel` 的内联样式抽成 `.input-*` 类，单项查看继续复用同一套基础样式。
+- 派发控件修复（用户反馈“派发板 UI 有问题”）：派发表格沿用了基础样式里的 `select { min-width:180px }`，在演示布局的窄列里会把下拉框撑出分区并被裁切。演示范围重置 `min-width/max-width` 并把列宽固定为 编号 50 / 标题自适应 / 角色 50 / 派发对象 110，≤1240px 时让出「角色」列（角色仍在约束栏和监控里），窄桌面下标题与下拉框都保持完整。
+- 派发表头在演示布局用「编号」代替「任务代码」，与 50px 列宽匹配；单项查看仍用完整表头。
+- 兼容：分区类名从 `demo-cell` 改为 `demo-zone`，新增 `demo-zone-head`/`demo-zone-meta`；所有 `data-testid` 保持不变，单项查看（tabs）与讨论视图不在本次重做范围内。
+- 验证：Vitest 63 文件 / 603 项通过；`tsc -b` 无错误；`npm run build` 通过（仅既有 chunk 体积提示）；集成 E2E assignment-monitor-demo / demo-path-visibility / workstation-observability 3 项通过；讨论 E2E 5 项通过。截图在 [screenshots/demo-workbench](screenshots/demo-workbench/)（修改前/后 1440、修改后 1280/1024/768、执行后时间线与观测表格、派发板修复特写 `after-1440-assignment-closeup.png`）。均为 scripted 后端隔离数据，不是生产运行记录。
+
+## v1.36 · 课上演示网格下线：演示内容搬进只读静态项目
+
+背景：用户反馈在项目页点击右上角「开发任务」后，默认进入的课上演示网格一屏塞满六个分区，“界面变得好乱”；并要求把这部分内容搬到一个项目名带「静态」的新项目里，按项目工作台的拆分 tabs 展示。
+
+- 真实项目页：删除 `DemoWorkbench` 组件、「课上演示 / 单项查看」布局切换与 `.ws-demo` / `.demo-workbench` / `.demo-zone` 等网格样式；「开发任务」直接进入六个拆分 tabs（详情 / 任务派发 / 执行监控 / Agent 评测 / 活动 / 任务图）。上下文条（Leader · 成员 · 规格来源）与共享 `.input-*` / 派发 / 时间线结构保留。
+- 静态项目：新增「小红书项目搭建（静态）」（`src/static/staticProject.ts` + `staticSnapshot.json`，约 2.9MB 懒加载独立 chunk）。快照由 `scripts/capture_static_snapshot.py` 从真实后端抓取（540 任务 / 82 事件 / 讨论会话 / 成员 / 角色记忆）；所有 UUID 加 `st-` 前缀、任务代码加 `S` 前缀（W1-01 → SW1-01），与真实实体零碰撞。API 层拦截：静态读走快照，静态写一律 409 `static_read_only`；事件流不打开 EventSource，监控徽标显示「静态快照」。静态项目默认展示任务 tabs，不提供讨论入口。
+- 验证：Vitest 65 文件 / 617 项通过（含新增 staticProject 12 项与静态项目页集成 3 项）；`tsc -b` 无错误；`npm run build` 通过（快照为独立懒加载 chunk）。真实后端浏览器回归（Playwright，127.0.0.1:5173 + 8765）：真实项目「开发任务」直出拆分 tabs、无网格无切换；静态项目侧栏可见、540 任务可选、监控显示「静态快照」，两页均无 console/page 错误。截图：`../.tmp-shots/static-move/`（真实项目详情/任务图、静态项目详情/监控/派发）。集成 E2E（demo-path-visibility / assignment-monitor-demo / role-memory-workstation / workstation-observability）已同步改为拆分 tabs 流程，未在本轮重新执行 scripted 后端回归。
+
+## v1.37 · 讨论页只保留底部「补充信息」输入框
+
+背景：用户在「小红书制作」项目讨论页看到两个输入框（暂停时顶部出现的「插话 / 调整方向」+ 底部「补充信息」），反馈“对话框有问题，只保留下面的那个”。
+
+- 移除 `DiscussionControls`（ScorePanel.tsx）里暂停态的 `disc-intervention` 插话输入块与「发送介入」按钮，连同 `onIntervene` 属性链、`intervene` 处理器和 `.disc-intervention` 样式；`DiscussionPendingAction` 去掉 `intervene`。后端介入 API 与 `api.addDiscussionIntervention` 客户端方法保留不动。
+- 底部「补充信息」（supplementDiscussion）成为讨论区唯一输入口；暂停/继续、结束本轮、终止等控制不变。
+- 验证：Vitest 65 文件 / 617 项通过（介入相关用例改为“只剩底部补充框”与“补充失败保留草稿”）；`tsc -b` 与 E2E 类型检查通过；真实浏览器回归（127.0.0.1:5173，小红书制作项目）可见 textarea 仅剩底部补充框、无 page 错误。截图：`../.tmp-shots/static-move/xhs-make-single-composer.png`。discussion-human-intervention E2E 已同步改为暂停→继续流程，未在本轮重跑 scripted 后端。
+
+## v1.38 · 项目工作台「开发任务」补齐冰玻璃语言
+
+背景：用户反馈项目页（/projects/1958d688…）风格与半透明玻璃 UI 不一致。审查发现玻璃化的图形样式只作用在 `.ws`（运行工作台），项目页 `.ws-page` 的任务图落回了 styles.css 的纯白节点基础样式；提示条 / 空状态 / 事件卡也用全局实底样式。
+
+- 图形样式作用域从 `.ws` 扩展为 `:is(.ws, .ws-page)`：flow-node 玻璃卡（半透明冰白填充 + 发丝线描边 + 10px 圆角）、状态色、选中环、graph-reset 胶囊、React Flow 控制器与边线样式，项目页任务图与运行工作台完全同构。未改 React Flow 坐标、布局算法、节点尺寸与交互。
+- 任务图画布容器（ProjectWorkstationPage 内联样式）从实底 `#f7fbfd` 改为 `--glass-surface` 半透明 + `--glass-shadow` + blur(6px) + 24px 面板圆角；任务切换下拉改用 `--glass-field` / `--glass-radius-field`。
+- 新增 `.ws-page` 范围：`.well` 半透明冰白提示条、`.section-title` / `.muted` / `.hint` / 事件卡文字统一深蓝灰角色（--glass-ink / --glass-secondary / --glass-muted），事件卡与运行工作台同款玻璃底。
+- runMonitor.css 辅助文字从低对比浅灰（#7a8fa2 / #6a8296 / #8298aa 等）统一映射到 glass 文字角色令牌；状态语义色不变。
+- 验证：Vitest 65 文件 / 617 项通过；`tsc -b`、生产构建通过。真实浏览器回归：任务图节点 rgba(252,254,254,.97) + 发丝线、画布 rgba(246,253,255,.78) + blur(6px)、提示条半透明，真实项目与静态项目两页一致，无 page 错误。截图：`../.tmp-shots/static-move/glass-graph.png` / `glass-activity.png` / `glass-monitor.png` / `glass-static-graph.png`。

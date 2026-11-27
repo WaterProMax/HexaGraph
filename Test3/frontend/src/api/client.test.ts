@@ -237,6 +237,56 @@ describe("task role memory API methods", () => {
   });
 });
 
+describe("task assignment API", () => {
+  it("assigns with a PUT, encoded scope, actor header and CAS body", async () => {
+    const fetchMock = mockFetch({ code: "T1", assignment: { assignee_bot_id: "bot-a" } });
+
+    await api.assignTask("run/1", "T 1", { assignee_bot_id: "bot-a", expected_revision: 3 }, "leader-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/run%2F1/tasks/T%201/assignment");
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toMatchObject({ "X-Bot-Id": "leader-1" });
+    expect(JSON.parse(init.body)).toEqual({ assignee_bot_id: "bot-a", expected_revision: 3 });
+  });
+
+  it("clears the assignment with a null assignee", async () => {
+    const fetchMock = mockFetch({ code: "T1", assignment: null });
+
+    await api.assignTask("r1", "T1", { assignee_bot_id: null, expected_revision: 4 }, "leader-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/runs/r1/tasks/T1/assignment");
+    expect(JSON.parse(init.body)).toEqual({ assignee_bot_id: null, expected_revision: 4 });
+  });
+
+  it("exposes revision_conflict and assignee_not_member as parsed categories", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error_category: "revision_conflict", detail: "revision mismatch" }),
+      }),
+    );
+    await expect(
+      api.assignTask("r1", "T1", { assignee_bot_id: "bot-a", expected_revision: 1 }, "leader-1"),
+    ).rejects.toMatchObject({ status: 409, category: "revision_conflict" });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error_category: "assignee_not_member", detail: "not a member" }),
+      }),
+    );
+    await expect(
+      api.assignTask("r1", "T1", { assignee_bot_id: "bot-x", expected_revision: 1 }, "leader-1"),
+    ).rejects.toMatchObject({ status: 400, category: "assignee_not_member" });
+  });
+});
+
 describe("discussion control API methods", () => {
   it("sends the control revision on pause, resume, intervention, end-round and start-round", async () => {
     const fetchMock = mockFetch({ session_id: "s-1" });
@@ -295,5 +345,75 @@ describe("discussion control API methods", () => {
     expect(result).toEqual({ running: true, session: { session_id: "s-1" } });
     expect(fetchMock.mock.calls[0][0]).toBe("/api/discussion-sessions/s-1/run");
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+  });
+});
+describe("execution trace API", () => {
+  it("requests the task-scoped trace path and keeps snake_case fields", async () => {
+    const body = {
+      run_id: "run-1",
+      task_code: "T-01",
+      role: "coder",
+      execution_path: "legacy_tool_agent",
+      context_injected: true,
+      current_attempt_id: "a-1",
+      attempts: [
+        {
+          attempt_id: "a-1",
+          status: "finished_ok",
+          started_at: "2026-11-26T00:00:00+00:00",
+          ended_at: "2026-11-26T00:00:01+00:00",
+          role: "coder",
+          context_hash: "ctx",
+          memory_context_hash: "mem",
+          manual_revision: 3,
+          skill_bundle_hash: "",
+          commit: "abc",
+          context_injected: true,
+          execution_path: "legacy_tool_agent",
+          steps: [
+            {
+              step: 1,
+              kind: "tool",
+              name: "read_file",
+              status: "ok",
+              started_at: "2026-11-26T00:00:00+00:00",
+              ended_at: "2026-11-26T00:00:00+00:00",
+              duration_ms: 5,
+              model: "",
+              slot: "",
+              tokens_in: 0,
+              tokens_out: 0,
+              finish_reason: "",
+              input_summary: "path=src/app.py",
+              output_summary: "chars=12",
+              error: null,
+              truncated: true,
+            },
+          ],
+        },
+      ],
+    };
+    const fetchMock = mockFetch(body);
+
+    const trace = await api.executionTrace("run-1", "T-01");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/run-1/tasks/T-01/execution-trace");
+    expect(trace.execution_path).toBe("legacy_tool_agent");
+    expect(trace.context_injected).toBe(true);
+    expect(trace.attempts[0].steps[0]).toMatchObject({
+      kind: "tool",
+      name: "read_file",
+      duration_ms: 5,
+      truncated: true,
+      error: null,
+    });
+  });
+
+  it("encodes run and task identifiers", async () => {
+    const fetchMock = mockFetch({ attempts: [] });
+
+    await api.executionTrace("run/1", "T 01");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/runs/run%2F1/tasks/T%2001/execution-trace");
   });
 });

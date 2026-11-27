@@ -525,7 +525,18 @@ async def list_project_sessions(project_id: str, request: Request) -> Any:
         return _json_error(404, "project_not_found", f"project not found: {project_id}")
     async with bench.db_session() as session:
         records = await DiscussionSessionStore(session).list_for_project(project_id)
-    return {"items": [record.model_dump() for record in records]}
+    from app.workflow.projection import find_run_for_session
+
+    items = []
+    for record in records:
+        run = find_run_for_session(bench.runs, record.session_id)
+        items.append(
+            {
+                **record.model_dump(),
+                "workflow": bench.workflow_projection(run, discussion=record),
+            }
+        )
+    return {"items": items}
 
 
 @router.get("/discussion-sessions/{session_id}")

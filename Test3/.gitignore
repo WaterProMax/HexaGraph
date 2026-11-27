@@ -19,4 +19,5 @@ frontend/test-results/
 frontend/playwright-report/
 *.egg-info/
 .DS_Store
+.tmp-shots/
 backend/*.egg-info/

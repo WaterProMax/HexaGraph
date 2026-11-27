@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError
 
@@ -229,6 +230,29 @@ def _assistant_tool_message(result: Any) -> dict[str, Any]:
     return {"role": "assistant", "content": result.text or None, "tool_calls": tool_calls}
 
 
+def _elapsed_ms(started: float) -> int:
+    return max(int((time.perf_counter() - started) * 1000), 0)
+
+
+def _observe_step(
+    on_step: Callable[[str, dict[str, Any]], Any] | None,
+    kind: str,
+    data: dict[str, Any],
+) -> None:
+    """Forward one observation to the caller; a broken observer is fail-open.
+
+    Observability must never change the agent outcome (no permission, retry,
+    budget or message mutation), so any ``on_step`` failure is swallowed here.
+    """
+
+    if on_step is None:
+        return
+    try:
+        on_step(kind, data)
+    except Exception:  # noqa: BLE001 - observability must not break the loop
+        pass
+
+
 async def run_tool_agent(
     name: str,
     inputs: dict[str, Any],
@@ -238,6 +262,7 @@ async def run_tool_agent(
     gateway: Gateway,
     max_steps: int = 30,
     context_block: str = "",
+    on_step: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> Any:
     role = registry.get(name)
     messages: list[dict[str, Any]] = render_prompt(role, inputs)
@@ -249,17 +274,88 @@ async def run_tool_agent(
             "content": messages[-1]["content"] + "\n\n" + context_block,
         }
     for _ in range(max_steps):
-        result = await gateway.complete(
-            role.slot,
-            messages,
-            role=name,
-            temperature=role.temperature,
-            tools=getattr(toolset, "specs", None),
+        llm_started = time.perf_counter()
+        try:
+            result = await gateway.complete(
+                role.slot,
+                messages,
+                role=name,
+                temperature=role.temperature,
+                tools=getattr(toolset, "specs", None),
+            )
+        except Exception as exc:
+            # Observation only: the exception still propagates unchanged.
+            _observe_step(
+                on_step,
+                "llm",
+                {
+                    "name": name,
+                    "status": "error",
+                    "duration_ms": _elapsed_ms(llm_started),
+                    "model": "",
+                    "slot": role.slot,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "finish_reason": "",
+                    "messages": messages,
+                    "tool_names": [],
+                    "text": "",
+                    "error": str(exc),
+                },
+            )
+            raise
+        _observe_step(
+            on_step,
+            "llm",
+            {
+                "name": name,
+                "status": "ok",
+                "duration_ms": _elapsed_ms(llm_started),
+                "model": str(getattr(result, "model", "") or ""),
+                "slot": role.slot,
+                "tokens_in": int(getattr(result, "tokens_in", 0) or 0),
+                "tokens_out": int(getattr(result, "tokens_out", 0) or 0),
+                "finish_reason": str(getattr(result, "finish_reason", "") or ""),
+                "messages": messages,
+                "tool_names": [str(call.get("name") or "") for call in (result.tool_calls or [])],
+                "text": str(getattr(result, "text", "") or ""),
+                "error": "",
+            },
         )
         if result.tool_calls:
             messages.append(_assistant_tool_message(result))
             for index, call in enumerate(result.tool_calls):
-                output = await toolset.execute(call["name"], call.get("arguments") or {})
+                arguments = call.get("arguments") or {}
+                tool_started = time.perf_counter()
+                try:
+                    output = await toolset.execute(call["name"], arguments)
+                except Exception as exc:
+                    _observe_step(
+                        on_step,
+                        "tool",
+                        {
+                            "name": str(call.get("name") or ""),
+                            "status": "error",
+                            "duration_ms": _elapsed_ms(tool_started),
+                            "arguments": arguments,
+                            "output": None,
+                            "error": str(exc),
+                        },
+                    )
+                    raise
+                denied = isinstance(output, dict) and bool(output.get("denied"))
+                _observe_step(
+                    on_step,
+                    "tool",
+                    {
+                        "name": str(call.get("name") or ""),
+                        "status": "denied" if denied else "ok",
+                        "duration_ms": _elapsed_ms(tool_started),
+                        "arguments": arguments,
+                        "output": output,
+                        "error": str(output.get("error") or "") if denied else "",
+                    },
+                )
                 messages.append(
                     {
                         "role": "tool",

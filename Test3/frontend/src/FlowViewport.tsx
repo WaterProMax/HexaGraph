@@ -3,7 +3,7 @@ import { useReactFlow } from "@xyflow/react";
 
 export const FLOW_MIN_ZOOM = 0.3;
 export const FLOW_MAX_ZOOM = 1.6;
-/** Auto/reset fit never zooms out past this; a graph wider than the canvas is anchored at its start. */
+/** Auto/reset fit never zooms out past this; a graph too large to fit is centred on its anchor node. */
 export const FLOW_READABLE_ZOOM = 0.6;
 const FIT_PADDING = 32;
 
@@ -15,6 +15,14 @@ export interface Size {
 export interface FlowBounds {
   width: number;
   height: number;
+  /** Top-left of the layout in graph coordinates; defaults to (0, 0). */
+  minX?: number;
+  minY?: number;
+}
+
+export interface ViewportAnchor {
+  x: number;
+  y: number;
 }
 
 export interface ViewportTarget {
@@ -25,25 +33,39 @@ export interface ViewportTarget {
 
 /**
  * Viewport for "show the graph": fit it when that stays readable, otherwise keep text readable
- * and start at the left edge so the user pans through the rest. Pure, so it can be tested.
- * ``readableZoom`` is the floor; views with large nodes (the architecture diagram) may lower it.
+ * and centre on ``anchor`` (the current task) so a graph that cannot fit still opens on something
+ * meaningful. ``readableZoom`` is the floor; views with large nodes may lower it.
+ *
+ * A large layered DAG spreads over tens of thousands of pixels and its geometric top-left corner
+ * can contain no node at all, so "anchor at the origin" would open on empty canvas; hence the
+ * explicit ``anchor`` when the whole graph cannot be shown.
  */
 export function computeFitViewport(
   bounds: FlowBounds,
   size: Size,
   padding = FIT_PADDING,
   readableZoom: number = FLOW_READABLE_ZOOM,
+  anchor: ViewportAnchor | null = null,
 ): ViewportTarget {
   const availW = Math.max(1, size.w - padding * 2);
   const availH = Math.max(1, size.h - padding * 2);
+  const minX = bounds.minX ?? 0;
+  const minY = bounds.minY ?? 0;
   const fit = Math.min(availW / Math.max(1, bounds.width), availH / Math.max(1, bounds.height));
   if (fit >= readableZoom) {
     const zoom = Math.min(fit, 1);
-    return { zoom, x: (size.w - bounds.width * zoom) / 2, y: (size.h - bounds.height * zoom) / 2 };
+    return {
+      zoom,
+      x: (size.w - bounds.width * zoom) / 2 - minX * zoom,
+      y: (size.h - bounds.height * zoom) / 2 - minY * zoom,
+    };
   }
   const zoom = readableZoom;
+  if (anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y)) {
+    return { zoom, x: size.w / 2 - anchor.x * zoom, y: size.h / 2 - anchor.y * zoom };
+  }
   const scaledH = bounds.height * zoom;
-  return { zoom, x: padding, y: scaledH <= availH ? (size.h - scaledH) / 2 : padding };
+  return { zoom, x: padding - minX * zoom, y: (scaledH <= availH ? (size.h - scaledH) / 2 : padding) - minY * zoom };
 }
 
 /** Bounding box of absolutely positioned fixed-size nodes. */
@@ -98,6 +120,8 @@ interface FitSource {
   bounds: FlowBounds;
   getSize: () => Size;
   readableZoom?: number;
+  /** Graph-space point to centre on when the whole graph cannot be shown. */
+  anchor?: ViewportAnchor | null;
 }
 
 function useFitNow(source: FitSource) {
@@ -106,11 +130,11 @@ function useFitNow(source: FitSource) {
   latest.current = source;
   /** Returns false while the container is not measured yet. */
   return useCallback(() => {
-    const { bounds, getSize, readableZoom = FLOW_READABLE_ZOOM } = latest.current;
+    const { bounds, getSize, readableZoom = FLOW_READABLE_ZOOM, anchor = null } = latest.current;
     const size = getSize();
     if (!size.w || !size.h) return false;
     if (bounds.width > 0 && bounds.height > 0) {
-      void setViewport(computeFitViewport(bounds, size, FIT_PADDING, readableZoom), { duration: 200 });
+      void setViewport(computeFitViewport(bounds, size, FIT_PADDING, readableZoom, anchor), { duration: 200 });
     }
     return true;
   }, [setViewport]);
@@ -126,12 +150,28 @@ export function FlowAutoFit({
   bounds,
   getSize,
   readableZoom,
+  anchor = null,
+  followAnchor,
 }: FitSource & {
   structure: string;
   userMoved: MutableRefObject<boolean>;
+  /** Changing this key re-centres on ``anchor`` even after the user panned (dense graphs). */
+  followAnchor?: string;
 }) {
-  const fitNow = useFitNow({ bounds, getSize, readableZoom });
+  const fitNow = useFitNow({ bounds, getSize, readableZoom, anchor });
   const lastStructure = useRef<string | null>(null);
+
+  // Dense graphs cannot show every node at a readable zoom, so the viewport follows the current
+  // task: selecting a row in the task tree must land on that node instead of leaving the canvas
+  // parked on an unrelated region. Small graphs are unaffected (the caller passes no key).
+  useEffect(() => {
+    if (!followAnchor) return;
+    userMoved.current = false;
+    const timer = window.setTimeout(() => {
+      fitNow();
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [followAnchor, fitNow, userMoved]);
 
   useEffect(() => {
     const previous = lastStructure.current;
@@ -160,8 +200,9 @@ export function FlowResetButton({
   bounds,
   getSize,
   readableZoom,
+  anchor = null,
 }: FitSource & { userMoved: MutableRefObject<boolean> }) {
-  const fitNow = useFitNow({ bounds, getSize, readableZoom });
+  const fitNow = useFitNow({ bounds, getSize, readableZoom, anchor });
   return (
     <button
       type="button"

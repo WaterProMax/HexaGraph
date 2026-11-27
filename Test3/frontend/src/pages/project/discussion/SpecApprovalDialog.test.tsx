@@ -125,7 +125,7 @@ describe("SpecApprovalDialog", () => {
     apiMock.resolveDiscussion.mockResolvedValue(updated);
     const props = renderDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "通过，进入任务拆解" }));
+    fireEvent.click(screen.getByRole("button", { name: "通过，进入设计规格" }));
 
     await waitFor(() => expect(props.onApproved).toHaveBeenCalledWith(updated));
     expect(apiMock.resolveDiscussion).toHaveBeenCalledWith(
@@ -207,7 +207,7 @@ describe("SpecApprovalDialog", () => {
     );
     const props = renderDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "通过，进入任务拆解" }));
+    fireEvent.click(screen.getByRole("button", { name: "通过，进入设计规格" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("规格版本已变化，请刷新后重试");
@@ -222,7 +222,7 @@ describe("SpecApprovalDialog", () => {
     );
     const props = renderDialog({ actorBotId: "bot-a" });
 
-    fireEvent.click(screen.getByRole("button", { name: "通过，进入任务拆解" }));
+    fireEvent.click(screen.getByRole("button", { name: "通过，进入设计规格" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("只有会话 Leader 可以批准或打回");

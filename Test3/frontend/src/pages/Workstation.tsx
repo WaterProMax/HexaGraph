@@ -9,17 +9,6 @@ import {
   ReloadOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  Position,
-  ReactFlow,
-  type Edge,
-  type Node,
-  type NodeChange,
-} from "@xyflow/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, controlEnabled } from "../api/client";
@@ -30,18 +19,7 @@ import { designComposerForced } from "../components/designImportWait";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
-import { readableFlowEdge } from "../flowEdgeStyle";
-import { useFlowNodeHover } from "../useFlowNodeHover";
-import { layoutLayered, structureKey } from "../flowLayout";
-import { layeredEdgeTypes } from "../LayeredEdge";
-import {
-  FLOW_MAX_ZOOM,
-  FLOW_MIN_ZOOM,
-  FlowAutoFit,
-  FlowResetButton,
-  useFlowViewportMemory,
-  useMeasuredElement,
-} from "../FlowViewport";
+import { TaskDependencyGraph } from "./project/TaskDependencyGraph";
 import { WorkstationLayoutControls, WorkstationSplitter, LEFT_PANEL_ID } from "../components/WorkstationSplitter";
 import { useWorkstationLayout } from "../workstationLayout";
 import {
@@ -88,37 +66,6 @@ const TASK_ACTIONS = [
 
 const PIPELINE = ["想法", "讨论", "方案", "评审", "SPEC", "DESIGN", "PLAN", "执行", "验收"];
 
-function TwinTaskNode({ data }: { data: any }) {
-  const status: ItemStatus = data.status || "pending";
-  return (
-    <div
-      className={`flow-node ${data.selected ? "selected" : ""} ${data.kind === "package" ? "package-node" : ""}`}
-      data-status={status}
-      title={`${data.code} · ${data.title}（${STATUS_META[status].label}）`}
-    >
-      <Handle type="target" position={Position.Left} isConnectable={false} />
-      <div className="head">
-        <span className={`dot ${status}`} />
-        <span className="code">{data.code}</span>
-        <span className="state">{data.kind === "package" ? "展开 ›" : data.rawState || STATUS_META[status].label}</span>
-      </div>
-      <div className="title" title={data.title}>
-        {data.title}
-      </div>
-      {data.subtitle && <div className="sub" title={data.subtitle}>{data.subtitle}</div>}
-      <Handle type="source" position={Position.Right} isConnectable={false} />
-    </div>
-  );
-}
-
-const nodeTypes = { twinTask: TwinTaskNode };
-
-/** Quantised so small container changes (splitter drags) do not reshuffle edge-less grids. */
-function aspectBucket(w: number, h: number): number {
-  if (!w || !h) return 0;
-  return Math.min(3, Math.max(1, Math.round((w / h) * 2) / 2));
-}
-
 export default function Workstation() {
   const { id: routeRunId } = useParams();
   const nav = useNavigate();
@@ -128,7 +75,6 @@ export default function Workstation() {
   const [projectName, setProjectName] = useState("自习室空位查询小程序");
   const [ideaInput, setIdeaInput] = useState(DEFAULT_IDEA);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const { hoveredNodeId, hoverNode, leaveNode } = useFlowNodeHover();
   const [controlReason, setControlReason] = useState("");
   const [gateReason, setGateReason] = useState("");
   const [supplementText, setSupplementText] = useState("");
@@ -147,13 +93,8 @@ export default function Workstation() {
   const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
   const [designResult, setDesignResult] = useState<any>(null);
   const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
-  const [canvasAspect, setCanvasAspect] = useState(0);
   const [openedPackage, setOpenedPackage] = useState<string | null>(null);
-  // The aspect is taken from the first measurement only (it just shapes edge-less grids), so later
-  // container changes - splitter drags, window resizes - never re-lay-out or refit the view.
-  const graphBox = useMeasuredElement((w, h) => setCanvasAspect((previous) => previous || aspectBucket(w, h)));
   const layout = useWorkstationLayout();
-  const viewport = useFlowViewportMemory();
   const [editSourceSignal, setEditSourceSignal] = useState(0);
 
   const { data: runsList } = useQuery({
@@ -442,88 +383,6 @@ export default function Workstation() {
     () => allItems.find((i) => i.id === selectedId) || mainGraph.items[0] || allItems[0] || null,
     [allItems, mainGraph, selectedId],
   );
-
-  const graphIds = useMemo(() => mainGraph.items.map((item) => item.id), [mainGraph]);
-  const graphStructure = structureKey(graphIds, mainGraph.edges);
-  // Re-layout only when the structure (or the quantised container shape) changes, not on status polls.
-  const layered = useMemo(
-    () => layoutLayered(graphIds, mainGraph.edges, {
-      aspect: canvasAspect || undefined,
-      rankGap: mainGraph.kind === "packages" ? 172 : undefined,
-      nodeGap: mainGraph.kind === "packages" ? 72 : undefined,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graphStructure, canvasAspect, mainGraph.kind],
-  );
-
-  const flowNodes = useMemo<Node[]>(
-    () =>
-      mainGraph.items.map((item) => ({
-        id: item.id,
-        type: "twinTask",
-        position: layered.positions[item.id] || { x: 0, y: 0 },
-        draggable: false,
-        connectable: false,
-        ariaLabel: `${item.code} ${item.title}，${STATUS_META[item.status].label}`,
-        data: { ...item, selected: selectedItem?.id === item.id },
-      })),
-    [mainGraph, layered, selectedItem?.id],
-  );
-
-  const edgePorts = useMemo(() => {
-    const sourceOffsets = new Map<string, number>();
-    const targetOffsets = new Map<string, number>();
-    const assign = (end: "source" | "target") => {
-      const groups = new Map<string, string[]>();
-      for (const edge of mainGraph.edges) {
-        const node = end === "source" ? edge.source : edge.target;
-        groups.set(node, [...(groups.get(node) || []), edge.id]);
-      }
-      const offsets = new Map<string, number>();
-      for (const ids of groups.values()) {
-        if (ids.length < 2) continue;
-        ids.sort((left, right) => {
-          const edgeLeft = mainGraph.edges.find((edge) => edge.id === left)!;
-          const edgeRight = mainGraph.edges.find((edge) => edge.id === right)!;
-          const otherLeft = end === "source" ? edgeLeft.target : edgeLeft.source;
-          const otherRight = end === "source" ? edgeRight.target : edgeRight.source;
-          const delta = (layered.positions[otherLeft]?.y ?? 0) - (layered.positions[otherRight]?.y ?? 0);
-          return delta || left.localeCompare(right);
-        });
-        const spacing = Math.min(9, 56 / (ids.length - 1));
-        ids.forEach((id, index) => offsets.set(id, (index - (ids.length - 1) / 2) * spacing));
-      }
-      return offsets;
-    };
-    return { sources: assign("source"), targets: assign("target") };
-  }, [mainGraph, layered]);
-
-  const flowEdges = useMemo<Edge[]>(
-    () =>
-      mainGraph.edges.map((edge) => ({
-        ...readableFlowEdge({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: "layered",
-          focusNodeId: hoveredNodeId || selectedId,
-        }),
-        data: {
-          route: layered.routes[edge.id],
-          ortho: mainGraph.kind === "packages" || mainGraph.kind === "tasks",
-          sourceOffset: edgePorts.sources.get(edge.id) || 0,
-          targetOffset: edgePorts.targets.get(edge.id) || 0,
-        },
-      })),
-    [mainGraph, layered, hoveredNodeId, selectedId, edgePorts],
-  );
-
-  const onNodesChange = (changes: NodeChange[]) => {
-    // Keyboard selection (Enter on a focused node) arrives as a select change; nothing else is applied.
-    for (const change of changes) {
-      if (change.type === "select" && change.selected) setSelectedId(change.id);
-    }
-  };
 
   const designImportStatus: string | undefined = artifacts?.design_input_status;
   const emptyNotice = emptyGraphNotice({ run, designImportStatus, importing: importingDesign, isDesignRun });
@@ -1051,60 +910,33 @@ export default function Workstation() {
                         <span>{graphCaption}</span>
                       </li>
                     </ol>
-                    <div className="graph-flow" ref={graphBox.attach}>
-                      {mainGraph.kind === "empty" && (
-                        <div className={`graph-empty tone-${emptyNotice.tone}`} role="status" data-testid="graph-empty">
-                          <strong>{emptyNotice.title}</strong>
-                          <span>{emptyNotice.detail}</span>
-                        </div>
-                      )}
-                      <ReactFlow
-                        nodes={flowNodes}
-                        edges={flowEdges}
-                        nodeTypes={nodeTypes}
-                        edgeTypes={layeredEdgeTypes}
-                        defaultViewport={{ x: 24, y: 24, zoom: 1 }}
-                        minZoom={FLOW_MIN_ZOOM}
-                        maxZoom={FLOW_MAX_ZOOM}
-                        nodesDraggable={false}
-                        nodesConnectable={false}
-                        elementsSelectable
-                        onMoveStart={viewport.onMoveStart}
-                        onNodesChange={onNodesChange}
-                        onNodeClick={(_, node) => {
-                          const item = mainGraph.items.find((entry) => entry.id === node.id);
-                          if (item?.kind === "package") {
-                            setOpenedPackage(node.id);
-                            setSelectedId(null);
-                          } else {
-                            setSelectedId(node.id);
-                          }
-                        }}
-                        onNodeMouseEnter={(_, node) => hoverNode(node.id)}
-                        onNodeMouseLeave={(_, node) => leaveNode(node.id)}
-                      >
-                        <Background variant={BackgroundVariant.Dots} gap={22} size={0.7} color="#e3ebf0" />
-                        <Controls
-                          position="top-right"
-                          showInteractive={false}
-                          onZoomIn={viewport.markUserMoved}
-                          onZoomOut={viewport.markUserMoved}
-                        />
-                        <FlowAutoFit
-                          structure={`${activeRunId}|${graphStructure}|${canvasAspect}`}
-                          userMoved={viewport.userMoved}
-                          bounds={{ width: layered.width, height: layered.height }}
-                          getSize={graphBox.getSize}
-                          readableZoom={0.82}
-                        />
-                        <FlowResetButton
-                          userMoved={viewport.userMoved}
-                          bounds={{ width: layered.width, height: layered.height }}
-                          getSize={graphBox.getSize}
-                        />
-                      </ReactFlow>
-                    </div>
-
+                    <TaskDependencyGraph
+                      tasks={mainGraph.items}
+                      edges={mainGraph.edges}
+                      kind={mainGraph.kind}
+                      selected={selectedItem?.id}
+                      focusNodeId={selectedId}
+                      onSelect={(nodeId) => {
+                        const item = mainGraph.items.find((entry) => entry.id === nodeId);
+                        if (item?.kind === "package") {
+                          setOpenedPackage(nodeId);
+                          setSelectedId(null);
+                        } else {
+                          setSelectedId(nodeId);
+                        }
+                      }}
+                      emptyText={null}
+                      fitKey={activeRunId || ""}
+                      className="graph-flow"
+                      overlay={
+                        mainGraph.kind === "empty" ? (
+                          <div className={`graph-empty tone-${emptyNotice.tone}`} role="status" data-testid="graph-empty">
+                            <strong>{emptyNotice.title}</strong>
+                            <span>{emptyNotice.detail}</span>
+                          </div>
+                        ) : null
+                      }
+                    />
                     {selectedItem && (
                       <div className="dock">
                         <div className="dock-info">

@@ -1,3 +1,10 @@
+import {
+  resolveStaticRead,
+  staticRequestKind,
+  withStaticProject,
+  withStaticRun,
+} from "../static/staticProject";
+
 const BASE = "/api";
 
 export class ApiError extends Error {
@@ -54,6 +61,15 @@ function parseApiError(status: number, text: string): ApiError {
 }
 
 async function req(path: string, init?: RequestInit) {
+  // 静态演示项目：读请求走本地快照，写请求一律拒绝，绝不触碰真实后端。
+  const staticKind = staticRequestKind(path, init);
+  if (staticKind === "write") {
+    throw new ApiError("静态演示项目为只读快照，不支持修改。", {
+      status: 409,
+      category: "static_read_only",
+    });
+  }
+  if (staticKind === "read") return resolveStaticRead(path);
   const res = await fetch(BASE + path, {
     ...init,
     // Spread init first so an actor-only header map cannot drop Content-Type.
@@ -74,8 +90,8 @@ function botHeader(botId: string): Record<string, string> {
 
 export const api = {
   health: () => req("/health"),
-  projects: (includeArchived = false) =>
-    req(`/projects${includeArchived ? "?include_archived=true" : ""}`),
+  projects: async (includeArchived = false) =>
+    withStaticProject(await req(`/projects${includeArchived ? "?include_archived=true" : ""}`)),
   createProject: (name: string) => req("/projects", { method: "POST", body: JSON.stringify({ name }) }),
   archiveProject: (projectId: string) =>
     req(`/projects/${encodeURIComponent(projectId)}/archive`, { method: "POST", body: JSON.stringify({}) }),
@@ -95,7 +111,7 @@ export const api = {
       body: JSON.stringify({ text, source, title }),
       signal: init?.signal,
     }),
-  runs: () => req("/runs"),
+  runs: async () => withStaticRun(await req("/runs")),
   run: (id: string, init?: RequestInit) => req(`/runs/${id}`, init),
   stages: (id: string) => req(`/runs/${id}/stages`),
   discussion: (id: string) => req(`/runs/${id}/discussion`),
@@ -104,6 +120,14 @@ export const api = {
   tasks: (id: string) => req(`/runs/${id}/tasks`),
   monitor: (id: string): Promise<import("./types").MonitorSnapshot> => req(`/runs/${id}/monitor`),
   task: (taskId: string) => req(`/tasks/${taskId}`),
+  /** Step-level observation for one task's attempts (read-only). */
+  executionTrace: (
+    runId: string,
+    taskCode: string,
+  ): Promise<import("./types").ExecutionTrace> =>
+    req(
+      `/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/execution-trace`,
+    ),
   taskRoleMemory: (
     runId: string,
     taskCode: string,
@@ -136,6 +160,18 @@ export const api = {
       `/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/role-memory/${role}?expected_revision=${expectedRevision}`,
       { method: "DELETE", headers: botHeader(botId) },
     ),
+  /** A1 dispatch overlay: Leader-only single-task write; null assignee clears. */
+  assignTask: (
+    runId: string,
+    taskCode: string,
+    body: import("./types").TaskAssignmentUpdate,
+    botId: string,
+  ): Promise<import("./types").RunTask> =>
+    req(`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskCode)}/assignment`, {
+      method: "PUT",
+      headers: botHeader(botId),
+      body: JSON.stringify(body),
+    }),
   budget: (id: string) => req(`/runs/${id}/budget`),
   trace: (id: string) => req(`/runs/${id}/trace`),
   events: (id: string, after = 0) => req(`/runs/${id}/events/history?after=${after}`),
@@ -299,6 +335,11 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json", ...botHeader(botId) },
       body: JSON.stringify({ text }),
+    }),
+  designDiscussion: (sessionId: string, botId: string): Promise<{ run_id: string }> =>
+    req(`/discussion-sessions/${sessionId}/design`, {
+      method: "POST",
+      headers: botHeader(botId),
     }),
   planDiscussion: (sessionId: string, botId: string): Promise<{ run_id: string }> =>
     req(`/discussion-sessions/${sessionId}/plan`, {

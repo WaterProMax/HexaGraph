@@ -233,7 +233,9 @@ test("UI redesign walkthrough", async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/ui-r03-members-dialog.png`, fullPage: true });
   await page.getByRole("button", { name: "关闭成员管理" }).click();
 
-  // R04: review cards, defect locate highlight.
+  // R04: review cards, defect locate highlight. The project lands on 项目讨论;
+  // switch to the task workspace before reaching the workstation tabs.
+  await page.getByRole("button", { name: "开发任务" }).click();
   await page.getByTestId("tab-monitor").click();
   await expect(page.getByTestId("discussion-review-panel").getByText("周明")).toBeVisible();
   await expect(page.getByText("座位规则")).toBeVisible();
@@ -243,7 +245,8 @@ test("UI redesign walkthrough", async ({ page }) => {
   await expect(page.getByTestId("detail-task-code")).toHaveText("T-02");
   await expect(page.getByTestId("tab-details")).toHaveClass(/active/);
   await expect(page.getByTestId("tab-monitor")).not.toHaveClass(/active/);
-  await expect(page.getByRole("treeitem", { name: /T-02/ })).toHaveClass(/highlight/);
+  // 详情 is full width now: the located task shows in the header picker instead of a tree highlight.
+  await expect(page.getByLabel("切换任务")).toHaveValue("T-02");
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.screenshot({ path: `${SHOTS}/ui-r04-defect-locate.png`, fullPage: true });
 

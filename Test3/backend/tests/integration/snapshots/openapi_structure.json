@@ -347,6 +347,17 @@
         "422"
       ]
     },
+    "GET /api/runs/{run_id}/tasks/{task_code}/execution-trace": {
+      "body": null,
+      "params": [
+        "path:run_id*",
+        "path:task_code*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
     "GET /api/runs/{run_id}/tasks/{task_code}/role-memory/{role}": {
       "body": null,
       "params": [
@@ -492,6 +503,16 @@
       ]
     },
     "POST /api/discussion-sessions/{session_id}/converge": {
+      "body": null,
+      "params": [
+        "path:session_id*"
+      ],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "POST /api/discussion-sessions/{session_id}/design": {
       "body": null,
       "params": [
         "path:session_id*"
@@ -905,6 +926,17 @@
     "PUT /api/config/models": {
       "body": "object",
       "params": [],
+      "responses": [
+        "200",
+        "422"
+      ]
+    },
+    "PUT /api/runs/{run_id}/tasks/{task_code}/assignment": {
+      "body": null,
+      "params": [
+        "path:run_id*",
+        "path:task_code*"
+      ],
       "responses": [
         "200",
         "422"

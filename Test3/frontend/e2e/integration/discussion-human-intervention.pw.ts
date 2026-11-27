@@ -18,9 +18,6 @@ const API = "http://127.0.0.1:8766/api";
 const FRONTEND = "http://127.0.0.1:5174";
 const GATE = `${API}/e2e/discussion-gate`;
 const IDEA = "做一个能按楼层查看自习室剩余座位并允许到场学生上报的小程序。";
-const INTERVENTION = "请补充座位数据的过期规则，并写进验收标准。";
-// Marker the scripted fixture inserts only when the prompt carries the revision rule.
-const REVISED_MARKER = "座位数据超过 30 分钟未更新";
 const END_REASON = "分差过大，人工结束本轮";
 
 type SessionRecord = {
@@ -223,7 +220,7 @@ async function waitForHeldReview(page: Page, request: APIRequestContext): Promis
     .toContain("review");
 }
 
-test("scripted: pause a held review, intervene, resume to a human approval", async ({
+test("scripted: pause a held review, resume to a human approval (single supplement composer)", async ({
   page,
   request,
 }) => {
@@ -256,38 +253,22 @@ test("scripted: pause a held review, intervene, resume to a human approval", asy
 
   // 2. Release the in-flight call: the driver must publish a safe cooperative pause.
   await releaseGate(request);
-  await expect(page.getByTestId("disc-intervention")).toBeVisible({ timeout: 20000 });
-  await expect(pauseButton).toHaveText("继续");
+  await expect(pauseButton).toHaveText("继续", { timeout: 20000 });
   const paused = await readSession(request, sessionId, leaderId);
   expect(paused.paused).toBe(true);
   expect(paused.pause_requested).toBe(false);
   expect(paused.decision_package).toBeNull();
   expect(paused.status).toBe("cross_review");
 
-  // 3. Same-session intervention; the revision rule must steer the resumed output.
-  await page.getByLabel("讨论插话").fill(INTERVENTION);
-  await page.getByTestId("disc-send-intervention").click();
-  await expect(
-    page
-      .getByTestId("disc-chat")
-      .getByTestId("disc-bubble-user")
-      .filter({ hasText: INTERVENTION })
-      .first(),
-  ).toBeVisible({ timeout: 20000 });
-  await expect
-    .poll(async () => ((await readSession(request, sessionId, leaderId)).interventions ?? []).length, {
-      timeout: 15000,
-    })
-    .toBe(1);
-  const intervened = await readSession(request, sessionId, leaderId);
-  expect(intervened.interventions?.[0]?.text).toBe(INTERVENTION);
-  expect(intervened.control_revision).toBeGreaterThan(paused.control_revision);
+  // 3. The top intervention box is retired: the bottom supplement composer is the only input.
+  await expect(page.getByTestId("disc-intervention")).toHaveCount(0);
+  await expect(page.getByLabel("讨论插话")).toHaveCount(0);
+  await expect(page.getByLabel("补充信息")).toBeVisible();
 
   // 4. Resume: the discussion completes and stops at the human approval gate.
   await pauseButton.click();
   await expect(page.getByTestId("disc-approval-banner")).toBeVisible({ timeout: 30000 });
   await expect(page.getByTestId("disc-approval-dialog")).toBeVisible({ timeout: 30000 });
-  await expect(page.getByTestId("disc-approval-dialog")).toContainText(REVISED_MARKER);
 
   const finalSessions: SessionRecord[] = [];
   await expect
@@ -304,8 +285,7 @@ test("scripted: pause a held review, intervene, resume to a human approval", asy
   expect(approval).toBeDefined();
   expect(approval.status).toBe("converged_pending_human");
   expect(approval.paused).toBe(false);
-  expect(approval.decision_package?.body_md).toContain(REVISED_MARKER);
-  expect(approval.decision_package?.body_md).toContain("本次修订");
+  expect(approval.decision_package?.body_md ?? "").not.toHaveLength(0);
   errors.assertClean();
 });
 

@@ -2,31 +2,65 @@ import { TeamOutlined, UserAddOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
-import type { BotInstance, DefectRecord, GrantStatus, ReviewBallot, RunTask } from "../../api/types";
+import type {
+  BotInstance,
+  DefectRecord,
+  DiscussionSession,
+  GrantStatus,
+  ReviewBallot,
+  RunTask,
+  TaskAssignment,
+} from "../../api/types";
 import type { LoadState } from "../../components/AppShell";
 import { LEFT_PANEL_ID, WorkstationSplitter } from "../../components/WorkstationSplitter";
+import { useRunEvents } from "../../hooks/useRunEvents";
+import { mapTaskState } from "../../workstationGraph";
 import { useWorkstationLayout } from "../../workstationLayout";
 import { AgentEvaluationPanel } from "./AgentEvaluationPanel";
+import { ApprovedSpecPanel, type ApprovedSpecStatus } from "./ApprovedSpecPanel";
 import { DefectList } from "./DefectList";
 import { DiscussionReviewPanel } from "./DiscussionReviewPanel";
 import { DiscussionView } from "./discussion/DiscussionView";
 import { GrantStatusBanner } from "./GrantStatusBanner";
+import { InputConstraintsPanel, type TaskInputConstraints } from "./InputConstraintsPanel";
 import { InviteBotsDialog } from "./InviteBotsDialog";
 import { ManageMembersDialog } from "./ManageMembersDialog";
 import { ProjectMemoryPanel } from "./ProjectMemoryPanel";
+import { RequirementTracePanel } from "./RequirementTracePanel";
 import { RunMonitorPanel } from "./RunMonitorPanel";
+import { RunEventTimeline } from "./RunEventTimeline";
+import { TaskDependencyGraph } from "./TaskDependencyGraph";
+import { TaskAssignmentBoard } from "./TaskAssignmentBoard";
 import { TeamStrip, type TeamMember } from "./TeamStrip";
+import { isStaticProjectId, loadStaticSnapshot } from "../../static/staticProject";
 
-export type WorkstationTab = "details" | "monitor" | "evaluation" | "activity" | "graph";
+export type WorkstationTab = "details" | "assignment" | "monitor" | "evaluation" | "activity" | "graph";
 
-export type WorkstationTask = { code: string; title: string; progress: number; status: string };
+const EMPTY_SESSIONS: DiscussionSession[] = [];
+
+/**
+ * Task row shown on the project main path. Besides the progress summary it keeps
+ * the persisted, read-only task-card inputs (role / depends_on / write_set /
+ * acceptance / description / module / parent / points / budget) and the frozen
+ * context state of the last attempt so 详情 and 任务图 show real input instead of
+ * an in-memory note.
+ */
+export type WorkstationTask = TaskInputConstraints & {
+  progress: number;
+  /** Raw backend task state (e.g. running / done / ready); never re-encoded. */
+  status: string;
+  /** Task-level revision: the CAS source for control and assignment writes. */
+  revision?: number;
+  /** A1 dispatch overlay; null when unassigned. Execution stays role-scoped. */
+  assignment?: TaskAssignment | null;
+};
 
 export type ProjectWorkstationProps = {
   projectId: string;
   /** Shown as the page title; falls back to a generic title until it loads. */
   projectName?: string;
   loadState: LoadState;
-  tasks: Array<{ code: string; title: string; progress: number; status: string }>;
+  tasks: WorkstationTask[];
   dirtyRef: { current: boolean };
   initialTab?: WorkstationTab;
   errorText?: string;
@@ -43,6 +77,8 @@ export type ProjectWorkstationProps = {
   };
   memoryPanel?: ReactNode;
   bots?: BotInstance[];
+  /** Full discussion sessions for the read-only approved-spec panel. */
+  sessions?: DiscussionSession[];
   /** The project discussion remains available alongside existing runs. */
   discussionPanel?: ReactNode;
   onShowDiscussion?: () => void;
@@ -51,10 +87,13 @@ export type ProjectWorkstationProps = {
   /** Local actor header used by task-scoped memory panels. */
   actorBotId?: string;
   actorIsLeader?: boolean;
+  /** Run status from the run view; done/terminated makes the dispatch board read-only. */
+  runStatus?: string;
 };
 
 const TAB_LABELS: Array<{ key: WorkstationTab; label: string }> = [
   { key: "details", label: "详情" },
+  { key: "assignment", label: "任务派发" },
   { key: "monitor", label: "执行监控" },
   { key: "evaluation", label: "Agent 评测" },
   { key: "activity", label: "活动" },
@@ -67,13 +106,77 @@ export function progressForState(state: string): number {
   return 0;
 }
 
+/**
+ * Map the backend task list without inventing states. Card/attempt fields are
+ * copied only when the payload actually carries them, so a minimal task row
+ * stays minimal instead of gaining misleading defaults.
+ */
 export function mapTasks(tasks: RunTask[]): WorkstationTask[] {
-  return (Array.isArray(tasks) ? tasks : []).map((task) => ({
-    code: String(task.code),
-    title: String(task.card?.title || task.code),
-    progress: progressForState(String(task.state)),
-    status: String(task.state),
-  }));
+  return (Array.isArray(tasks) ? tasks : []).map((task) => {
+    const card = (task.card || {}) as Record<string, unknown>;
+    const attempt =
+      task && typeof (task as Record<string, unknown>).attempt === "object" && (task as Record<string, unknown>).attempt
+        ? ((task as Record<string, unknown>).attempt as Record<string, unknown>)
+        : null;
+    const mapped: WorkstationTask = {
+      code: String(task.code),
+      title: String(card.title || task.code),
+      progress: progressForState(String(task.state)),
+      status: String(task.state),
+    };
+    if (typeof task.revision === "number") mapped.revision = task.revision;
+    if ("assignment" in task) {
+      const assignment = (task as Record<string, unknown>).assignment;
+      mapped.assignment =
+        assignment && typeof assignment === "object" ? (assignment as TaskAssignment) : null;
+    }
+    if (Array.isArray(card.depends_on)) mapped.dependsOn = card.depends_on.map(String);
+    if (typeof card.role === "string") mapped.role = card.role;
+    if (Array.isArray(card.write_set)) mapped.writeSet = card.write_set.map(String);
+    if (typeof card.description === "string") mapped.description = card.description;
+    if (typeof card.module === "string") mapped.module = card.module;
+    if (typeof card.parent === "string") mapped.parent = card.parent;
+    if (typeof card.points === "number") mapped.points = card.points;
+    if (Array.isArray(card.acceptance)) {
+      mapped.acceptance = card.acceptance.map((item: any) => ({
+        cmd: Array.isArray(item?.cmd) ? item.cmd.map(String) : item?.cmd != null ? String(item.cmd) : undefined,
+        passCriteria: item?.pass_criteria != null ? String(item.pass_criteria) : undefined,
+        fromCriterion: item?.from_criterion != null ? String(item.from_criterion) : undefined,
+      }));
+    }
+    if (card.budget && typeof card.budget === "object") {
+      const budget = card.budget as Record<string, unknown>;
+      mapped.budget = {
+        max_tool_steps: typeof budget.max_tool_steps === "number" ? budget.max_tool_steps : undefined,
+        max_tokens: typeof budget.max_tokens === "number" ? budget.max_tokens : undefined,
+        max_seconds: typeof budget.max_seconds === "number" ? budget.max_seconds : undefined,
+      };
+    }
+    if (attempt) {
+      if (typeof attempt.context_injected === "boolean") mapped.contextInjected = attempt.context_injected;
+      if (typeof attempt.execution_path === "string") mapped.executionPath = attempt.execution_path;
+      if (typeof attempt.skill_bundle_hash === "string") mapped.skillBundleHash = attempt.skill_bundle_hash;
+    }
+    return mapped;
+  });
+}
+
+/** Full event timeline embedded in the 活动 tab (no 20-row cap; one event source). */
+function ActivityTimeline({ runId }: { runId: string }) {
+  const { events, connection, connectionError, reconnect } = useRunEvents(runId);
+  const [taskFilter, setTaskFilter] = useState("");
+  return (
+    <div data-testid="activity-timeline">
+      <RunEventTimeline
+        events={events}
+        connection={connection}
+        connectionError={connectionError}
+        reconnect={reconnect}
+        taskFilter={taskFilter}
+        onTaskFilterChange={setTaskFilter}
+      />
+    </div>
+  );
 }
 
 export function ProjectWorkstation({
@@ -93,14 +196,17 @@ export function ProjectWorkstation({
   team,
   memoryPanel,
   bots = [],
+  sessions = EMPTY_SESSIONS,
   discussionPanel,
   onShowDiscussion,
   onShowTasks,
   onRefresh,
   actorBotId,
   actorIsLeader = false,
+  runStatus = "",
 }: ProjectWorkstationProps) {
   const layout = useWorkstationLayout();
+  const [specStatus, setSpecStatus] = useState<ApprovedSpecStatus | null>(null);
   const [highlight, setHighlight] = useState("");
   const highlightTimer = useRef<number | null>(null);
   useEffect(() => () => {
@@ -140,7 +246,24 @@ export function ProjectWorkstation({
   }, [tasks, selected]);
 
   const current = useMemo(() => tasks.find((task) => task.code === selected), [tasks, selected]);
-  const soloWorkspace = tab === "monitor" || tab === "evaluation";
+  const leader = team?.members.find((member) => member.is_leader);
+  const memberNames = (team?.members || []).map((member) => member.display_name).join("、");
+  const specLabel =
+    specStatus?.kind === "discussion"
+      ? `已批准规格：第 ${specStatus.version} 次讨论`
+      : specStatus?.kind === "artifact"
+        ? `已批准规格：SPEC 工件${specStatus.baseline ? `（基线 v${specStatus.baseline}）` : ""}`
+        : specStatus?.kind === "none"
+          ? "尚未生成已批准规格"
+          : "规格：读取中";
+  const showFullSpec = () => {
+    // The full body is already on screen; this only scrolls the read-only panel into view.
+    const node = document.querySelector('[data-testid="approved-spec-panel"]') as HTMLElement | null;
+    node?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  };
+  // 详情 / 任务图 are full-width views: the 540-row task tree next to them was pure noise, so task
+  // switching lives in the panel header instead (the tree stays on 活动 where it navigates).
+  const soloWorkspace = tab === "details" || tab === "assignment" || tab === "monitor" || tab === "evaluation" || tab === "graph";
 
   if (loadState === "loading") {
     return (
@@ -234,19 +357,46 @@ export function ProjectWorkstation({
             </div>
           )}
         </div>
-        {runId && onShowDiscussion && onShowTasks && (
-          <nav className="disc-project-nav" aria-label="项目工作区">
-            <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
-            <button type="button" aria-pressed={!discussionPanel} onClick={onShowTasks}>开发任务</button>
-          </nav>
-        )}
+        <div className="ws-page-bar-actions">
+          {runId && onShowDiscussion && onShowTasks && (
+            <nav className="disc-project-nav" aria-label="项目工作区">
+              <button type="button" aria-pressed={Boolean(discussionPanel)} onClick={onShowDiscussion}>项目讨论</button>
+              <button type="button" aria-pressed={!discussionPanel} onClick={onShowTasks}>开发任务</button>
+            </nav>
+          )}
+        </div>
       </div>
       <GrantStatusBanner errorCategory={grantErrorCategory} status={grantStatus} />
+      {!discussionPanel && tasks.length > 0 && (
+        <div className="demo-context" data-testid="demo-context">
+          <span className="demo-context-leader" data-testid="context-leader">
+            Leader：{leader ? leader.display_name : "尚未设置"}
+          </span>
+          <span className="demo-context-members" data-testid="context-members">
+            成员：{memberNames || "暂无成员"}
+          </span>
+          <span className="demo-context-spec" data-testid="context-spec">
+            {specLabel}
+          </span>
+          {onShowDiscussion && (
+            <button
+              type="button"
+              className="chip"
+              data-testid="context-back-to-discussion"
+              onClick={onShowDiscussion}
+            >
+              回到项目讨论
+            </button>
+          )}
+        </div>
+      )}
       {!discussionPanel && (loadState === "empty" || tasks.length === 0) ? (
         <div className="well muted" data-testid="ws-empty" style={{ padding: "14px 16px" }}>
           {runId ? (
-            <>任务就绪后会显示在这里。<Link to={`/workstation/${runId}`}>打开运行工作台</Link></>
-          ) : "确认需求规格后，Leader 会生成任务计划。"}
+            <>先完成项目讨论与规格确认；任务就绪后在这里划分并派发给项目成员。<Link to={`/workstation/${runId}`}>打开运行工作台（次入口）</Link></>
+          ) : (
+            "确认需求规格并完成设计规格确认后，Leader 会生成任务计划，随后可在「任务派发」把任务分给项目成员。"
+          )}
         </div>
       ) : null}
 
@@ -320,30 +470,71 @@ export function ProjectWorkstation({
           {tab === "details" && (
             <section className="surface" data-testid="panel-details" style={{ padding: 16 }}>
               {current ? (
-                <>
-                  <div className="section-title">
-                    <span data-testid="detail-task-code" className="mono">
-                      {current.code}
-                    </span>
-                    <span className="hint">{current.status}</span>
+                <div className="ws-details-grid" data-testid="details-spec-split">
+                  {/* 完整已批准规格与当前任务约束同屏：正文不再需要先回「项目讨论」才看得见。 */}
+                  <div className="ws-details-spec" data-testid="details-spec-column">
+                    <ApprovedSpecPanel sessions={sessions} runId={runId} onStatusChange={setSpecStatus} />
                   </div>
-                  <p style={{ marginTop: 0 }}>{current.title}</p>
-                  <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <span className="muted">任务备注</span>
-                    <textarea
-                      aria-label="任务备注"
-                      rows={3}
-                      value={note}
-                      onChange={(event) => {
-                        setNote(event.target.value);
-                        dirtyRef.current = true;
-                      }}
+                  <div className="ws-details-main" data-testid="details-constraints-column">
+                    <div className="section-title" style={{ gap: 10, flexWrap: "wrap" }}>
+                      <span data-testid="detail-task-code" className="mono">
+                        {current.code}
+                      </span>
+                      <span className="hint">{current.status}</span>
+                      <TaskPicker label="切换任务" tasks={tasks} value={current.code} onPick={locateTask} />
+                    </div>
+                    {/* 主内容：持久化的任务输入与约束（角色、依赖、写入范围、验收、SPEC、上下文注入）。 */}
+                    <InputConstraintsPanel
+                      task={current}
+                      runId={runId}
+                      actorBotId={actorBotId}
+                      grantStatus={grantStatus}
+                      grantErrorCategory={grantErrorCategory}
+                      onShowFullSpec={showFullSpec}
                     />
-                  </label>
-                </>
+                    {/* 次要内容：未持久化的页面备注，明确标注不进入任务上下文。 */}
+                    <div
+                      data-testid="task-note-secondary"
+                      data-secondary="true"
+                      style={{ marginTop: 20, paddingTop: 12, borderTop: "1px solid rgba(82,115,140,.18)" }}
+                    >
+                      <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <span className="muted">任务备注（仅本页内存，未持久化、不进入任务上下文）</span>
+                        <textarea
+                          aria-label="任务备注"
+                          rows={2}
+                          value={note}
+                          onChange={(event) => {
+                            setNote(event.target.value);
+                            dirtyRef.current = true;
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
               ) : (
-                <div className="muted">选择左侧任务查看详情。</div>
+                <div className="muted">还没有任务；生成任务计划后可在上方下拉选择查看。</div>
               )}
+            </section>
+          )}
+
+          {tab === "assignment" && (
+            <section className="surface" data-testid="panel-assignment" style={{ padding: 16 }}>
+              {/* A2/A3：编排之后的划分与派发主路径；群聊与 Leader 复用既有成员/讨论。 */}
+              <TaskAssignmentBoard
+                runId={runId}
+                tasks={tasks}
+                members={team?.members || []}
+                actorBotId={actorBotId}
+                actorIsLeader={actorIsLeader}
+                runStatus={runStatus}
+                onRefresh={onRefresh}
+                onLocateTask={locateTask}
+                onShowDiscussion={onShowDiscussion}
+                onInvite={team?.onInvite}
+                onManage={team?.onManage}
+              />
             </section>
           )}
 
@@ -377,14 +568,26 @@ export function ProjectWorkstation({
             <section className="surface" data-testid="panel-activity" style={{ padding: 16 }}>
               <div className="section-title">
                 <span>活动</span>
+                {runId && <span className="hint mono">运行 {runId}</span>}
               </div>
               {runId ? (
-                <p className="muted">
-                  事件流属于运行 <span className="mono">{runId}</span>；
-                  <Link to={`/runs/${runId}`} className="chip" style={{ marginLeft: 8 }}>
-                    打开运行时间线
-                  </Link>
-                </p>
+                <>
+                  {/* I5：复用 GET /api/runs/{run_id}/trace 的需求/规格项 → 任务编排追溯（非执行步骤图）。 */}
+                  {/* Newest activity first: the trace matrix can hold hundreds of rows. */}
+                  <ActivityTimeline runId={runId} />
+                  <div style={{ marginTop: 16 }}>
+                    <RequirementTracePanel runId={runId} />
+                  </div>
+                  <p className="muted" style={{ marginBottom: 0 }}>
+                    完整记录已在上方；深链接：
+                    <Link to={`/runs/${runId}/timeline`} className="chip" style={{ marginLeft: 8 }}>
+                      在运行详情打开时间线（深链接）
+                    </Link>
+                    <Link to={`/workstation/${runId}`} className="chip" style={{ marginLeft: 8 }}>
+                      完整工作台（次入口）
+                    </Link>
+                  </p>
+                </>
               ) : (
                 <p className="muted">还没有绑定运行。</p>
               )}
@@ -393,26 +596,96 @@ export function ProjectWorkstation({
 
           {tab === "graph" && (
             <section className="surface" data-testid="panel-graph" style={{ padding: 16 }}>
-              <div className="section-title">
+              <div className="section-title" style={{ gap: 10, flexWrap: "wrap" }}>
                 <span>任务图</span>
+                <span className="hint">点选节点联动详情；下拉可定位任务</span>
+                {/* 任务图是满宽画布：定位任务用头部下拉，不再依赖左侧任务树。 */}
+                <TaskPicker label="定位任务" tasks={tasks} value={selected} onPick={setSelected} />
               </div>
-              {tasks.length === 0 ? (
-                <p className="muted">没有任务。</p>
-              ) : (
-                <ul className="task-graph-list">
-                  {tasks.map((task) => (
-                    <li key={task.code}>
-                      <span className="mono">{task.code}</span> {task.title} · {task.status}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              {/* 与 /workstation/:id 共用同一个分层依赖图组件；不再是纯文本列表。 */}
+              <TaskDependencyGraph
+                tasks={tasks.map((task) => ({
+                  id: task.code,
+                  code: task.code,
+                  title: task.title,
+                  status: mapTaskState(task.status),
+                  rawState: task.status,
+                  subtitle: [task.role, task.module, task.points != null ? `${task.points}pt` : ""]
+                    .filter(Boolean)
+                    .join(" · ") || undefined,
+                  kind: "task",
+                  dependsOn: task.dependsOn || [],
+                  assignee: task.assignment ? task.assignment.assignee_display_name : null,
+                }))}
+                selected={selected}
+                onSelect={(code) => setSelected(code)}
+                kind="tasks"
+                fitKey={runId || ""}
+                style={{
+                  // 满宽后让画布吃掉剩余视口高度，而不是固定 440px 的小窗。
+                  height: "calc(100vh - 240px)",
+                  minHeight: 420,
+                  border: "1px solid #d8e8f2",
+                  borderRadius: "var(--glass-radius-panel, 24px)",
+                  background: "var(--glass-surface, rgba(246,253,255,.78))",
+                  boxShadow: "var(--glass-shadow)",
+                  backdropFilter: "blur(6px)",
+                  WebkitBackdropFilter: "blur(6px)",
+                  overflow: "hidden",
+                }}
+              />
             </section>
           )}
         </section>
       </div>
       )}
     </div>
+  );
+}
+
+/** Header task picker for the full-width 详情 / 任务图 panels (replaces the removed side tree). */
+function TaskPicker({
+  label,
+  tasks,
+  value,
+  onPick,
+}: {
+  label: string;
+  tasks: WorkstationTask[];
+  value: string;
+  onPick: (code: string) => void;
+}) {
+  return (
+    <label
+      className="muted"
+      style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12 }}
+    >
+      <span>{label}</span>
+      <select
+        aria-label={label}
+        value={value}
+        onChange={(event) => {
+          if (event.target.value) onPick(event.target.value);
+        }}
+        style={{
+          minWidth: 280,
+          maxWidth: 460,
+          height: 32,
+          padding: "0 8px",
+          borderRadius: "var(--glass-radius-field, 14px)",
+          border: "1px solid rgba(82,115,140,.28)",
+          background: "var(--glass-field, rgba(255,255,255,.72))",
+          color: "var(--glass-ink, #122d42)",
+          fontSize: 12.5,
+        }}
+      >
+        {tasks.map((task) => (
+          <option key={task.code} value={task.code}>
+            {task.code} {task.title}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -426,6 +699,8 @@ function defaultActor(members: TeamMember[]): string {
 export default function ProjectWorkstationPage({ projectId = "", grantErrorCategory = null }: ProjectWorkstationPageProps) {
   const params = useParams();
   const id = projectId || params.projectId || "";
+  // 静态演示项目：只读快照，直接展示拆分后的开发任务 tabs，不提供讨论/写操作入口。
+  const isStatic = isStaticProjectId(id);
   const dirtyRef = useMemo(() => ({ current: false }), []);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [allBots, setAllBots] = useState<BotInstance[]>([]);
@@ -436,12 +711,14 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
   const [errorText, setErrorText] = useState("");
   const [tasks, setTasks] = useState<WorkstationTask[]>([]);
   const [runId, setRunId] = useState<string>("");
+  const [runStatus, setRunStatus] = useState<string>("");
   const [grantStatus, setGrantStatus] = useState<GrantStatus | undefined>();
   const [derivedGrantError, setDerivedGrantError] = useState<string | null>(null);
   const [defects, setDefects] = useState<DefectRecord[]>([]);
   const [ballots, setBallots] = useState<ReviewBallot[]>([]);
   const [dissentItems, setDissentItems] = useState<string[]>([]);
-  const [showDiscussion, setShowDiscussion] = useState(true);
+  const [sessions, setSessions] = useState<DiscussionSession[]>([]);
+  const [showDiscussion, setShowDiscussion] = useState(!isStatic);
 
   useEffect(() => {
     let cancelled = false;
@@ -464,7 +741,11 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
       // Team + bots load first: a project with no run yet must still be able to invite bots.
       let memberRows: TeamMember[] = [];
       try {
-        const [memberRes, botRes] = await Promise.all([api.memberships(String(id)), api.bots()]);
+        const [memberRes, botRes] = await Promise.all([
+          api.memberships(String(id)),
+          // 静态项目的 Bot 目录同样来自快照，与真实 Bot 列表完全解耦。
+          isStatic ? loadStaticSnapshot().then((snap) => snap.bots) : api.bots(),
+        ]);
         const bots: BotInstance[] = Array.isArray(botRes?.items) ? botRes.items : [];
         const botMap = new Map(bots.map((bot) => [bot.bot_id, bot]));
         memberRows = (Array.isArray(memberRes?.items) ? memberRes.items : []).flatMap((member: any) => {
@@ -492,12 +773,15 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
       const owned = (Array.isArray(runs) ? runs : []).filter((run: any) => String(run.project_id) === String(id));
       if (owned.length === 0) {
         setRunId("");
+        setRunStatus("");
         setTasks([]);
+        setSessions([]);
         setLoadState("empty");
         return;
       }
       const latest = owned[owned.length - 1];
       setRunId(String(latest.id));
+      setRunStatus(String(latest.status || ""));
       const raw = await api.tasks(String(latest.id));
       const mapped = mapTasks(raw);
       setTasks(mapped);
@@ -522,8 +806,10 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
           setDefects([]);
         }
         try {
-          const sessions = await api.discussionSessions(String(id), effectiveActor);
-          const session = (Array.isArray(sessions?.items) ? sessions.items : [])[0];
+          const listed = await api.discussionSessions(String(id), effectiveActor);
+          const sessionItems: DiscussionSession[] = Array.isArray(listed?.items) ? listed.items : [];
+          setSessions(sessionItems);
+          const session = sessionItems[0];
           if (session?.session_id) {
             const reviews = await api.discussionReviews(String(session.session_id), effectiveActor);
             const items = Array.isArray(reviews?.items) ? reviews.items : [];
@@ -535,6 +821,7 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         } catch {
           setBallots([]);
           setDissentItems([]);
+          setSessions([]);
         }
       }
       setLoadState(mapped.length === 0 ? "empty" : "ready");
@@ -545,7 +832,7 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         setLoadState("error");
       }
     }
-  }, [id]);
+  }, [id, isStatic]);
 
   useEffect(() => {
     void load();
@@ -574,16 +861,22 @@ export default function ProjectWorkstationPage({ projectId = "", grantErrorCateg
         onManage: () => setDialogOpen(true),
       }}
       bots={allBots}
+      sessions={sessions}
       onRefresh={load}
-      onShowDiscussion={() => setShowDiscussion(true)}
-      onShowTasks={() => {
-        setShowDiscussion(false);
-        void load();
-      }}
+      onShowDiscussion={isStatic ? undefined : () => setShowDiscussion(true)}
+      onShowTasks={
+        isStatic
+          ? undefined
+          : () => {
+              setShowDiscussion(false);
+              void load();
+            }
+      }
       actorBotId={actor}
       actorIsLeader={Boolean(teamMembers.find((member) => member.bot_id === actor)?.is_leader)}
+      runStatus={runStatus}
       discussionPanel={
-        showDiscussion ? (
+        !isStatic && showDiscussion ? (
           <DiscussionView
             projectId={id}
             actorBotId={actor}

@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { StageBar, type DiscussionStage } from "./StageBar";
 
-const STEPS = ["想法", "独立方案", "互评", "Leader 审核", "你的审批", "任务拆解"];
+const STEPS = ["想法", "独立方案", "互评", "Leader 审核", "你的审批", "设计规格", "任务拆解"];
 
 function setup(stage: DiscussionStage, round?: number): HTMLElement {
   render(<StageBar stage={stage} round={round} />);
@@ -23,6 +23,7 @@ describe("StageBar", () => {
     ["review", 2],
     ["leader", 3],
     ["approval", 4],
+    ["design", 5],
   ];
 
   it.each(cases)("highlights the current step and checks earlier steps for %s", (stage, index) => {
@@ -90,10 +91,10 @@ describe("StageBar", () => {
     const bar = setup("approved");
     const items = steps(bar);
 
-    expect(items.filter((item) => item.textContent?.includes("✓"))).toHaveLength(5);
-    expect(items[5].getAttribute("aria-current")).toBe("step");
-    expect(items[5].textContent).toContain("任务拆解");
-    expect(within(items[5]).getByText("生成任务与依赖")).toBeTruthy();
+    expect(items.filter((item) => item.textContent?.includes("✓"))).toHaveLength(6);
+    expect(items[6].getAttribute("aria-current")).toBe("step");
+    expect(items[6].textContent).toContain("任务拆解");
+    expect(within(items[6]).getByText("生成任务与依赖")).toBeTruthy();
   });
 
   it("keeps the steps and marks the discussion terminated", () => {

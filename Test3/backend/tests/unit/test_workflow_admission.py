@@ -65,8 +65,40 @@ def test_plan_requires_decision_package_even_when_approved() -> None:
     assert exc.value.blocked_reason == "spec_not_approved"
 
 
-def test_plan_passes_for_approved_session() -> None:
-    assert_phase_admission("plan", discussion=_session("approved"))
+def test_plan_passes_for_approved_session_with_approved_design() -> None:
+    run = _run(gates=[_gate("DESIGN基线确认", "approved")])
+    del run.artifacts["plan"]
+    assert_phase_admission("plan", discussion=_session("approved"), run=run)
+
+
+def test_plan_requires_design_run_first() -> None:
+    with pytest.raises(WorkflowRejected) as exc:
+        assert_phase_admission("plan", discussion=_session("approved"))
+    assert exc.value.status_code == 409
+    assert exc.value.blocked_reason == "design_not_approved"
+
+
+def test_plan_requires_design_baseline_approval() -> None:
+    run = _run(gates=[_gate("DESIGN基线确认")])
+    del run.artifacts["plan"]
+    with pytest.raises(WorkflowRejected) as exc:
+        assert_phase_admission("plan", discussion=_session("approved"), run=run)
+    assert exc.value.blocked_reason == "design_not_approved"
+
+
+def test_plan_idempotent_when_plan_already_exists() -> None:
+    # 旧讨论运行没有 DESIGN 关卡，但已有计划：重复 /plan 是幂等读取。
+    assert_phase_admission("plan", discussion=_session("approved"), run=_run())
+
+
+def test_design_passes_for_approved_session() -> None:
+    assert_phase_admission("design", discussion=_session("approved"))
+
+
+def test_design_requires_approved_spec() -> None:
+    with pytest.raises(WorkflowRejected) as exc:
+        assert_phase_admission("design", discussion=_session("converged_pending_human"))
+    assert exc.value.blocked_reason == "spec_not_approved"
 
 
 def test_plan_rejects_cross_project_run() -> None:

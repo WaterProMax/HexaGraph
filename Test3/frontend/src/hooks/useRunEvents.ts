@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { isStaticRunId, loadStaticSnapshot } from "../static/staticProject";
 
-export type EventConnection = "idle" | "connecting" | "live" | "error";
+export type EventConnection = "idle" | "connecting" | "live" | "error" | "static";
 
 export function useRunEvents(runId: string | undefined, onRecover?: () => void) {
   const [events, setEvents] = useState<any[]>([]);
@@ -17,6 +18,20 @@ export function useRunEvents(runId: string | undefined, onRecover?: () => void) 
       setConnection("idle");
       setConnectionError("");
       return;
+    }
+    // 静态演示运行：事件来自冻结快照，不打开 EventSource。
+    if (isStaticRunId(runId)) {
+      let cancelled = false;
+      setConnection("connecting");
+      setConnectionError("");
+      void loadStaticSnapshot().then((snap) => {
+        if (cancelled) return;
+        setEvents(snap.events);
+        setConnection("static");
+      });
+      return () => {
+        cancelled = true;
+      };
     }
     let closed = false;
     let last = 0;

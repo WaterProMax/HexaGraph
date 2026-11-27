@@ -13,6 +13,8 @@ WorkflowStage = Literal[
     "discussing",
     "spec_pending",
     "spec_approved",
+    "designing",
+    "design_pending",
     "planning",
     "plan_pending",
     "plan_approved",
@@ -29,6 +31,8 @@ STAGE_ORDER: tuple[str, ...] = (
     "discussing",
     "spec_pending",
     "spec_approved",
+    "designing",
+    "design_pending",
     "planning",
     "plan_pending",
     "plan_approved",
@@ -57,6 +61,7 @@ DISCUSSION_BLOCKED: dict[str, str] = {
     "budget_exhausted": "discussion_budget_exhausted",
 }
 
+DESIGN_GATE_KIND = "DESIGN基线确认"
 PLAN_GATE_KIND = "PLAN基线确认"
 ACCEPTANCE_GATE_KIND = "验收确认"
 
@@ -67,6 +72,7 @@ def discussion_stage(status: str) -> str:
 
 __all__ = [
     "ACCEPTANCE_GATE_KIND",
+    "DESIGN_GATE_KIND",
     "DISCUSSION_BLOCKED",
     "DISCUSSION_STAGE",
     "PLAN_GATE_KIND",

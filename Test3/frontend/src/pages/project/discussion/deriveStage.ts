@@ -7,6 +7,7 @@ export type DiscussionStage =
   | "review"
   | "leader"
   | "approval"
+  | "design"
   | "approved"
   | "terminated";
 
@@ -15,6 +16,11 @@ export type DiscussionStage =
  *
  * `rejected` falls back to `idea` because the page immediately creates a new
  * session after a rejection; the old session is only kept for its timeline.
+ *
+ * An approved SPEC enters the design stage (第 5 步) first; only after the
+ * DESIGN baseline is approved does the UI move on to task splitting (第 6 步).
+ * Sessions without a workflow projection (older payloads/tests) keep the
+ * legacy approved → task-split mapping.
  */
 export function deriveStage(session: DiscussionSession | null): DiscussionStage {
   if (!session) return "idea";
@@ -31,7 +37,7 @@ export function deriveStage(session: DiscussionSession | null): DiscussionStage 
     case "converged_pending_human":
       return session.decision_package ? "approval" : "leader";
     case "approved":
-      return "approved";
+      return session.workflow && session.workflow.design_approved === false ? "design" : "approved";
     case "terminated":
     case "budget_exhausted":
       return "terminated";

@@ -105,6 +105,12 @@ function monitorTask(overrides: Partial<MonitorTask>): MonitorTask {
     revision: 1,
     paused: false,
     duration_seconds: null,
+    execution_path: "",
+    context_injected: false,
+    execution_step_count: 0,
+    last_execution_step: null,
+    assignee_bot_id: null,
+    assignee_display_name: null,
     ...overrides,
   };
 }
@@ -323,6 +329,7 @@ function renderPage(projectId: string) {
 /** The page opens on the discussion; switch to the task workstation, then the monitor tab. */
 async function openMonitorTab() {
   fireEvent.click(await screen.findByRole("button", { name: "开发任务" }));
+  // 开发任务 now opens the split tabs directly (the classroom grid was retired).
   fireEvent.click(await screen.findByTestId("tab-monitor"));
   await screen.findByTestId("run-monitor");
   // The run summary only renders once the real monitor snapshot has loaded.
@@ -346,6 +353,12 @@ beforeEach(() => {
   for (const mock of Object.values(apiMock)) mock.mockReset();
   installDefaultApi();
   vi.stubGlobal("EventSource", FakeEventSource);
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", ResizeObserverMock);
 });
 
 afterEach(() => {

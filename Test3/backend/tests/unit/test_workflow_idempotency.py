@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -59,15 +58,19 @@ class _Doc:
         return {}
 
 
-def _stub_generate(monkeypatch) -> dict:
+def _stub_design(monkeypatch, bench) -> dict:
     calls = {"n": 0}
 
-    async def fake_generate(bench, record, **_kwargs):
+    async def fake_structure_spec(bench, record):
         calls["n"] += 1
         await asyncio.sleep(0.01)
-        return SimpleNamespace(spec=_Doc(), design=_Doc(), plan=_Doc())
+        return _Doc()
 
-    monkeypatch.setattr(planning, "generate", fake_generate)
+    async def fake_run_design(run):
+        return {"status": "need_human", "gate": {"kind": "DESIGN基线确认"}}
+
+    monkeypatch.setattr(planning, "structure_spec", fake_structure_spec)
+    monkeypatch.setattr(bench, "run_design", fake_run_design)
     return calls
 
 
@@ -78,32 +81,34 @@ async def _seed(bench: Workbench, record: DiscussionSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_plan_creates_one_run(tmp_path, monkeypatch) -> None:
-    calls = _stub_generate(monkeypatch)
+async def test_concurrent_design_creates_one_run(tmp_path, monkeypatch) -> None:
     bench = _bench(tmp_path)
+    calls = _stub_design(monkeypatch, bench)
     record = _record()
     await _seed(bench, record)
 
     first, second = await asyncio.gather(
-        planning.prepare_run(bench, record), planning.prepare_run(bench, record)
+        planning.prepare_design_run(bench, record), planning.prepare_design_run(bench, record)
     )
 
     assert first == second == planning.run_id_for(record.session_id)
     assert calls["n"] == 1
     assert list(bench.runs) == [first]
+    assert bench.runs[first].engine.current == "5"
 
 
 @pytest.mark.asyncio
-async def test_restart_reuses_persisted_plan_run(tmp_path, monkeypatch) -> None:
-    calls = _stub_generate(monkeypatch)
+async def test_restart_reuses_persisted_design_run(tmp_path, monkeypatch) -> None:
     bench = _bench(tmp_path)
+    calls = _stub_design(monkeypatch, bench)
     record = _record()
     await _seed(bench, record)
-    run_id = await planning.prepare_run(bench, record)
+    run_id = await planning.prepare_design_run(bench, record)
     await bench.close()
 
     restored = _bench(tmp_path)
-    again = await planning.prepare_run(restored, record)
+    _stub_design(monkeypatch, restored)
+    again = await planning.prepare_design_run(restored, record)
 
     assert again == run_id
     assert calls["n"] == 1
@@ -113,8 +118,8 @@ async def test_restart_reuses_persisted_plan_run(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_existing_run_for_another_project_is_rejected(tmp_path, monkeypatch) -> None:
-    _stub_generate(monkeypatch)
     bench = _bench(tmp_path)
+    _stub_design(monkeypatch, bench)
     record = _record(project_id="P1")
     await _seed(bench, record)
     bench.runs[planning.run_id_for(record.session_id)] = RunState(
@@ -122,7 +127,38 @@ async def test_existing_run_for_another_project_is_rejected(tmp_path, monkeypatc
     )
 
     with pytest.raises(ValidationFailed):
+        await planning.prepare_design_run(bench, record)
+    with pytest.raises(ValidationFailed):
         await planning.prepare_run(bench, record)
+
+
+@pytest.mark.asyncio
+async def test_plan_requires_design_run_and_baseline(tmp_path, monkeypatch) -> None:
+    bench = _bench(tmp_path)
+    _stub_design(monkeypatch, bench)
+    record = _record()
+    await _seed(bench, record)
+
+    # 没有设计运行：/plan 拒绝。
+    with pytest.raises(ValidationFailed):
+        await planning.prepare_run(bench, record)
+
+    run_id = await planning.prepare_design_run(bench, record)
+    run = bench.runs[run_id]
+    # 设计运行存在但 DESIGN 基线未确认：仍拒绝。
+    with pytest.raises(ValidationFailed):
+        await planning.prepare_run(bench, record)
+
+    run.approved_baseline_hashes["DESIGN"] = "x" * 64
+
+    async def fake_generate_plan(run_state):
+        run_state.artifacts["plan"] = {"tasks": [], "work_packages": []}
+        return {"status": "need_human"}
+
+    monkeypatch.setattr(bench, "_generate_plan", fake_generate_plan)
+    assert await planning.prepare_run(bench, record) == run_id
+    # 幂等：已有计划直接返回。
+    assert await planning.prepare_run(bench, record) == run_id
 
 
 @pytest.mark.asyncio

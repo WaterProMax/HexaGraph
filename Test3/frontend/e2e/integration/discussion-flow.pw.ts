@@ -167,10 +167,28 @@ test("project chat: reject, supplement, approve, and inspect the Leader plan", a
   await expect(chat.getByTestId("disc-bubble-user").last()).toContainText(SUPPLEMENT);
   await expect(dialog).toBeVisible();
 
-  // 7. Approval hands the structured plan to the existing run workstation.
-  await dialog.getByRole("button", { name: "通过，进入任务拆解" }).click();
+  // 7. Approval enters the design stage (第 5 步): architect + dual review,
+  //    then the human approves the DESIGN baseline before task splitting.
+  await dialog.getByRole("button", { name: "通过，进入设计规格" }).click();
   await expect(dialog).toBeHidden();
   await expect(banner).toBeHidden();
+  const designPanel = page.getByTestId("disc-design-review");
+  await expect(designPanel).toBeVisible();
+  await expect(designPanel).toContainText("设计规格待你确认");
+  await expect(designPanel).toContainText("座位查询界面");
+  await expect(designPanel).toContainText("模块 3 个 · 接口 2 个");
+  await page.screenshot({ path: test.info().outputPath("discussion-03-design.png"), fullPage: true });
+  // DESIGN 未确认前 /plan 被服务端拒绝（design_not_approved）。
+  const sessionsNow = await request.get(`${API}/projects/${projectId}/discussion-sessions`, {
+    headers: leaderHeaders,
+  });
+  const approvedSession = (await sessionsNow.json()).items.at(-1);
+  const prematurePlan = await request.post(`${API}/discussion-sessions/${approvedSession.session_id}/plan`, {
+    headers: leaderHeaders,
+  });
+  expect(prematurePlan.status()).toBe(409);
+  expect((await prematurePlan.json()).error_category).toBe("design_not_approved");
+  await designPanel.getByRole("button", { name: "批准设计基线" }).click();
   const summary = page.getByTestId("disc-spec-summary");
   await expect(summary).toBeVisible();
   const planLink = summary.getByRole("link", { name: "查看任务编排" });

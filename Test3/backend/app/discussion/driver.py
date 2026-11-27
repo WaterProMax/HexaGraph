@@ -1193,6 +1193,7 @@ async def _call(
     timeout: float = BOT_TIMEOUT_SECONDS,
     checkpoint_before: bool = True,
     generation: DiscussionGenerationToken | None = None,
+    checkpoint: bool = True,
 ) -> Any:
     """One bot model call, retried once; raises ``BotFailed`` after that.
 
@@ -1201,6 +1202,10 @@ async def _call(
     ``checkpoint_before=False`` is used by the concurrent proposal batch, whose
     caller performs one shared pre-batch checkpoint so task scheduling (and
     therefore scripted-provider ordering) stays deterministic.
+
+    ``checkpoint=False`` is for post-approval planning calls (SPEC structuring,
+    design outline, task batches): the session is already ``approved`` — a
+    terminal status — so round-level cooperative stops must not abort them.
 
     ``generation`` is created once, before the first attempt, and reused for the
     transport retry: a stale token stops the step instead of being re-signed
@@ -1218,7 +1223,7 @@ async def _call(
     last_error: BaseException | None = None
     try:
         for _attempt in range(2):
-            if checkpoint_before or _attempt > 0:
+            if checkpoint and (checkpoint_before or _attempt > 0):
                 await _checkpoint(
                     bench,
                     session_id,
@@ -1227,7 +1232,7 @@ async def _call(
                     bot_id=bot.bot_id,
                     generation=generation,
                 )
-            elif _generation_stale_in_memory(bench, generation):
+            elif checkpoint and _generation_stale_in_memory(bench, generation):
                 # The shared pre-batch checkpoint passed, but this task may have
                 # been scheduled after a pause/end landed; never start the old
                 # prompt now.
@@ -1266,14 +1271,15 @@ async def _call(
             # Re-read control state after the response and before the caller
             # persists it: a pause/manual end (or a newer generation) that
             # arrived during the call wins and this result is discarded.
-            await _checkpoint(
-                bench,
-                session_id,
-                phase=f"{operation}:after_response",
-                inflight_state="response_received",
-                bot_id=bot.bot_id,
-                generation=generation,
-            )
+            if checkpoint:
+                await _checkpoint(
+                    bench,
+                    session_id,
+                    phase=f"{operation}:after_response",
+                    inflight_state="response_received",
+                    bot_id=bot.bot_id,
+                    generation=generation,
+                )
             return result
         category = (
             getattr(last_error, "category", None)

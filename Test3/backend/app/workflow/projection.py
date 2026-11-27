@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from app.workflow.stages import (
     ACCEPTANCE_GATE_KIND,
+    DESIGN_GATE_KIND,
     DISCUSSION_BLOCKED,
     PLAN_GATE_KIND,
     discussion_stage,
@@ -31,6 +32,7 @@ class WorkflowProjection:
     session_id: str | None = None
     run_id: str | None = None
     spec_approved: bool = False
+    design_approved: bool = False
     plan_approved: bool = False
     blocked: list[dict[str, str]] = field(default_factory=list)
     baseline_hashes: dict[str, str] = field(default_factory=dict)
@@ -109,6 +111,13 @@ def _run_stage(run: Any, *, blocked: list[dict[str, str]], grants: list[Any] | N
         if acceptance_gate.get("status") == "rejected":
             blocked.append(_blocked("acceptance_rejected", "acceptance was rejected"))
             return "blocked"
+    design_gate = _last_gate(run, DESIGN_GATE_KIND)
+    if design_gate is not None:
+        if design_gate.get("status") == "pending":
+            return "design_pending"
+        if design_gate.get("status") == "rejected":
+            blocked.append(_blocked("design_rejected", "DESIGN gate was rejected"))
+            return "blocked"
     if plan_gate is not None:
         if plan_gate.get("status") == "pending":
             return "plan_pending"
@@ -118,8 +127,13 @@ def _run_stage(run: Any, *, blocked: list[dict[str, str]], grants: list[Any] | N
     plan = getattr(run, "artifacts", {}).get("plan")
     if not isinstance(plan, dict) or not plan:
         # No plan yet: still designing/planning.
+        if design_gate is not None and design_gate.get("status") == "approved":
+            return "planning"
         if _last_gate(run, "SPEC基线确认") is not None:
             return "spec_pending"
+        artifacts = getattr(run, "artifacts", {}) or {}
+        if artifacts.get("discussion_session_id") and artifacts.get("spec"):
+            return "designing"
         return "planning"
     if any(state in _ACTIVE_TASK_STATES for state in states):
         return "executing"
@@ -206,7 +220,9 @@ def project_workflow_projection(
         drift = baseline_drift(run)
 
     plan_gate = _last_gate(run, PLAN_GATE_KIND) if run is not None else None
+    design_gate = _last_gate(run, DESIGN_GATE_KIND) if run is not None else None
     spec_approved = _spec_approved(discussion, run, plan_gate)
+    design_approved = "DESIGN" in hashes or bool(design_gate and design_gate.get("status") == "approved")
     plan_approved = "PLAN" in hashes or bool(plan_gate and plan_gate.get("status") == "approved")
 
     if discussion is not None and run is None:
@@ -237,6 +253,7 @@ def project_workflow_projection(
         session_id=session_id,
         run_id=run_id,
         spec_approved=spec_approved,
+        design_approved=design_approved,
         plan_approved=plan_approved,
         blocked=blocked,
         baseline_hashes=hashes,

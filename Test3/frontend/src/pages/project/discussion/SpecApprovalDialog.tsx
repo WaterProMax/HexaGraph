@@ -311,7 +311,7 @@ export function SpecApprovalDialog({
             disabled={busy || unchanged}
             onClick={approve}
           >
-            {approving ? "提交中…" : "通过，进入任务拆解"}
+            {approving ? "提交中…" : "通过，进入设计规格"}
           </button>
         </footer>
       </div>

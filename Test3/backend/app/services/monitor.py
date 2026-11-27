@@ -4,6 +4,8 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from app.execution.trace_log import last_step_summary, step_count
+
 RUNNING_STATES = {"running", "verifying"}
 FAILED_STATES = {"failed", "needs_human"}
 BLOCKED_STATES = {"blocked"}
@@ -93,7 +95,12 @@ def _rollup(tasks: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_monitor_snapshot(run: Any, models: Any, roles: Any) -> dict[str, Any]:
+def build_monitor_snapshot(
+    run: Any,
+    models: Any,
+    roles: Any,
+    assignee_names: dict[str, str] | None = None,
+) -> dict[str, Any]:
     events = list(run.events or [])
     durations = _task_durations(events)
     fallbacks = _fallback_counts(events)
@@ -106,6 +113,19 @@ def build_monitor_snapshot(run: Any, models: Any, roles: Any) -> dict[str, Any]:
         slot, model = _model_for(role, roles, models)
         evidence = task.get("evidence") or []
         issues = task.get("review_issues") or []
+        attempt = task.get("attempt") if isinstance(task.get("attempt"), dict) else {}
+        # A1 dispatch overlay: a classroom-visible annotation only.  Execution
+        # and role memory stay role-scoped; the monitor never aggregates by bot.
+        assignment = task.get("assignment")
+        assignment = assignment if isinstance(assignment, dict) else None
+        assignee_bot_id = (
+            str(assignment["assignee_bot_id"]) if assignment and assignment.get("assignee_bot_id") else None
+        )
+        assignee_display_name = (
+            str((assignee_names or {}).get(assignee_bot_id) or assignee_bot_id)
+            if assignee_bot_id is not None
+            else None
+        )
         task_rows.append(
             {
                 "code": str(code),
@@ -128,6 +148,14 @@ def build_monitor_snapshot(run: Any, models: Any, roles: Any) -> dict[str, Any]:
                 "revision": int(task.get("revision") or 0),
                 "paused": bool(task.get("paused")),
                 "duration_seconds": round(durations[code], 1) if code in durations else None,
+                # I0 trace summary: counts and the last step only — monitor must
+                # stay lightweight and never carry model/tool I/O text.
+                "execution_path": str(attempt.get("execution_path") or ""),
+                "context_injected": bool(attempt.get("context_injected")),
+                "execution_step_count": step_count(attempt),
+                "last_execution_step": last_step_summary(attempt),
+                "assignee_bot_id": assignee_bot_id,
+                "assignee_display_name": assignee_display_name,
             }
         )
 

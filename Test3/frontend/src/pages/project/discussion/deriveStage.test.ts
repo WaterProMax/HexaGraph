@@ -75,6 +75,28 @@ describe("deriveStage", () => {
     expect(deriveStage(session("approved", { decision_package: decisionPackage }))).toBe("approved");
   });
 
+  it("maps approved without design approval to the design stage", () => {
+    expect(
+      deriveStage(
+        session("approved", {
+          decision_package: decisionPackage,
+          workflow: { stage: "design_pending", design_approved: false },
+        }),
+      ),
+    ).toBe("design");
+  });
+
+  it("maps approved with design approval to task splitting", () => {
+    expect(
+      deriveStage(
+        session("approved", {
+          decision_package: decisionPackage,
+          workflow: { stage: "plan_pending", design_approved: true },
+        }),
+      ),
+    ).toBe("approved");
+  });
+
   it("sends rejected back to idea so the page can start a new session", () => {
     expect(deriveStage(session("rejected", { resolution_comment: "补充离线能力" }))).toBe("idea");
   });

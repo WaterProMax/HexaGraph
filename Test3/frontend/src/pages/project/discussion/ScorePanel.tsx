@@ -13,7 +13,6 @@ import { resolveBubbleBot } from "./MessageBubble";
 export type DiscussionPendingAction =
   | "pause"
   | "resume"
-  | "intervene"
   | "end-round"
   | "start-round"
   | "terminate"
@@ -32,7 +31,6 @@ export type ScorePanelProps = {
   onPause: () => void;
   onResume: (skipBotIds?: string[]) => void;
   onTerminate: () => void;
-  onIntervene?: (text: string) => Promise<boolean | undefined> | boolean;
   onEndRound?: (reason: string) => Promise<boolean | undefined> | boolean;
   onStartRound?: () => void;
 };
@@ -79,7 +77,6 @@ export function ScorePanel({
   onPause,
   onResume,
   onTerminate,
-  onIntervene,
   onEndRound,
   onStartRound,
 }: ScorePanelProps) {
@@ -310,7 +307,6 @@ export function ScorePanel({
           onPause={onPause}
           onResume={onResume}
           onTerminate={onTerminate}
-          onIntervene={onIntervene}
           onEndRound={onEndRound}
           onStartRound={onStartRound}
         />
@@ -353,18 +349,15 @@ export function DiscussionControls({
   onPause,
   onResume,
   onTerminate,
-  onIntervene,
   onEndRound,
   onStartRound,
 }: Pick<ScorePanelProps, "session" | "busy" | "canControl" | "pendingAction" | "onPause" | "onResume" | "onTerminate"> & {
-  onIntervene?: (text: string) => Promise<boolean | undefined> | boolean;
   onEndRound?: (reason: string) => Promise<boolean | undefined> | boolean;
   onStartRound?: () => void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
   const [startOpen, setStartOpen] = useState(false);
-  const [intervention, setIntervention] = useState("");
   const [endReason, setEndReason] = useState("");
   const confirmRef = useDialogKeyboard(confirmOpen, () => setConfirmOpen(false));
   const endRef = useDialogKeyboard(endOpen, () => setEndOpen(false));
@@ -459,39 +452,7 @@ export function DiscussionControls({
         </button>
       </div>
 
-      {session.paused && !session.pause_requested && !manual && !session.decision_package && (
-        <div className="disc-intervention" data-testid="disc-intervention">
-          <label className="disc-composer-field">
-            <span className="disc-composer-label">插话 / 调整方向（恢复后生效）</span>
-            <textarea
-              className="disc-composer-input"
-              aria-label="讨论插话"
-              rows={2}
-              maxLength={2000}
-              value={intervention}
-              onChange={(event) => setIntervention(event.target.value)}
-              placeholder="补充约束或指出需要调整的方向；不会改写已有评语。"
-              disabled={busy}
-            />
-          </label>
-          <button
-            type="button"
-            className="disc-btn"
-            data-testid="disc-send-intervention"
-            disabled={busy || !intervention.trim()}
-            onClick={() => {
-              const text = intervention.trim();
-              if (!text) return;
-              void (async () => {
-                const saved = await onIntervene?.(text);
-                if (saved === true) setIntervention("");
-              })();
-            }}
-          >
-            发送介入
-          </button>
-        </div>
-      )}
+      {/* 插话输入框已下线：暂停时只保留聊天区底部的「补充信息」一个输入口。 */}
 
       {confirmOpen && (
         <div

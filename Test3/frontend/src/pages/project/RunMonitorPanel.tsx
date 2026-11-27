@@ -4,7 +4,10 @@ import { ReloadOutlined } from "@ant-design/icons";
 import { api, controlEnabled } from "../../api/client";
 import type { MonitorTask } from "../../api/types";
 import { TaskRoleMemoryPanel } from "./TaskRoleMemoryPanel";
-import { useRunEvents } from "../../hooks/useRunEvents";
+import { ExecutionTracePanel } from "./ExecutionTracePanel";
+import { AttemptHistoryPanel } from "./AttemptHistoryPanel";
+import { stepEventRefreshToken } from "./executionTrace";
+import { useRunEvents, type EventConnection } from "../../hooks/useRunEvents";
 import { isTerminalRunStatus, pauseResumeKind } from "../workstationControls";
 import {
   MONITOR_FILTERS,
@@ -32,6 +35,18 @@ type Props = {
   onRefresh?: () => void;
   actorBotId?: string;
   actorIsLeader?: boolean;
+  /** Controlled selection for the classroom grid; internal state stays the default. */
+  selected?: string;
+  onSelect?: (code: string) => void;
+  /** Parent-owned event stream; when injected the panel must not open its own EventSource. */
+  events?: any[];
+  connection?: EventConnection;
+  connectionError?: string;
+  reconnect?: () => void;
+  /** Bumped by the parent after a reconnect so the monitor refetches once. */
+  recoveryTick?: number;
+  /** Classroom grid mode: hides the duplicate 24-row feed and secondary editors. */
+  compact?: boolean;
 };
 
 function statusLabel(state: string): string {
@@ -51,13 +66,40 @@ function statusLabel(state: string): string {
   return labels[state] || state;
 }
 
-export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBotId, actorIsLeader = false }: Props) {
+export function RunMonitorPanel({
+  runId,
+  tasks,
+  onLocateTask,
+  onRefresh,
+  actorBotId,
+  actorIsLeader = false,
+  selected: controlledSelected,
+  onSelect,
+  events: injectedEvents,
+  connection: injectedConnection,
+  connectionError: injectedConnectionError,
+  reconnect: injectedReconnect,
+  recoveryTick = 0,
+  compact = false,
+}: Props) {
   const monitor = useRunMonitor(runId);
-  const { events, connection, connectionError, reconnect } = useRunEvents(runId, () => {
+  const injected = injectedEvents !== undefined;
+  // Hooks stay unconditional: when the parent injects events we call the hook with
+  // `undefined`, which keeps its state idle and never opens a second EventSource.
+  const ownEvents = useRunEvents(injected ? undefined : runId, () => {
     void monitor.refresh(true);
   });
+  const events = injected ? injectedEvents! : ownEvents.events;
+  const connection = injected ? injectedConnection ?? "idle" : ownEvents.connection;
+  const connectionError = injected ? injectedConnectionError ?? "" : ownEvents.connectionError;
+  const reconnect = injected ? injectedReconnect ?? (() => {}) : ownEvents.reconnect;
   const [filter, setFilter] = useState<MonitorFilter>("all");
-  const [selected, setSelected] = useState("");
+  const [ownSelected, setOwnSelected] = useState("");
+  const selected = controlledSelected !== undefined ? controlledSelected : ownSelected;
+  const selectTask = (code: string) => {
+    setOwnSelected(code);
+    onSelect?.(code);
+  };
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [reason, setReason] = useState("");
   const [busyAction, setBusyAction] = useState("");
@@ -87,14 +129,24 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
     elapsed_seconds: null as number | null,
   };
   const recentEvents = events.slice(-24).reverse();
+  // Step events (task.llm_step / task.tool_step / task.granted_command) are only
+  // a refresh trigger for the dedicated trace panels; the 24-row event feed
+  // itself stays a summary and never becomes the step source.
+  const traceRefreshToken = useMemo(() => stepEventRefreshToken(events), [events]);
   const terminalRun = isTerminalRunStatus(summary?.status);
   const pauseKind = summary ? pauseResumeKind(summary) : null;
   const readyCount = Number(summary?.state_counts?.ready || 0);
   const canSchedule = Boolean(summary && !terminalRun && !summary.paused && readyCount > 0);
 
   useEffect(() => {
-    if (selected && !rows.some((task) => task.code === selected)) setSelected("");
-  }, [rows, selected]);
+    if (controlledSelected === undefined && ownSelected && !rows.some((task) => task.code === ownSelected)) {
+      setOwnSelected("");
+    }
+  }, [rows, ownSelected, controlledSelected]);
+
+  useEffect(() => {
+    if (recoveryTick > 0) void monitor.refresh(true);
+  }, [recoveryTick, monitor.refresh]);
 
   const refreshAll = async () => {
     await monitor.refresh();
@@ -172,13 +224,19 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
   };
 
   return (
-    <div className="run-monitor" data-testid="run-monitor">
+    <div className={`run-monitor${compact ? " is-compact" : ""}`} data-testid="run-monitor">
       <div className="mon-head">
-        <div>
-          <div className="mon-kicker">运行监控</div>
+        <div className="mon-head-main">
+          <div className="mon-kicker">{compact ? "执行监控" : "运行监控"}</div>
           <div className="mon-head-title">
-            <span className="mono">{runId || "未绑定运行"}</span>
-            <span className={`mon-connection ${connection}`}>{connection === "live" ? "实时" : connection === "error" ? "连接断开" : "连接中"}</span>
+            {compact ? (
+              <span className="mon-run-ref mono" title={runId || undefined}>
+                {runId ? `运行 ${runId.slice(0, 8)}` : "未绑定运行"}
+              </span>
+            ) : (
+              <span className="mono">{runId || "未绑定运行"}</span>
+            )}
+            <span className={`mon-connection ${connection}`}>{connection === "live" ? "实时" : connection === "static" ? "静态快照" : connection === "error" ? "连接断开" : "连接中"}</span>
           </div>
         </div>
         <div className="mon-run-actions">
@@ -221,6 +279,8 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
 
       <div className="mon-kpis" data-testid="monitor-kpis">
         <div className="mon-kpi"><span>任务进度</span><strong>{counts.done}/{counts.total || 0}</strong><em>{counts.progress}%</em></div>
+        {/* A4：派发只是课上标注，不替代完成态 KPI，也不按 Bot 重算完成率。 */}
+        <div className="mon-kpi" data-testid="monitor-assigned-kpi"><span>已派发</span><strong>{rows.filter((task) => task.assignee_bot_id).length}/{rows.length}</strong><em>课上标注</em></div>
         <div className="mon-kpi tone-running"><span>运行中</span><strong>{counts.running}</strong><em>实时执行</em></div>
         <div className="mon-kpi tone-failed"><span>失败/需处理</span><strong>{counts.failed}</strong><em>等待处理</em></div>
         <div className="mon-kpi tone-blocked"><span>阻塞</span><strong>{counts.blocked}</strong><em>依赖未就绪</em></div>
@@ -289,7 +349,7 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
                             key={task.code}
                             className={`mon-task ${selected === task.code ? "selected" : ""}`}
                             onClick={() => {
-                              setSelected(task.code);
+                              selectTask(task.code);
                               setReason("");
                               setFeedback("");
                             }}
@@ -298,7 +358,9 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
                             <span className="mono mon-task-code">{task.code}</span>
                             <span className="mon-task-title" title={task.title}>{task.title}</span>
                             <span className={`mon-state ${task.status}`}>{terminal ? statusLabel(task.state) : task.status === "running" ? "运行中" : statusLabel(task.state)}</span>
-                            <span className="mon-task-meta">{task.role || "—"} · {formatNumber(task.tokens_used)} tok · 修复 {task.repair_rounds}</span>
+                            <span className="mon-task-meta">
+                              {task.role || "—"} · <span data-testid={`monitor-task-assignee-${task.code}`}>{task.assignee_display_name || "未派发"}</span> · {formatNumber(task.tokens_used)} tok · 修复 {task.repair_rounds}
+                            </span>
                           </button>
                         );
                       })}
@@ -315,7 +377,7 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
             <strong>任务控制</strong>
             {selectedTask && onLocateTask && (
               <Button size="small" type="link" onClick={() => onLocateTask(selectedTask.code)}>
-                在任务树中定位
+                查看任务详情
               </Button>
             )}
           </div>
@@ -332,7 +394,8 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
               </div>
               <h3>{selectedTask.title}</h3>
               <div className="mon-metrics">
-                <span>角色 <b>{selectedTask.role || "—"}</b></span>
+                <span>{compact ? "角色" : "角色（执行/记忆主语）"} <b data-testid="monitor-detail-role">{selectedTask.role || "—"}</b></span>
+                <span>{compact ? "派发" : "派发对象（项目成员）"} <b data-testid="monitor-detail-assignee">{selectedTask.assignee_display_name || "未派发"}</b></span>
                 <span>模型 <b>{selectedTask.model || "—"}</b></span>
                 <span>Token <b>{formatNumber(selectedTask.tokens_used)}</b></span>
                 <span>修复 <b>{selectedTask.repair_rounds}</b></span>
@@ -384,7 +447,25 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
                   );
                 })}
               </div>
-              {runId && actorBotId && (selectedTask.role === "coder" || selectedTask.role === "tester") && (
+              {runId && selectedTask.code && (
+                <>
+                  <ExecutionTracePanel
+                    runId={runId}
+                    taskCode={selectedTask.code}
+                    role={selectedTask.role || undefined}
+                    refreshToken={traceRefreshToken}
+                  />
+                  {!compact && (
+                  <AttemptHistoryPanel
+                    runId={runId}
+                    taskCode={selectedTask.code}
+                    role={selectedTask.role || undefined}
+                    refreshToken={traceRefreshToken}
+                  />
+                  )}
+                </>
+              )}
+              {!compact && runId && actorBotId && (selectedTask.role === "coder" || selectedTask.role === "tester") && (
                 <TaskRoleMemoryPanel
                   key={`${selectedTask.code}:${selectedTask.role}`}
                   runId={runId}
@@ -397,6 +478,7 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
             </div>
           )}
 
+          {!compact && (
           <div className="mon-events" data-testid="monitor-events">
             <div className="mon-events-head">
               <strong>实时事件</strong>
@@ -414,6 +496,7 @@ export function RunMonitorPanel({ runId, tasks, onLocateTask, onRefresh, actorBo
               </div>
             ))}
           </div>
+          )}
         </aside>
       </div>
     </div>

@@ -71,6 +71,12 @@ export function fallbackMonitorTasks(tasks: FallbackMonitorTask[]): MonitorTask[
     revision: 0,
     paused: false,
     duration_seconds: null,
+    execution_path: "",
+    context_injected: false,
+    execution_step_count: 0,
+    last_execution_step: null,
+    assignee_bot_id: null,
+    assignee_display_name: null,
   }));
 }
 
@@ -153,9 +159,24 @@ export function eventLabel(kind: string): string {
     "task.evidence": "任务证据",
     "task.spawned": "派生任务",
     "task.write_denied": "写入被拒",
+    // A1 dispatch overlay events: annotation only, the memory subject stays role-scoped.
+    "task.assigned": "任务已派发",
+    "task.assignment_cleared": "已取消派发",
+    // I0 step events: high-frequency, summarised only; no I/O text beyond the
+    // pre-truncated payload fields.
+    "task.llm_step": "模型步骤",
+    "task.tool_step": "工具步骤",
+    "task.granted_command": "授权命令",
     "gate.created": "关卡创建",
     "gate.resolved": "关卡处理",
     "llm.fallback": "模型回退",
+    "schedule.rejected": "调度被拒",
+    "schedule.started": "调度开始",
+    "baseline.hash": "基线哈希",
+    "baseline.frozen": "基线冻结",
+    "stage.changed": "阶段变化",
+    "system.limit_changed": "限额调整",
+    "task.late_result_ignored": "迟到结果已忽略",
     "budget.warn": "预算预警",
     "budget.exceeded": "预算超限",
     "control.pause": "暂停",

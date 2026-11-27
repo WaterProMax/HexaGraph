@@ -28,6 +28,37 @@ describe("computeFitViewport", () => {
     expect(v.zoom).toBe(FLOW_READABLE_ZOOM);
     expect(v.y).toBe(32);
   });
+
+  it("centres a graph too large to fit on the given anchor instead of an empty origin", () => {
+    // A wide layered DAG whose geometric top-left corner holds no node: anchoring there shows blank
+    // canvas, so the current task must be centred.
+    const v = computeFitViewport(
+      { width: 26068, height: 29792 },
+      { w: 900, h: 600 },
+      32,
+      FLOW_READABLE_ZOOM,
+      { x: 21112, y: 1746 },
+    );
+    expect(v.zoom).toBe(FLOW_READABLE_ZOOM);
+    // The anchor lands at the centre of the canvas.
+    expect(v.x + 21112 * v.zoom).toBeCloseTo(450, 5);
+    expect(v.y + 1746 * v.zoom).toBeCloseTo(300, 5);
+  });
+
+  it("ignores a non-finite anchor and falls back to the readable start", () => {
+    const v = computeFitViewport({ width: 3000, height: 800 }, { w: 900, h: 600 }, 32, FLOW_READABLE_ZOOM, {
+      x: Number.NaN,
+      y: 0,
+    });
+    expect(v.x).toBe(32);
+  });
+
+  it("respects a non-zero layout origin when the graph fits", () => {
+    const v = computeFitViewport({ width: 400, height: 200, minX: 100, minY: 50 }, { w: 1000, h: 600 });
+    expect(v.zoom).toBe(1);
+    expect(v.x).toBe(200);
+    expect(v.y).toBe(150);
+  });
 });
 
 describe("nodesBounds", () => {

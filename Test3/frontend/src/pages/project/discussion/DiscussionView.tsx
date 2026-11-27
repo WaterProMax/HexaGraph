@@ -131,6 +131,184 @@ function DiscussionPlan({ sessionId, actorBotId, onStatusChange }: {
 }
 
 /**
+ * 第 5 步：SPEC 批准后，架构师把需求规格展开成设计规格（检查 + 双评审），
+ * 由用户确认 DESIGN 基线；批准后后端接着做 Leader 任务拆解（第 6 步）。
+ * 设计与评审产物来自运行快照，不在浏览器里缓存。
+ */
+function DiscussionDesign({
+  sessionId,
+  actorBotId,
+  runIdHint,
+  onApproved,
+}: {
+  sessionId: string;
+  actorBotId: string;
+  runIdHint: string;
+  onApproved: () => void;
+}) {
+  const [runId, setRunId] = useState(runIdHint);
+  const [run, setRun] = useState<any | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"" | "approve" | "reject">("");
+  const [rejectReason, setRejectReason] = useState("");
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setError("");
+    if (!actorBotId) return;
+    const load = async () => {
+      try {
+        let id = runIdHint;
+        if (!id) {
+          const result = await api.designDiscussion(sessionId, actorBotId);
+          if (!result?.run_id) throw new Error("后端未返回设计运行，请重试。");
+          id = result.run_id;
+        }
+        if (!active) return;
+        setRunId(id);
+        const snapshot = await api.run(id);
+        if (active) setRun(snapshot);
+      } catch (err) {
+        if (active) setError(actionErrorText(err));
+      }
+    };
+    void load();
+    return () => { active = false; };
+  }, [sessionId, actorBotId, runIdHint, attempt]);
+
+  const gates: any[] = Array.isArray(run?.gates) ? run.gates : [];
+  const pendingGate = gates.find((gate) => gate.status === "pending" && gate.kind === "DESIGN基线确认");
+  const failedGate = gates.find((gate) => gate.status === "pending" && gate.kind === "文档检查失败");
+
+  // 设计生成是长任务：运行已建立但关卡未出现时轮询快照，直到可确认或失败。
+  useEffect(() => {
+    if (!runId || pendingGate || failedGate) return;
+    const timer = setInterval(async () => {
+      try {
+        const snapshot = await api.run(runId);
+        setRun(snapshot);
+      } catch {
+        // 下一次轮询重试；错误不打断等待提示。
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [runId, pendingGate, failedGate]);
+
+  const approve = async () => {
+    if (!pendingGate || busy) return;
+    setBusy("approve");
+    setError("");
+    try {
+      await api.resolveGate(pendingGate.id, "approve", {});
+      onApproved();
+    } catch (err) {
+      setError(actionErrorText(err));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const reject = async () => {
+    if (!pendingGate || busy || !rejectReason.trim()) return;
+    setBusy("reject");
+    setError("");
+    try {
+      await api.resolveGate(pendingGate.id, "reject", { reason: rejectReason.trim() });
+      const snapshot = await api.run(runId);
+      setRun(snapshot);
+      setRejectReason("");
+    } catch (err) {
+      setError(actionErrorText(err));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  if (!actorBotId) return <p>请设置项目 Leader。</p>;
+  if (error && !pendingGate) {
+    return (
+      <div className="disc-plan-result">
+        <p role="alert" className="disc-view-error">{error}</p>
+        <button type="button" className="disc-button-secondary" onClick={() => setAttempt((previous) => previous + 1)}>
+          重新整理设计规格
+        </button>
+      </div>
+    );
+  }
+  if (busy === "approve") {
+    return <p className="disc-spec-waiting" role="status" data-testid="disc-design-wait">设计已确认，Leader 正在拆解任务和编排依赖…</p>;
+  }
+  if (!run || (!pendingGate && !failedGate)) {
+    return <p className="disc-spec-waiting" role="status" data-testid="disc-design-wait">架构师正在整理设计规格，双评审背靠背打分中…</p>;
+  }
+  if (failedGate) {
+    return (
+      <div className="disc-plan-result">
+        <p role="alert" className="disc-view-error">设计规格未通过检查或评审，未进入任务拆解。</p>
+        <Link className="disc-btn disc-plan-link" to={`/workstation/${runId}`}>去工作台处理</Link>
+      </div>
+    );
+  }
+
+  const design = run?.artifacts?.design || pendingGate.payload?.design || {};
+  const modules: any[] = Array.isArray(design.modules) ? design.modules : [];
+  const interfaces: any[] = Array.isArray(design.interfaces) ? design.interfaces : [];
+  const reviews: any[] = Array.isArray(run?.artifacts?.design_reviews) ? run.artifacts.design_reviews : [];
+
+  return (
+    <div className="disc-design-review" data-testid="disc-design-review">
+      <p className="disc-design-heading">设计规格待你确认</p>
+      <ul className="disc-design-modules" aria-label="设计模块">
+        {modules.map((module) => (
+          <li key={module.code}>
+            <span className="mono">{module.code}</span>
+            <span className="disc-design-module-name" title={module.responsibility}>{module.name}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="disc-design-meta">
+        模块 {modules.length} 个 · 接口 {interfaces.length} 个
+        {reviews.length > 0 && ` · 评审 ${reviews.map((sheet) => `${sheet.reviewer} ${sheet.score} 分`).join(" / ")}`}
+      </p>
+      {error && <p role="alert" className="disc-view-error">{error}</p>}
+      {busy === "reject" ? (
+        <p className="disc-spec-waiting" role="status">已驳回，架构师正在按意见重写设计…</p>
+      ) : (
+        <>
+          <label className="disc-design-reject-field">
+            <span>驳回意见（驳回时必填）</span>
+            <textarea
+              aria-label="设计驳回意见"
+              rows={2}
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="写明需要修改的设计问题"
+            />
+          </label>
+          <div className="disc-design-actions">
+            <button type="button" className="disc-btn disc-plan-link" onClick={approve} disabled={Boolean(busy)}>
+              批准设计基线
+            </button>
+            <button
+              type="button"
+              className="disc-button-secondary"
+              onClick={reject}
+              disabled={Boolean(busy) || !rejectReason.trim()}
+            >
+              驳回重写
+            </button>
+          </div>
+        </>
+      )}
+      <Link className="disc-design-full-link" to={`/workstation/${runId}?view=architecture`}>
+        在工作台查看完整设计与评审
+      </Link>
+    </div>
+  );
+}
+
+/**
  * Composes the whole discussion flow: progress bar, idea composer, chat + score panel,
  * approval dialog and the approved-spec summary. All state comes from the server-backed
  * `useDiscussionSession` hook; nothing is cached in browser storage.
@@ -185,7 +363,7 @@ export function DiscussionView({
 
   useEffect(() => {
     if (stage !== "approval") setApprovalOpen(false);
-    if (stage !== "approved") setSpecOpen(false);
+    if (stage !== "approved" && stage !== "design") setSpecOpen(false);
   }, [stage]);
 
   const proposalCache = useRef(new Map<string, Promise<string>>());
@@ -266,16 +444,6 @@ export function DiscussionView({
     if (revision === undefined) throw new Error("控制版本缺失，请刷新后重试");
     return revision;
   };
-  const intervene = (text: string) =>
-    withSession(
-      (id) =>
-        api.addDiscussionIntervention(
-          id,
-          { expected_revision: requireRevision(), text },
-          actorBotId,
-        ),
-      "intervene",
-    );
   const endRound = (reason: string) =>
     withSession(
       (id) =>
@@ -402,7 +570,6 @@ export function DiscussionView({
                 onPause={pause}
                 onResume={resume}
                 onTerminate={terminate}
-                onIntervene={intervene}
                 onEndRound={endRound}
                 onStartRound={startRound}
               />
@@ -488,6 +655,20 @@ export function DiscussionView({
               />
             </>
           )}
+          {stage === "design" && (
+            <section className="disc-spec-summary glass-panel" data-testid="disc-design-summary">
+              <DiscussionDesign
+                key={sessionId}
+                sessionId={sessionId}
+                actorBotId={actorBotId}
+                runIdHint={session?.workflow?.run_id || ""}
+                onApproved={refresh}
+              />
+              <button type="button" className="disc-button-secondary disc-design-spec-link" onClick={() => setSpecOpen(true)}>
+                查看需求规格
+              </button>
+            </section>
+          )}
           {stage === "approved" && (
             <section className="disc-spec-summary glass-panel" data-testid="disc-spec-summary">
               <div className="disc-spec-summary-actions">
@@ -509,7 +690,7 @@ export function DiscussionView({
         </aside>
       </div>
 
-      {stage === "approved" && (
+      {(stage === "approved" || stage === "design") && (
         <SpecViewer open={specOpen} onClose={() => setSpecOpen(false)} sessions={sessions} />
       )}
 

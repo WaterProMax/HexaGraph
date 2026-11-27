@@ -143,6 +143,15 @@ export type DiscussionRoundEndReason = {
   revision: number;
 };
 
+export type DiscussionWorkflow = {
+  stage: string;
+  run_id?: string | null;
+  spec_approved?: boolean;
+  design_approved?: boolean;
+  plan_approved?: boolean;
+  blocked?: Array<{ code: string; detail: string }>;
+};
+
 export type DiscussionSession = {
   session_id: string;
   project_id: string;
@@ -164,6 +173,8 @@ export type DiscussionSession = {
   checkpoint?: Record<string, unknown>;
   interventions?: DiscussionIntervention[];
   round_end_reason?: DiscussionRoundEndReason | null;
+  /** Read-only workflow projection; present on session reads from the server. */
+  workflow?: DiscussionWorkflow;
 };
 
 export type DiscussionSessionCreate = {
@@ -228,12 +239,94 @@ export type ErrorBody = {
   detail?: string;
 };
 
+/** Step kinds recorded per attempt and pushed on the run event bus. */
+export type ExecutionStepKind = "llm" | "tool" | "granted_command";
+
+/** Where a task attempt actually ran. `""` means "not recorded yet". */
+export type ExecutionPath = "legacy_tool_agent" | "granted_v1" | "simulated" | "";
+
+/** One model call, tool execution or granted command. */
+export type ExecutionStep = {
+  step: number;
+  kind: ExecutionStepKind;
+  name: string;
+  status: string;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  model: string;
+  slot: string;
+  tokens_in: number;
+  tokens_out: number;
+  finish_reason: string;
+  input_summary: string;
+  output_summary: string;
+  error: string | null;
+  truncated: boolean;
+};
+
+/** Lightweight last-step view included in list/monitor payloads. */
+export type ExecutionStepSummary = {
+  kind: string;
+  name: string;
+  status: string;
+  duration_ms: number;
+};
+
+/** One attempt with frozen context hashes plus its recorded steps. */
+export type ExecutionAttempt = {
+  attempt_id: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  role: string;
+  context_hash: string;
+  memory_context_hash: string;
+  manual_revision: number;
+  skill_bundle_hash: string;
+  commit: string;
+  context_injected: boolean;
+  execution_path: ExecutionPath;
+  steps: ExecutionStep[];
+};
+
+/** `GET /api/runs/{run_id}/tasks/{task_code}/execution-trace`. */
+export type ExecutionTrace = {
+  run_id: string;
+  task_code: string;
+  role: string;
+  execution_path: ExecutionPath;
+  context_injected: boolean;
+  current_attempt_id: string;
+  attempts: ExecutionAttempt[];
+};
+
+/** A1 dispatch overlay: a classroom-visible annotation on the run task.
+ * Execution and role memory stay role-scoped (`run_id + task_code + role`);
+ * the assignee never changes model slots or the scheduler. */
+export type TaskAssignment = {
+  assignee_bot_id: string;
+  assignee_display_name: string;
+  assigned_by_bot_id: string;
+  assigned_at: string;
+  revision: number;
+};
+
+export type TaskAssignmentUpdate = {
+  /** null clears the overlay. */
+  assignee_bot_id: string | null;
+  /** Task-level revision (same CAS source as task control). */
+  expected_revision: number;
+};
+
 /** Mirrors `GET /api/runs/{run_id}/tasks` elements (state enum, not `succeeded`). */
 export type RunTask = {
   code: string;
   state: string;
-  card?: { title?: string; depends_on?: string[]; [key: string]: unknown };
+  card?: { title?: string; depends_on?: string[]; role?: string; [key: string]: unknown };
   evidence?: Array<Record<string, unknown>>;
+  revision?: number;
+  assignment?: TaskAssignment | null;
   [key: string]: unknown;
 };
 
@@ -258,6 +351,14 @@ export type MonitorTask = {
   revision: number;
   paused: boolean;
   duration_seconds: number | null;
+  /** I0 trace summary — counts only; step I/O stays behind `executionTrace()`. */
+  execution_path: ExecutionTrace["execution_path"];
+  context_injected: boolean;
+  execution_step_count: number;
+  last_execution_step: ExecutionStepSummary | null;
+  /** A1 dispatch overlay summary; null when unassigned. */
+  assignee_bot_id: string | null;
+  assignee_display_name: string | null;
 };
 
 export type MonitorPackage = {

@@ -38,6 +38,7 @@
 | GET | `/runs/{id}/todos` | 未决关卡 + `needs_human` 任务 |
 | POST | `/gates/{id}/resolve` | `decision` + `payload` |
 | GET | `/runs/{id}/tasks` | 任务列表 |
+| PUT | `/runs/{id}/tasks/{code}/assignment` | Leader 派发覆盖（A1）：`{assignee_bot_id: string\|null, expected_revision}`；详见「任务派发覆盖」 |
 | GET | `/runs/{id}/monitor` | 监控聚合：运行 KPI、任务/工作包状态、Agent 评测与失败原因 |
 | GET | `/tasks/{id}` | 任务详情 |
 | POST | `/tasks/{id}/{action}` | pause/resume/retry/skip/takeover/submit-takeover/force-pass/patch |
@@ -346,9 +347,10 @@ P4 讨论协议使用新的 `discussion_sessions` / `discussion_proposals` / `di
 | 方法 | 路径 | 请求 | 成功 | 失败 |
 |---|---|---|---|---|
 | POST | `/api/discussion-sessions/{session_id}/supplement` | `{text}`，1–2000 字符 | 201，关联上一会话的新讨论 | 400 空白或密钥内容，403 非 Leader，409 已结束或成员变更 |
-| POST | `/api/discussion-sessions/{session_id}/plan` | 无请求体 | 200 `{run_id}`，进入 PLAN 确认 | 403 非项目 Leader，409 需求未批准，422 计划校验失败，502 模型失败 |
+| POST | `/api/discussion-sessions/{session_id}/design` | 无请求体 | 200 `{run_id}`，进入 DESIGN 确认（第 5 步） | 403 非项目 Leader，409 需求未批准，422 设计校验失败，502 模型失败 |
+| POST | `/api/discussion-sessions/{session_id}/plan` | 无请求体 | 200 `{run_id}`，进入 PLAN 确认 | 403 非项目 Leader，409 需求未批准或 DESIGN 基线未确认（`design_not_approved`），422 计划校验失败，502 模型失败 |
 
-补充信息写入新讨论的需求快照。需求批准后由 Leader 生成规格、设计和任务计划，已有运行可重复查询返回同一个 `run_id`。
+补充信息写入新讨论的需求快照。需求批准后先由 `/design` 进入第 5 步：Leader 把已批准规格整理成结构化 SPEC，架构师据此写 DESIGN，经设计检查与双评审后开出 `DESIGN基线确认` 关卡；已有运行重复调用返回同一个 `run_id`，不重新生成。DESIGN 基线批准后后端自动接 Leader 任务拆解（第 6 步）并开出 `PLAN基线确认`；`/plan` 用于幂等查询或在设计已确认后补生成计划，DESIGN 未确认时返回 409 `design_not_approved`。
 
 ## P6 前端使用的只读查询
 
@@ -369,6 +371,108 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 - `messages` / `events` 同样只带消息元数据，不含方案或规格正文；SSE 帧格式与 `Last-Event-ID` 续传见 P4「多 Bot 群聊（消息流与驱动器）」。
 - 未新增写接口、未改任何既有 POST 语义。Alembic head 现为 `0012`：本轮只新增 `discussion_messages` 表（迁移 `0012_discussion_messages`），其余表结构未变。
 
+## 执行轨迹观测（加法字段，2026-11-26）
+
+作业 3 的可观测工作台需要在同一条主路径上看到“输入 → 编排 → 过程”。本轮只新增一个只读 GET 与两组加法字段，**不改任何写接口、不改既有响应语义**。
+
+| 方法 | 路径 | 成功 | 失败 |
+|---|---|---|---|
+| GET | `/api/runs/{run_id}/tasks/{task_code}/execution-trace` | 200 `ExecutionTrace` | 404 run_not_found / task_not_found；500 仅意外错误 |
+
+`ExecutionTrace`：
+
+```json
+{
+  "run_id": "run-…",
+  "task_code": "T-01",
+  "role": "coder",
+  "execution_path": "legacy_tool_agent",
+  "context_injected": true,
+  "current_attempt_id": "uuid",
+  "attempts": [
+    {
+      "attempt_id": "uuid",
+      "status": "finished_ok",
+      "started_at": "…",
+      "ended_at": "…",
+      "role": "coder",
+      "context_hash": "…",
+      "memory_context_hash": "…",
+      "manual_revision": 3,
+      "skill_bundle_hash": "",
+      "commit": "",
+      "context_injected": true,
+      "execution_path": "legacy_tool_agent",
+      "steps": [
+        {
+          "step": 1, "kind": "llm", "name": "coder", "status": "ok",
+          "started_at": "…", "ended_at": "…", "duration_ms": 812,
+          "model": "scripted", "slot": "coder", "tokens_in": 120, "tokens_out": 40,
+          "finish_reason": "tool_calls",
+          "input_summary": "user: 任务卡 T-01 …", "output_summary": "tool_calls: read_file",
+          "error": null, "truncated": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `execution_path` 枚举：`legacy_tool_agent` | `granted_v1` | `simulated`（未执行过则 `""`）。
+- `context_injected` 只有在 `legacy_tool_agent` 真正把任务上下文块注入 `run_tool_agent` 提示词时才为 `true`；`simulated` / `granted_v1` 只冻结哈希、不注入，恒为 `false`。缺共享 skill 包时角色/手动段仍可注入，但 `skill_bundle_hash` 为空，前端必须同时显示“公共 skill 包未导入”。
+- `kind` 枚举：`llm` | `tool` | `granted_command`。**没有费用字段**：数据不存在就不展示，页面写“当前未计价”。
+- 空态是 `attempts: []`（任务存在但未执行）而不是 404。采集失败 fail-open：不因观测失败让任务失败。
+- 摘要已按 `app/execution/trace_log.py` 截断并脱敏（单字段 500 字符，`truncated` 标记）：写文件只留 path / 字符数 / 内容 sha256 前 12 位，永不含文件正文；LLM 步骤只留各 message 的 role 与长度加一条最后 user 预览，不含完整提示词或 context block；`sk-` 形态与环境密钥值替换为 `***REDACTED***`。
+
+加法字段（既有接口不破坏）：
+
+| 接口 | 加法字段 |
+|---|---|
+| `GET /api/runs/{run_id}/tasks`、`GET /api/tasks/{task_id}` | `attempt.execution_path` / `attempt.context_injected` / `attempt.execution_step_count` / `attempt.last_execution_step`；`attempt_history[]` 同样带摘要。**完整 `execution_steps` 正文一律剥离**，只走专用 trace 接口。 |
+| `GET /api/runs/{run_id}/monitor` 的 `tasks[]` | `execution_path`、`context_injected`、`execution_step_count`、`last_execution_step: {kind,name,status,duration_ms} \| null`（保持轻量，不含 I/O 正文） |
+
+新事件（复用既有 EventBus/SSE/events.jsonl，不新开总线，不加入快照高频 kind）：`task.llm_step` / `task.tool_step` / `task.granted_command`，payload 为 `{attempt_id, step, kind, name, status, duration_ms, model, slot, tokens_in, tokens_out, finish_reason, input_summary, output_summary, truncated, error}`，同样已截断脱敏。
+
+- 未启用 `LlmCallRow` / `AttemptRow` / `EvidenceRow` / `TraceLinkRow` 作为主存储，不把 `data_dir/llm/*.json` 暴露成 API。
+- `GET /api/runs/{run_id}/trace`（既有）仍是“需求/规格项 → 任务”的编排追溯，与执行步骤是两层，未改语义。
+
+## 任务派发覆盖（A1，2026-11-26）
+
+课上可展示的「这一块任务发给哪个 Agent」。**派发对象只是运行态任务上的覆盖标注**：执行与角色记忆仍按 `coder/tester` 角色槽位进行，调度算法、模型槽位、`TaskCard`（PLAN 文档）与 role-memory 主语 `run_id + task_code + role` 一律不变。
+
+| 方法 | 路径 | 成功 | 失败 |
+|---|---|---|---|
+| PUT | `/api/runs/{run_id}/tasks/{task_code}/assignment` | 200 该任务公共视图（含更新后的 `assignment` 与新 revision） | 400 validation_error / assignee_not_member；403 forbidden；404 run_not_found / task_not_found / bot_not_found；409 revision_conflict / run_read_only / run_busy |
+
+- Header：`X-Bot-Id` 必填（缺/空 400；Bot 不存在 404 bot_not_found），且必须是该项目当前 Leader（成员表 `is_leader`）。
+- Body：`{"assignee_bot_id": "bot-a" | null, "expected_revision": <任务 revision>}`。`null` 表示取消派发。**CAS 来源是任务级 revision**（与 `POST /tasks/{id}/{action}` 一致，见开头乐观锁说明）；成功后任务 revision 与 run revision 同时 +1。
+- 目标 Bot 必须是本项目在籍、未归档成员，否则 400 `assignee_not_member`。
+- 运行 `done` / `terminated` 后只读：409 `run_read_only`（UI 同步禁用）。
+- 不做批量派发、不做「成员签收」第二步；`POST /runs/{id}/schedule` 不要求先派发，未派发任务仍按角色自动调度。
+
+公共读回（`GET /runs/{id}/tasks`、`GET /tasks/{id}`）：`assignment` 未派发时统一为 `null`；已派发时为
+
+```json
+{
+  "assignee_bot_id": "bot-a",
+  "assignee_display_name": "Alice",
+  "assigned_by_bot_id": "bot-leader",
+  "assigned_at": "2026-11-26T10:00:00+00:00",
+  "revision": 1
+}
+```
+
+`assignee_display_name` 为读取时按成员/Bot 目录填充（无名退回 bot_id）；写入接口只收 `assignee_bot_id`。`GET /runs/{id}/monitor` 的 `tasks[]` 增加 `assignee_bot_id` / `assignee_display_name`（未派发均 `null`），仍不含步骤 I/O。覆盖随既有 run snapshot 持久化，重启后仍在；replan 重建任务时与 role_memory 一样保留。
+
+新事件（复用 `Workbench.emit`，不加入 `_SNAPSHOT_KINDS`）：
+
+| kind | subject | payload |
+|---|---|---|
+| `task.assigned` | task_code | `assignee_bot_id, assignee_display_name, assigned_by_bot_id, previous_assignee_bot_id, role` |
+| `task.assignment_cleared` | task_code | `previous_assignee_bot_id, assigned_by_bot_id, role` |
+
+`role` 只是当时任务卡角色的只读回显，不暗示记忆键变化。错误体沿用 `{"error_category", "detail"}`。
+
 ## 工作流阶段投影（加法字段，2026-11-24）
 
 只读查询新增 `workflow` 对象，不改变既有字段与语义；旧客户端可忽略。
@@ -378,13 +482,15 @@ P6 前端工作台需要读取验收、缺陷、讨论会话与消息流；P6 �
 | GET | `/api/runs/{run_id}` | `workflow` |
 | GET | `/api/runs/{run_id}/monitor` | `workflow` |
 | GET | `/api/discussion-sessions/{session_id}` | `workflow` |
+| GET | `/api/projects/{project_id}/discussion-sessions` | 每个 item 附 `workflow` |
+| POST | `/api/discussion-sessions/{session_id}/design`（409） | 错误体附 `workflow` |
 | POST | `/api/discussion-sessions/{session_id}/plan`（409） | 错误体附 `workflow`，`error_category` / `detail` 不变 |
 
-`workflow` 形状：`{stage, status, project_id, session_id, run_id, spec_approved, plan_approved, blocked: [{code, detail}], baseline_hashes, model_mode, execution_mode, evidence}`。
+`workflow` 形状：`{stage, status, project_id, session_id, run_id, spec_approved, design_approved, plan_approved, blocked: [{code, detail}], baseline_hashes, model_mode, execution_mode, evidence}`。
 
-- `stage` 是内部阶段（`discussing`、`spec_pending`、`spec_approved`、`planning`、`plan_pending`、`plan_approved`、`authorization_pending`、`executing`、`verifying`、`accepted`，以及 `blocked` / `invalidated` / `needs_reconciliation`）；对外 `status` 仍是原 discussion/run 状态。
+- `stage` 是内部阶段（`discussing`、`spec_pending`、`spec_approved`、`designing`、`design_pending`、`planning`、`plan_pending`、`plan_approved`、`authorization_pending`、`executing`、`verifying`、`accepted`，以及 `blocked` / `invalidated` / `needs_reconciliation`）；对外 `status` 仍是原 discussion/run 状态。
 - 投影是纯查询：不写库、不改状态；项目/会话绑定不一致时返回 `blocked` + `cross_project_mismatch`，不会静默改写历史。
-- 未批准规格时 `POST /plan` 仍返回 409 `invalid_status`「需先确认需求规格」，且不创建 run。
+- 未批准规格时 `POST /plan` 仍返回 409 `invalid_status`「需先确认需求规格」，且不创建 run；规格已批准但 DESIGN 基线未确认时返回 409 `design_not_approved`。
 
 ## 执行授权边界（2026-11-24）
 

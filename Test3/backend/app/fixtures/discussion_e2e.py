@@ -120,6 +120,8 @@ class DiscussionDemoProvider(ScriptedProvider):
             return _leader_output(revised=revised)
         if operation in {"plan", "plan_rewrite"}:
             result = _plan(revised=revised)
+            if "LeaderSpec" in material:
+                return {"spec": result["spec"]}
             if "LeaderOutline" in material:
                 return {
                     "spec": result["spec"],
@@ -127,6 +129,17 @@ class DiscussionDemoProvider(ScriptedProvider):
                     "work_packages": result["plan"]["work_packages"],
                 }
             return {"tasks": result["plan"]["tasks"]}
+        # 第 5 步设计阶段走通用角色槽位（架构师 + 双评审），与旧想法流同一条管线。
+        if not operation and kwargs.get("role") == "architect":
+            return _plan(revised=revised)["design"]
+        if not operation and kwargs.get("role") in {"review_arch", "review_quality"}:
+            arch = kwargs["role"] == "review_arch"
+            return {
+                "reviewer": "架构" if arch else "质量",
+                "dimension": "架构一致性" if arch else "实现质量",
+                "score": 5,
+                "opinions": [{"text": "ok", "kind": "验证类", "blocking": False}],
+            }
         if not operation and kwargs.get("role") in {"coder", "tester", "code_reviewer"}:
             _, marker, payload = material.partition('<资料 name="task_card">\n')
             if marker:

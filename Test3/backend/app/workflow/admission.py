@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.errors import Test3Error
-from app.workflow.stages import PLAN_GATE_KIND
+from app.workflow.stages import DESIGN_GATE_KIND, PLAN_GATE_KIND
 
 
 class WorkflowRejected(Test3Error):
@@ -63,7 +63,7 @@ def assert_phase_admission(
             blocked_reason="cross_project_mismatch",
         )
 
-    if action == "plan":
+    if action in {"design", "plan"}:
         if discussion is None:
             raise WorkflowRejected(
                 "discussion session is required",
@@ -78,7 +78,27 @@ def assert_phase_admission(
                 category="invalid_status",
                 blocked_reason="spec_not_approved",
             )
-        return
+        if action == "design":
+            return
+        # plan：DESIGN 基线必须先经人工确认（第 5 步），才能进入任务拆解（第 6 步）。
+        if run is None:
+            raise WorkflowRejected(
+                "需先完成设计规格整理与确认",
+                category="design_not_approved",
+                blocked_reason="design_not_approved",
+            )
+        if (getattr(run, "artifacts", None) or {}).get("plan"):
+            # 已有计划的运行重复调用 /plan 是幂等读取，不再重复校验关卡。
+            return
+        design_gate = _last_gate(run, DESIGN_GATE_KIND)
+        hashes = getattr(run, "approved_baseline_hashes", None) or {}
+        if "DESIGN" in hashes or (design_gate and design_gate.get("status") == "approved"):
+            return
+        raise WorkflowRejected(
+            "需先确认设计规格基线",
+            category="design_not_approved",
+            blocked_reason="design_not_approved",
+        )
 
     if action in {"confirm_plan", "schedule", "execute", "accept"} and run is None:
         raise WorkflowRejected(

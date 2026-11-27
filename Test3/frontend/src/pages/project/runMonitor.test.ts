@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MonitorAgent, MonitorSnapshot, MonitorTask } from "../../api/types";
-import { agentsToCsv, buildMonitorGroups, fallbackMonitorTasks, formatDuration } from "./runMonitor";
+import { agentsToCsv, buildMonitorGroups, eventLabel, fallbackMonitorTasks, formatDuration } from "./runMonitor";
 
 function task(overrides: Partial<MonitorTask>): MonitorTask {
   return {
@@ -24,6 +24,12 @@ function task(overrides: Partial<MonitorTask>): MonitorTask {
     revision: 1,
     paused: false,
     duration_seconds: null,
+    execution_path: "",
+    context_injected: false,
+    execution_step_count: 0,
+    last_execution_step: null,
+    assignee_bot_id: null,
+    assignee_display_name: null,
     ...overrides,
   };
 }
@@ -85,6 +91,17 @@ describe("monitor grouping", () => {
   it("maps fallback task states to monitor statuses", () => {
     const rows = fallbackMonitorTasks([{ code: "T-1", title: "x", progress: 40, status: "needs_human" }]);
     expect(rows[0].status).toBe("failed");
+  });
+
+  it("keeps fallback rows honestly unassigned (A4)", () => {
+    const rows = fallbackMonitorTasks([{ code: "T-1", title: "x", progress: 0, status: "ready" }]);
+    expect(rows[0].assignee_bot_id).toBeNull();
+    expect(rows[0].assignee_display_name).toBeNull();
+  });
+
+  it("labels the assignment events in Chinese (A4)", () => {
+    expect(eventLabel("task.assigned")).toBe("任务已派发");
+    expect(eventLabel("task.assignment_cleared")).toBe("已取消派发");
   });
 
   it("formats durations", () => {
