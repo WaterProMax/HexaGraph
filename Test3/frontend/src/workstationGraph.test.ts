@@ -26,14 +26,21 @@ const modules = [
 
 function build(input: { run?: any; artifacts?: any; tasks?: any; gate?: any; isDesignRun?: boolean }) {
   const run = "run" in input ? input.run : designRun();
-  const { phases, allItems } = buildWorkstationItems({
+  const { phases, allItems, workPackages } = buildWorkstationItems({
     run,
     artifacts: input.artifacts ?? {},
     tasks: input.tasks ?? [],
     pendingGate: input.gate ?? null,
     isDesignRun: input.isDesignRun ?? true,
   });
-  return { run, phases, allItems, overview: buildStageOverview(allItems, run), graph: buildMainGraph(allItems) };
+  return {
+    run,
+    phases,
+    allItems,
+    workPackages,
+    overview: buildStageOverview(allItems, run),
+    graph: buildMainGraph(allItems, workPackages),
+  };
 }
 
 const item = (items: PhaseTaskItem[], id: string) => items.find((i) => i.id === id)!;
@@ -218,4 +225,40 @@ describe("empty graph and status line", () => {
     const line = status({ artifacts: { model_stage: { status: "timeout" } }, pendingGate: { kind: "PLAN基线确认" } });
     expect(line.tone).toBe("error");
   });
+
+  it("shows work packages first and opens their leaf subgraph on demand", () => {
+    const hierarchical = [
+      { code: "T-01", title: "骨架", parent: "W1", depends_on: [] },
+      { code: "T-02", title: "模型", parent: "W1", depends_on: ["T-01"] },
+      { code: "T-03", title: "接口", parent: "W2", depends_on: ["T-01"] },
+      { code: "T-04", title: "集成", parent: "W2", depends_on: ["T-02", "T-03"] },
+    ];
+    const packages = [
+      { code: "W1", title: "基座", module: "M1", summary: "", sources: ["F1"] },
+      { code: "W2", title: "业务", module: "M2", summary: "", sources: ["F2"] },
+    ];
+    const hierarchicalArtifacts = {
+      design_input_status: "plan_confirmed",
+      design: { modules },
+      plan: { tasks: hierarchical, work_packages: packages },
+    };
+    const { allItems, workPackages } = buildWorkstationItems({
+      run: designRun({ stage: "7" }),
+      artifacts: hierarchicalArtifacts,
+      tasks: [],
+      pendingGate: null,
+      isDesignRun: false,
+    });
+    const overview = buildMainGraph(allItems, workPackages);
+    expect(overview.kind).toBe("packages");
+    expect(overview.items.map((i) => i.id)).toEqual(["W1", "W2"]);
+    expect(overview.items[0].subtitle).toContain("2 个任务");
+    expect(overview.edges).toEqual([{ id: "e-W1-W2", source: "W1", target: "W2" }]);
+
+    const opened = buildMainGraph(allItems, workPackages, "W1");
+    expect(opened.kind).toBe("tasks");
+    expect(opened.items.map((i) => i.id)).toEqual(["T-01", "T-02"]);
+    expect(opened.edges).toEqual([{ id: "e-T-01-T-02", source: "T-01", target: "T-02" }]);
+  });
+
 });

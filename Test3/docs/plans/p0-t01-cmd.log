@@ -1,0 +1,53 @@
+P0-T01 command evidence
+repo_root: /Users/cenghuanxiao/Desktop/HexaGraph
+recorded_at: 2026-11-19T14:10:23.386739+08:00
+environment: GIT_TERMINAL_PROMPT=0 (all commands; prevents interactive credential prompts)
+capture_method: Python subprocess.run(..., text=True, capture_output=True, timeout=45); no shell redirection; fetch attempted exactly once.
+
+=== COMMAND 1 ===
+cmd: git branch --show-current
+exit_code: 0
+--- stdout ---
+chore/test3-retire-static-classroom-and-deepseek
+--- stderr ---
+=== END COMMAND ===
+=== COMMAND 2 ===
+cmd: git rev-parse HEAD
+exit_code: 0
+--- stdout ---
+552923d9992a38eb806ff760833bb71ac4b759cf
+--- stderr ---
+=== END COMMAND ===
+=== COMMAND 3 ===
+cmd: git status --porcelain
+exit_code: 0
+--- stdout ---
+--- stderr ---
+=== END COMMAND ===
+=== COMMAND 4 ===
+cmd: git worktree list
+exit_code: 0
+--- stdout ---
+/Users/cenghuanxiao/Desktop/HexaGraph  552923d [chore/test3-retire-static-classroom-and-deepseek]
+--- stderr ---
+=== END COMMAND ===
+=== COMMAND 5 ===
+cmd: git fetch origin teamwork-001
+exit_code: 0
+--- stdout ---
+--- stderr ---
+From https://github.com/WaterProMax/HexaGraph
+ * branch            teamwork-001 -> FETCH_HEAD
+=== END COMMAND ===
+=== COMMAND 6 ===
+cmd: git rev-parse origin/teamwork-001
+exit_code: 0
+--- stdout ---
+552923d9992a38eb806ff760833bb71ac4b759cf
+--- stderr ---
+=== END COMMAND ===
+
+T01 interpretation:
+- `git status --porcelain` produced zero lines; initial dirty array is [].
+- fetch_status=ok; origin_teamwork_001_sha is taken only from COMMAND 6 stdout.
+- No credential values were requested, read, or recorded.

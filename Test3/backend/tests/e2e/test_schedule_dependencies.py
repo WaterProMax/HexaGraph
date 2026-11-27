@@ -9,10 +9,10 @@ import pytest
 
 from app.llm.providers import ScriptedProvider, validate_tool_protocol
 from app.llm.types import LLMResult
+from app.schemas.common import AcceptanceCheck
 from app.schemas.docs import TaskGraph
 from app.services.runtime import Workbench
 from tests.e2e.test_must_fixes import _bench, _card
-from app.schemas.common import AcceptanceCheck
 
 
 class _ByTaskProvider(ScriptedProvider):

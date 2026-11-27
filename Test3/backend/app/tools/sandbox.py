@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -75,10 +76,25 @@ async def run_command(
     if not command_allowed(cmd, whitelist, forbidden):
         raise CommandDenied(f"命令不在白名单: {cmd}")
     env = {k: os.environ[k] for k in env_allow if k in os.environ}
+    # python / pytest 必须解析到服务自身的 venv（模板准备阶段安装依赖的环境），
+    # 而不是 PATH 上碰巧先命中的系统 Python（往往没有 pytest）。
+    if "PATH" in env:
+        venv_bin = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
+        if venv_bin.is_dir():
+            env["PATH"] = str(venv_bin) + os.pathsep + env["PATH"]
+    # Windows 的 CreateProcess 对裸可执行名会先搜父进程所在目录（uv 基础解释器目录），
+    # 再搜子进程 PATH；因此 python 必须显式解析成 venv 的绝对路径。
+    resolved = list(cmd)
+    if resolved and resolved[0] in {"python", "python3", "py"}:
+        venv_python = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin") / (
+            "python.exe" if os.name == "nt" else "python"
+        )
+        if venv_python.is_file():
+            resolved[0] = str(venv_python)
     # 不把 __pycache__ 写进工作树：并发 merge 时 dirty 工作区会被误判成合并冲突。
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
+        *resolved,
         cwd=str(cwd),
         env=env,
         stdout=asyncio.subprocess.PIPE,

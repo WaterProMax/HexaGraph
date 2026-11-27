@@ -56,6 +56,42 @@ def test_command_whitelist() -> None:
     assert not command_allowed(["pytest; rm -rf /"], wl, forbidden)
 
 
+def test_toolset_command_args_accepts_model_variants(tmp_path: Path) -> None:
+    tools = TaskToolset(
+        tmp_path,
+        ["a.txt"],
+        whitelist=["pytest", "python -m pytest"],
+        timeout=5,
+        env_allow=["PATH"],
+        truncate=8000,
+        forbidden=["pip"],
+    )
+    assert tools._command_args({"cmd": ["pytest", "-q"]}) == ["pytest", "-q"]
+    assert tools._command_args({"cmd": '["pytest", "-q"]'}) == ["pytest", "-q"]
+    assert tools._command_args({"cmd": "pytest -q"}) == ["pytest", "-q"]
+    assert tools._command_args({"command": "python -m pytest"}) == ["python", "-m", "pytest"]
+    assert tools._command_args({"cmd": 'not json [x'}) == ["not", "json", "[x"]
+    assert tools._command_args({}) == []
+
+
+async def test_run_command_resolves_venv_python(tmp_path: Path) -> None:
+    """验收命令依赖的 python/pytest 必须解析到服务自身 venv，而不是 PATH 上的系统 Python。"""
+    from app.settings import load_profile
+    from app.tools.sandbox import run_command
+
+    profile = load_profile()
+    result = await run_command(
+        ["python", "-m", "pytest", "--version"],
+        cwd=tmp_path,
+        whitelist=list(profile["whitelist_prefixes"]),
+        timeout=30,
+        env_allow=["PATH", "HOME"],
+        truncate=8000,
+        forbidden=list(profile["forbidden_prefixes"]),
+    )
+    assert result["exit_code"] == 0, result.get("output")
+
+
 def test_validator_outputs() -> None:
     assert judge_output(0, "collected 0 items")["zero_tests"]
     assert judge_output(0, "2 skipped")["all_skipped"]

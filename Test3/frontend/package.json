@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:discussion": "playwright test --config playwright.discussion.config.ts",
     "test:e2e:integration": "playwright test --config playwright.integration.config.ts",
     "test:e2e:types": "tsc -p e2e/tsconfig.json"
   },

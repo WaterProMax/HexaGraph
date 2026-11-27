@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.agents.runtime import RoleRegistry
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
@@ -56,7 +57,10 @@ async def _import(client: AsyncClient, text: str, *, name: str, title: str = "")
 async def test_health_exposes_manual_schedule_mode_when_loop_is_off(tmp_path) -> None:
     app = create_app()
     app.state.workbench = Workbench(
-        Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path
+        Gateway(load_models(), ScriptedProvider()),
+        RoleRegistry(load_roles()),
+        tmp_path,
+        execution_policy=ExecutionPolicy(local_execution_authorized=True),
     )
     async with _client(app) as client:
         health = await client.get("/api/health")

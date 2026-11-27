@@ -89,11 +89,17 @@ def create_worktree(repo: Path, worktree: Path, branch: str, start_point: str = 
 
 def commit(ws: Path, message: str) -> str:
     _git_sync(ws, "add", "-A")
+    # A task can legitimately write content identical to the checked-out file.
+    # Never rely on git's localized error text ("nothing to commit" / "无文件要提交").
+    code, _ = _git_sync(ws, "diff", "--cached", "--quiet")
+    if code == 0:
+        return head_sha(ws)
     code, out = _git_sync(ws, "commit", "-m", message)
-    if code != 0 and "nothing to commit" not in out:
+    if code != 0:
+        if _git_sync(ws, "diff", "--cached", "--quiet")[0] == 0:
+            return head_sha(ws)
         raise RuntimeError(out)
-    _, sha = _git_sync(ws, "rev-parse", "HEAD")
-    return sha.strip()
+    return head_sha(ws)
 
 
 def changed_files(ws: Path, base: str = "HEAD~1") -> list[str]:

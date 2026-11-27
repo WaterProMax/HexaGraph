@@ -96,6 +96,46 @@ class ValidationFailed(Test3Error):
     code = "VALIDATION_FAILED"
 
 
+class GrantRejected(Test3Error):
+    """Grant scope/baseline rejection mapped to contracts C.5.4 HTTP codes."""
+
+    code = "GRANT_REJECTED"
+
+    def __init__(self, category: str, detail: str, *, status_code: int) -> None:
+        super().__init__(detail)
+        self.category = category
+        self.status_code = status_code
+
+
+class GitHubWriteDenied(Test3Error):
+    code = "GITHUB_WRITE_DENIED"
+
+
+class IsolationUnavailable(Test3Error):
+    """No preflighted isolation backend: granted execution must block."""
+
+    code = "ISOLATION_UNAVAILABLE"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        backend: str = "",
+        reason: str = "",
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.backend = backend
+        self.reason = reason or message
+        self.details = dict(details or {})
+
+
+class EvidenceWriteFailed(Test3Error):
+    """Evidence could not be written safely; callers must not report success."""
+
+    code = "EVIDENCE_WRITE_FAILED"
+
+
 class ImportInProgress(Test3Error):
     code = "IMPORT_IN_PROGRESS"
 

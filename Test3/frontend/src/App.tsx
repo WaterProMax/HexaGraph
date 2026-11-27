@@ -1,8 +1,13 @@
-import { DesktopOutlined, FolderOpenOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined } from "@ant-design/icons";
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link, Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
-import { api } from "./api/client";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+} from "react-router-dom";
+import { AppShell, DEFAULT_NAV_ITEMS } from "./components/AppShell";
 import Overview from "./pages/Overview";
 import Projects from "./pages/Projects";
 import Discussion from "./pages/Discussion";
@@ -11,144 +16,67 @@ import Todos from "./pages/Todos";
 import Tasks from "./pages/Tasks";
 import Timeline from "./pages/Timeline";
 import Budget from "./pages/Budget";
-import Settings from "./pages/Settings";
 import Changes from "./pages/Changes";
 import Workstation from "./pages/Workstation";
 import RetiredFeature from "./pages/RetiredFeature";
-import { COMPACT_VIEWPORT } from "./workstationLayout";
+import BotListPage from "./pages/bots/BotListPage";
+import BotChatPage from "./pages/bots/BotChatPage";
+import ProjectWorkstationPage from "./pages/project/ProjectWorkstationPage";
 
-export function runDot(run: any): string {
-  if (run?.status === "done") return "completed";
-  if (run?.status === "waiting" || run?.paused) return "error";
-  if (run?.status === "running") return "in_progress";
-  return "pending";
-}
+/** Route table, exported so tests can assert the contract without guessing DOM. */
+export const APP_ROUTE_PATHS = [
+  "/",
+  "/workstation",
+  "/workstation/static-classroom",
+  "/workstation/:id?",
+  "/deepseek/:id?",
+  "/projects",
+  "/projects/new",
+  "/projects/:projectId",
+  "/bots",
+  "/bots/new",
+  "/bots/:id/chat",
+  "/bots/:id",
+  "/runs/:id/*",
+] as const;
 
-function BrandMark() {
-  return (
-    <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden>
-      <defs>
-        <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#0bf" />
-          <stop offset="1" stopColor="#0066fa" />
-        </linearGradient>
-      </defs>
-      <path d="M12 1.5 21.1 6.75v10.5L12 22.5 2.9 17.25V6.75z" fill="url(#hg)" />
-      <path d="M12 7.2 16.2 9.6v4.8L12 16.8l-4.2-2.4V9.6z" fill="#fff" opacity=".9" />
-    </svg>
-  );
-}
-
-function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  const loc = useLocation();
-  const { data: runs } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
-  const recent = Array.isArray(runs) ? [...runs].reverse().slice(0, 8) : [];
-
-  const nav = [
-    { to: "/workstation", icon: <DesktopOutlined />, label: "工作台", match: "/workstation" },
-    { to: "/projects", icon: <FolderOpenOutlined />, label: "项目", match: "/projects" },
-    { to: "/settings", icon: <SettingOutlined />, label: "模型槽位", match: "/settings" },
-  ];
-
-  return (
-    <aside className={`sidebar ${collapsed ? "collapsed" : ""}`} aria-label="应用导航">
-      <div className="sidebar-top">
-        <Link
-          to="/workstation"
-          className="brand"
-          style={{ color: "inherit", textDecoration: "none" }}
-          title={collapsed ? "HexaGraph" : undefined}
-          aria-label="HexaGraph 工作台"
-        >
-          <BrandMark />
-          <span className="brand-name">HexaGraph</span>
-        </Link>
-        <button
-          type="button"
-          className="sidebar-toggle"
-          aria-label={collapsed ? "展开导航" : "收起导航"}
-          aria-expanded={!collapsed}
-          title={collapsed ? "展开导航" : "收起导航"}
-          onClick={onToggle}
-        >
-          {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-        </button>
-      </div>
-      <div className="sidebar-scroll">
-        <nav className="nav-group" aria-label="浏览" id="sidebar-navigation">
-          <h2 className="nav-label">浏览</h2>
-          {nav.map((n) => {
-            const active = loc.pathname.startsWith(n.match);
-            return (
-              <Link
-                key={n.to}
-                to={n.to}
-                className={`nav-item ${active ? "active" : ""}`}
-                aria-current={active ? "page" : undefined}
-                aria-label={n.label}
-                title={collapsed ? n.label : undefined}
-              >
-                {n.icon}
-                <span className="nav-text">{n.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-        <section className="nav-group recent-runs" aria-labelledby="recent-runs-heading">
-          <h2 className="nav-label" id="recent-runs-heading">
-            <span>最近运行</span>
-            <span className="mono">{runs?.length ?? 0}</span>
-          </h2>
-          {recent.length === 0 && <div className="nav-item muted">暂无运行</div>}
-          {recent.map((r: any) => {
-            const readOnly = Boolean(r.read_only || r.provenance?.mode === "deepseek");
-            return (
-              <NavLink key={r.id} to={`/workstation/${r.id}`} className="nav-item" title={readOnly ? "已下线的 DeepSeek 历史运行（只读）" : undefined}>
-                <span className={`dot ${runDot(r)}`} />
-                <span className="nav-text">{r.idea || r.id.slice(0, 8)}</span>
-                <span className="nav-meta">{readOnly ? "只读" : `S${r.stage}`}</span>
-              </NavLink>
-            );
-          })}
-        </section>
-      </div>
-    </aside>
-  );
-}
+export { runDot } from "./components/AppShell";
 
 export default function App() {
-  // Narrow viewports start with the navigation folded; the user can still expand it by hand.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(
-    () => typeof window !== "undefined" && window.innerWidth < COMPACT_VIEWPORT,
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const query = window.matchMedia(`(max-width: ${COMPACT_VIEWPORT - 1}px)`);
-    const onChange = (event: MediaQueryListEvent) => {
-      if (event.matches) setSidebarCollapsed(true);
-    };
-    query.addEventListener("change", onChange);
-    return () => query.removeEventListener("change", onChange);
-  }, []);
-
+  const loc = useLocation();
   return (
-    <div className={`shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((current) => !current)} />
-      <main className="main">
-        <Routes>
-          <Route path="/" element={<Navigate to="/workstation" replace />} />
-          <Route path="/workstation/static-classroom" element={<RetiredFeature feature="static-classroom" />} />
-          <Route path="/deepseek/:id?" element={<RetiredFeature feature="deepseek" />} />
-          <Route path="/workstation/:id?" element={<Workstation />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/runs/:id/*" element={<RunShell />} />
-          <Route path="*" element={<Navigate to="/workstation" replace />} />
-        </Routes>
-      </main>
-    </div>
+    <AppShell navItems={DEFAULT_NAV_ITEMS} currentPath={loc.pathname}>
+      <Routes>
+        <Route path="/" element={<Navigate to="/bots" replace />} />
+        <Route
+          path="/workstation/static-classroom"
+          element={<RetiredFeature feature="static-classroom" />}
+        />
+        <Route
+          path="/deepseek/:id?"
+          element={<RetiredFeature feature="deepseek" />}
+        />
+        <Route path="/workstation/:id?" element={<Workstation />} />
+        <Route path="/projects" element={<Projects />} />
+        <Route path="/projects/new" element={<Projects />} />
+        <Route
+          path="/projects/:projectId"
+          element={<ProjectWorkstationRoute />}
+        />
+        <Route path="/bots" element={<BotListPage />} />
+        <Route path="/bots/new" element={<BotListPage mode="create" />} />
+        <Route path="/bots/:id/chat" element={<BotChatPage />} />
+        <Route path="/bots/:id" element={<BotListPage mode="edit" />} />
+        <Route path="/runs/:id/*" element={<RunShell />} />
+        <Route path="*" element={<Navigate to="/bots" replace />} />
+      </Routes>
+    </AppShell>
   );
+}
+
+function ProjectWorkstationRoute() {
+  const { projectId } = useParams();
+  return <ProjectWorkstationPage key={projectId} projectId={projectId || ""} />;
 }
 
 function RunShell() {
@@ -174,7 +102,12 @@ function RunShell() {
           ← 工作台视图
         </Link>
         {tabs.map((t) => (
-          <NavLink key={t.to} to={t.to} end={t.end} className={({ isActive }) => `chip ${isActive ? "active" : ""}`}>
+          <NavLink
+            key={t.to}
+            to={t.to}
+            end={t.end}
+            className={({ isActive }) => `chip ${isActive ? "active" : ""}`}
+          >
             {t.label}
           </NavLink>
         ))}

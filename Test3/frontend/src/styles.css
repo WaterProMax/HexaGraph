@@ -1044,3 +1044,85 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(0, 0, 0, 0.2);
 }
+
+/* P6 Bot 表单 */
+.bot-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.bot-form-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--glass-secondary); }
+.bot-form-grid input, .bot-form-grid select, .bot-skill-row select { height: 36px; padding: 0 10px; border-radius: 10px; border: 1px solid #c9dceb; background: #ffffffd9; color: var(--glass-ink); }
+.bot-form-grid input:focus-visible, .bot-form-grid select:focus-visible, .bot-skill-row select:focus-visible { outline: 2px solid #0b7bff; outline-offset: 1px; }
+.bot-form-stack { grid-template-columns: 1fr; }
+.bot-form-stack label { font-size: 14px; }
+.bot-field-error { font-size: 13px; color: #c2410c; }
+.bot-edit-panel { display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: 24px; border: 1px solid #c3d8e9; }
+.bot-edit-actions { margin-top: 4px; }
+.bot-skill-import { display: flex; gap: 10px; align-items: center; }
+.bot-skill-import input { flex: 1; min-width: 0; height: 38px; padding: 0 16px; border-radius: 19px; border: 1px solid #c9dceb; background: #ffffffd9; color: var(--glass-ink); font-size: 14px; }
+.bot-skill-import input:focus-visible { outline: 2px solid #0b7bff; outline-offset: 1px; }
+.bot-skill-import .ant-btn { height: 38px; min-width: 72px; border-radius: 19px; }
+.bot-skill-empty { display: grid; place-items: center; padding: 22px 12px; border-radius: 16px; border: 1px dashed #c9dceb; background: rgba(255, 255, 255, 0.5); color: var(--glass-secondary); font-size: 14px; }
+.bot-skill-row { display: flex; gap: 10px; align-items: center; }
+.bot-skill-list { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.bot-skill-list li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: #ffffffb8; border: 1px solid #cfe3f2; }
+.bot-form-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 16px; }
+.bot-archive-confirm { display: inline-flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 10px; background: #fff4f0; border: 1px solid #ffc9b8; }
+
+/* Bot 创建弹层：三步向导 */
+.bot-create-overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; background: rgba(10, 24, 40, 0.34); backdrop-filter: blur(3px); overflow: auto; }
+.bot-create-dialog { position: relative; width: min(640px, 100%); max-height: calc(100vh - 48px); overflow: auto; padding: 40px 24px 20px; border-radius: 28px; box-shadow: 0 24px 60px rgba(12, 32, 56, 0.22); display: flex; flex-direction: column; gap: 12px; }
+.bot-create-close { position: absolute; top: 8px; right: 14px; z-index: 1; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--glass-secondary); font-size: 15px; line-height: 1; cursor: pointer; }
+.bot-create-close:hover { background: #e6f0fa; color: var(--glass-ink); }
+.bot-create-close:focus-visible { outline: 2px solid #0b7bff; outline-offset: 1px; }
+.bot-step-summary { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: var(--radius-tray); background: rgba(255, 255, 255, 0.6); border: 1px solid #dbeaf6; }
+.bot-create-actions { border-top: 1px solid #e3eef8; padding-top: 14px; margin-top: 2px; gap: 10px; }
+.bot-create-actions .ant-btn { min-width: 64px; height: 28px; padding: 0 14px; font-size: 13px; border-radius: 9px; }
+.bot-create-dialog .avatar-swatch { width: 38px; height: 38px; font-size: 18px; }
+.bot-create-dialog .avatar-color { width: 26px; height: 26px; }
+.bot-create-dialog .avatar-emoji-row, .bot-create-dialog .avatar-color-row { gap: 10px; justify-content: center; }
+
+/* Bot 创建第一步：封面、名字与职责 */
+.bot-identity { display: grid; gap: 12px; padding: 16px 18px 18px; border-radius: 22px; background: rgba(255, 255, 255, 0.6); border: 1px solid #dbeaf6; }
+.bot-identity-cover { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.bot-identity-upload { position: relative; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.bot-identity-upload:focus-visible { outline: 2px solid #0b7bff; outline-offset: 3px; }
+.bot-identity-upload-badge { position: absolute; right: -2px; bottom: -2px; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: #fff; border: 1px solid #cfe3f2; box-shadow: 0 2px 6px rgba(12, 32, 56, 0.16); font-size: 14px; }
+.bot-identity-upload:hover .bot-identity-upload-badge { border-color: var(--glass-accent, #0066fa); }
+.bot-identity-error { font-size: 13px; color: #c2410c; }
+.bot-identity-name { width: min(320px, 100%); justify-self: center; height: 38px; padding: 0 16px; border-radius: 19px; border: 1px solid #c9dceb; background: #ffffffd9; color: var(--glass-ink); font-size: 15px; text-align: center; }
+.bot-identity-name:focus-visible { outline: 2px solid #0b7bff; outline-offset: 1px; }
+.bot-identity-picks { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.bot-identity-pick { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.bot-duty-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .bot-duty-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.duty-card { display: grid; gap: 3px; align-content: start; text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid #cfe3f2; background: #ffffffbf; color: var(--glass-ink); cursor: pointer; }
+.duty-card:hover { border-color: #9fc6e4; }
+.duty-card:focus-visible { outline: 2px solid #0b7bff; outline-offset: 1px; }
+.duty-card.active { border-color: var(--glass-accent, #0066fa); box-shadow: 0 0 0 1px var(--glass-accent, #0066fa) inset; background: #eff6ff; }
+.duty-label { font-weight: 600; font-size: 14px; }
+.duty-role { font-size: 11px; color: var(--glass-secondary); }
+.duty-desc { font-size: 12px; color: var(--glass-secondary); line-height: 1.5; }
+
+/* P6 项目工作台 */
+.ws-page .ws-left { padding: 12px; overflow: auto; }
+.task-tree { display: flex; flex-direction: column; gap: 6px; }
+.task-tree-item { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; text-align: left; padding: 10px; border-radius: 12px; border: 1px solid transparent; background: #ffffffa6; color: inherit; cursor: pointer; }
+.task-tree-item:hover { background: #ffffffd9; }
+.task-tree-item.active, .task-tree-item[aria-selected="true"] { border-color: #8fc4ef; background: #ffffff; box-shadow: 0 6px 18px -16px #235f8f; }
+.task-tree-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-progress { grid-column: 1 / -1; font-size: 11px; color: var(--glass-muted); }
+.task-graph-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+
+/* P6 Grant / 互评 / 缺陷 */
+.grant-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 0; padding: 12px 14px; margin-bottom: 14px; border-radius: 12px; border: 1px solid #cfe3f2; background: #ffffffc2; }
+.grant-error { border-color: #ffc9b8; background: #fff6f2; color: #8a2c14; }
+.grant-warn { border-color: #ffe1a8; background: #fffaf0; color: #6b4a05; }
+.grant-ok { border-color: #bfe6c8; background: #f4fff7; color: #1c5a2b; }
+.review-ballot { border-top: 1px solid #dbe9f4; padding: 10px 0; }
+.review-gates { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.review-gates li { display: inline-flex; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #ffffffc2; border: 1px solid #dbe9f4; font-size: 12px; }
+.review-gates .gate-pass { border-color: #bfe6c8; }
+.review-gates .gate-fail { border-color: #ffc9b8; color: #8a2c14; }
+.review-justification { margin: 4px 0; padding-left: 18px; font-size: 12px; color: var(--glass-secondary); }
+.review-dissent { margin-top: 4px; font-size: 12px; color: #8a2c14; }
+.dissent-list { margin: 0; padding-left: 18px; }
+.defect-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.defect-item { display: inline-flex; gap: 8px; align-items: center; width: 100%; justify-content: flex-start; height: auto; padding: 8px 10px; }

@@ -6,6 +6,7 @@ from app.docs.checks import (
     check_proposal,
     check_spec,
     check_task_graph,
+    check_work_packages,
     critical_path,
     reconcile_estimates,
     review_pass,
@@ -34,6 +35,7 @@ from app.schemas.docs import (
     SpecItem,
     TaskCard,
     TaskGraph,
+    WorkPackage,
 )
 
 
@@ -120,6 +122,7 @@ def _card(code: str, **kwargs) -> TaskCard:
     data = dict(
         code=code,
         title=code,
+        parent=kwargs.get("parent", ""),
         kind=kwargs.get("kind", "impl"),
         module="M1",
         sources=kwargs.get("sources", ["F1"]),
@@ -242,3 +245,39 @@ def test_control_table() -> None:
     assert control_allowed("pause", "running")
     for state in ("pending", "ready", "running", "verifying", "failed", "needs_human", "blocked"):
         assert control_allowed("resume", state) == control_allowed("pause", state)
+
+def test_hierarchical_work_packages() -> None:
+    spec = SpecDoc(
+        features=[SpecItem(code="F1", kind="功能", title="t", scenario="S1", priority="P0", impact="x", acceptance=["a"], sources=["初步做法"])],
+        scenarios=[{"code": "S1"}],
+    )
+    design = DesignDoc(
+        modules=[Module(code="M1", name="m", responsibility="r", sources=["F1"])],
+        interfaces=[Interface(code="C1", provider="M1", consumers=["M1"])],
+    )
+    packages = [
+        WorkPackage(code=f"W{i}", title=f"包{i}", module="M1", summary="范围", sources=["F1"])
+        for i in range(1, 4)
+    ]
+    tasks = [
+        _card("T1", parent="W1", kind="impl"),
+        _card("T2", parent="W1", kind="test"),
+        _card("T3", parent="W2"),
+        _card("T4", parent="W2", kind="test"),
+        _card("T5", parent="W3"),
+        _card("T6", parent="W3", kind="test"),
+    ]
+    assert check_work_packages(TaskGraph(tasks=[], work_packages=packages), spec, design) == []
+    graph = TaskGraph(tasks=tasks, work_packages=packages)
+    assert check_work_packages(graph, spec, design) == []
+    assert check_task_graph(graph, spec, design, 160) == []
+
+    orphan = TaskGraph(tasks=[_card("T1", kind="impl"), _card("T2", kind="test")], work_packages=packages)
+    assert any("缺少所属工作包" in e for e in check_task_graph(orphan, spec, design, 160))
+    assert any("至少需要 1 个叶子任务" in e for e in check_work_packages(orphan, spec, design))
+
+    unknown = TaskGraph(
+        tasks=[_card("T1", parent="W9", kind="impl"), _card("T2", parent="W9", kind="test")],
+        work_packages=packages,
+    )
+    assert any("工作包不存在" in e for e in check_task_graph(unknown, spec, design, 160))

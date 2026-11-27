@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Empty, Input, Segmented, Select, Switch, Tooltip, message } from "antd";
+import { Alert, Button, Empty, Input, Segmented, Switch, Tooltip, message } from "antd";
 import {
   ArrowRightOutlined,
   CheckOutlined,
@@ -9,38 +9,17 @@ import {
   ReloadOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  Position,
-  ReactFlow,
-  type Edge,
-  type Node,
-  type NodeChange,
-} from "@xyflow/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, controlEnabled } from "../api/client";
+import ArchitecturePreview from "../components/ArchitecturePreview";
 import DesignSpecInput from "../components/DesignSpecInput";
 import DesignSpecPreview from "../components/DesignSpecPreview";
 import { designComposerForced } from "../components/designImportWait";
 import TaskPlanPreview from "../components/TaskPlanPreview";
 import { useRunEvents } from "../hooks/useRunEvents";
 import { taskWaitReason } from "../taskWaitReason";
-import { readableFlowEdge } from "../flowEdgeStyle";
-import { useFlowNodeHover } from "../useFlowNodeHover";
-import { layoutLayered, structureKey } from "../flowLayout";
-import { layeredEdgeTypes } from "../LayeredEdge";
-import {
-  FLOW_MAX_ZOOM,
-  FLOW_MIN_ZOOM,
-  FlowAutoFit,
-  FlowResetButton,
-  useFlowViewportMemory,
-  useMeasuredElement,
-} from "../FlowViewport";
+import { TaskDependencyGraph } from "./project/TaskDependencyGraph";
 import { WorkstationLayoutControls, WorkstationSplitter, LEFT_PANEL_ID } from "../components/WorkstationSplitter";
 import { useWorkstationLayout } from "../workstationLayout";
 import {
@@ -63,6 +42,8 @@ import {
 } from "./workstationControls";
 
 const DEFAULT_IDEA = "做一个帮同学在期末周找到有空位自习室的小程序。";
+const WORKSTATION_TABS = ["graph", "plan", "architecture", "details", "specs", "activity"] as const;
+type WorkstationTab = (typeof WORKSTATION_TABS)[number];
 
 const STATUS_META: Record<ItemStatus, { label: string }> = {
   completed: { label: "已完成" },
@@ -71,14 +52,6 @@ const STATUS_META: Record<ItemStatus, { label: string }> = {
   pending: { label: "待开始" },
   error: { label: "失败/需处理" },
   skipped: { label: "不适用" },
-};
-
-const RUN_STATUS: Record<string, string> = {
-  running: "运行中",
-  waiting: "等待确认",
-  done: "已完成",
-  terminated: "已终止",
-  stopped: "已停止",
 };
 
 const TASK_ACTIONS = [
@@ -93,43 +66,6 @@ const TASK_ACTIONS = [
 
 const PIPELINE = ["想法", "讨论", "方案", "评审", "SPEC", "DESIGN", "PLAN", "执行", "验收"];
 
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-function TwinTaskNode({ data }: { data: any }) {
-  const status: ItemStatus = data.status || "pending";
-  return (
-    <div
-      className={`flow-node ${data.selected ? "selected" : ""}`}
-      data-status={status}
-      title={`${data.code} · ${data.title}（${STATUS_META[status].label}）`}
-    >
-      <Handle type="target" position={Position.Left} isConnectable={false} />
-      <div className="head">
-        <span className={`dot ${status}`} />
-        <span className="code">{data.code}</span>
-        <span className="state">{data.rawState || STATUS_META[status].label}</span>
-      </div>
-      <div className="title" title={data.title}>
-        {data.title}
-      </div>
-      {data.subtitle && <div className="sub" title={data.subtitle}>{data.subtitle}</div>}
-      <Handle type="source" position={Position.Right} isConnectable={false} />
-    </div>
-  );
-}
-
-const nodeTypes = { twinTask: TwinTaskNode };
-
-/** Quantised so small container changes (splitter drags) do not reshuffle edge-less grids. */
-function aspectBucket(w: number, h: number): number {
-  if (!w || !h) return 0;
-  return Math.min(3, Math.max(1, Math.round((w / h) * 2) / 2));
-}
-
 export default function Workstation() {
   const { id: routeRunId } = useParams();
   const nav = useNavigate();
@@ -139,21 +75,26 @@ export default function Workstation() {
   const [projectName, setProjectName] = useState("自习室空位查询小程序");
   const [ideaInput, setIdeaInput] = useState(DEFAULT_IDEA);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const { hoveredNodeId, hoverNode, leaveNode } = useFlowNodeHover();
   const [controlReason, setControlReason] = useState("");
   const [gateReason, setGateReason] = useState("");
   const [supplementText, setSupplementText] = useState("");
-  const [activeTab, setActiveTab] = useState("graph");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = WORKSTATION_TABS.find((tab) => tab === searchParams.get("view")) ?? "graph";
+  function setActiveTab(tab: WorkstationTab) {
+    if (tab === activeTab) return;
+    setSearchParams((params) => {
+      const next = new URLSearchParams(params);
+      if (tab === "graph") next.delete("view");
+      else next.set("view", tab);
+      return next;
+    }, { replace: true });
+  }
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [flowMode, setFlowMode] = useState<"idea" | "design">("idea");
   const [designResult, setDesignResult] = useState<any>(null);
   const [sessionProjectId, setSessionProjectId] = useState<string | undefined>();
-  const [canvasAspect, setCanvasAspect] = useState(0);
-  // The aspect is taken from the first measurement only (it just shapes edge-less grids), so later
-  // container changes - splitter drags, window resizes - never re-lay-out or refit the view.
-  const graphBox = useMeasuredElement((w, h) => setCanvasAspect((previous) => previous || aspectBucket(w, h)));
+  const [openedPackage, setOpenedPackage] = useState<string | null>(null);
   const layout = useWorkstationLayout();
-  const viewport = useFlowViewportMemory();
   const [editSourceSignal, setEditSourceSignal] = useState(0);
 
   const { data: runsList } = useQuery({
@@ -190,7 +131,19 @@ export default function Workstation() {
     refetchInterval: 2000,
   });
 
-  const { data: artifacts } = useQuery({
+  const { data: projectList } = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => api.projects(true),
+    staleTime: 30_000,
+  });
+
+  const summaryTitle = useMemo(() => {
+    const items = Array.isArray(projectList) ? projectList : [];
+    const match = items.find((project: any) => project.id === run?.project_id);
+    return match?.name || "未命名项目";
+  }, [projectList, run?.project_id]);
+
+  const { data: artifacts, isPending: artifactsPending, isError: artifactsFailed } = useQuery({
     queryKey: ["arts", activeRunId],
     queryFn: () => api.artifacts(activeRunId!),
     enabled: !!activeRunId,
@@ -202,13 +155,6 @@ export default function Workstation() {
     queryFn: () => api.tasks(activeRunId!),
     enabled: !!activeRunId,
     refetchInterval: 2000,
-  });
-
-  const { data: budget } = useQuery({
-    queryKey: ["budget", activeRunId],
-    queryFn: () => api.budget(activeRunId!),
-    enabled: !!activeRunId,
-    refetchInterval: 4000,
   });
 
   const { data: health } = useQuery({
@@ -224,7 +170,6 @@ export default function Workstation() {
       qc.invalidateQueries({ queryKey: ["run", activeRunId] });
       qc.invalidateQueries({ queryKey: ["arts", activeRunId] });
       qc.invalidateQueries({ queryKey: ["tasks", activeRunId] });
-      qc.invalidateQueries({ queryKey: ["budget", activeRunId] });
     }
   };
 
@@ -293,7 +238,9 @@ export default function Workstation() {
   const runPauseEnabled = !legacyRetired && pauseResumeEnabled(run, controlOpts);
   const canSchedule = !legacyRetired && scheduleEnabled(run, controlOpts);
   const scheduleMode = health?.schedule_mode;
-  const persistentProvenance = provenanceMarks(artifacts?.provenance || run?.provenance);
+  // Existing idea/discussion runs already carry their input; only new runs and
+  // design-spec runs (which support source editing) need the composer.
+  const showComposer = !activeRunId || isDesignRun || legacyRetired;
 
   const handleDesignCreated = (result: any) => {
     if (result?.project_id) setSessionProjectId(result.project_id);
@@ -406,12 +353,26 @@ export default function Workstation() {
     return () => clearTimeout(timer);
   }, [autoAdvanceActive, activeRunId, run, pendingGate, gatesLocked]);
 
-  const { phases, allItems } = useMemo(
+  const { phases, allItems, workPackages } = useMemo(
     () => buildWorkstationItems({ run, artifacts, tasks, pendingGate, isDesignRun }),
     [run, artifacts, tasks, pendingGate, isDesignRun],
   );
   const overview = useMemo(() => buildStageOverview(allItems, run), [allItems, run]);
-  const mainGraph = useMemo(() => buildMainGraph(allItems), [allItems]);
+  const mainGraph = useMemo(
+    () => buildMainGraph(allItems, workPackages, openedPackage),
+    [allItems, workPackages, openedPackage],
+  );
+  const openedPackageItem = workPackages.find((item) => item.id === openedPackage);
+
+  useEffect(() => {
+    setOpenedPackage(null);
+  }, [activeRunId]);
+
+  useEffect(() => {
+    if (openedPackage && !workPackages.some((item) => item.id === openedPackage)) {
+      setOpenedPackage(null);
+    }
+  }, [workPackages, openedPackage]);
 
   const progressItems = allItems.filter((i) => i.status !== "skipped");
   const completedCount = progressItems.filter((i) => i.status === "completed").length;
@@ -422,51 +383,6 @@ export default function Workstation() {
     () => allItems.find((i) => i.id === selectedId) || mainGraph.items[0] || allItems[0] || null,
     [allItems, mainGraph, selectedId],
   );
-
-  const graphIds = useMemo(() => mainGraph.items.map((item) => item.id), [mainGraph]);
-  const graphStructure = structureKey(graphIds, mainGraph.edges);
-  // Re-layout only when the structure (or the quantised container shape) changes, not on status polls.
-  const layered = useMemo(
-    () => layoutLayered(graphIds, mainGraph.edges, { aspect: canvasAspect || undefined }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graphStructure, canvasAspect],
-  );
-
-  const flowNodes = useMemo<Node[]>(
-    () =>
-      mainGraph.items.map((item) => ({
-        id: item.id,
-        type: "twinTask",
-        position: layered.positions[item.id] || { x: 0, y: 0 },
-        draggable: false,
-        connectable: false,
-        ariaLabel: `${item.code} ${item.title}，${STATUS_META[item.status].label}`,
-        data: { ...item, selected: selectedItem?.id === item.id },
-      })),
-    [mainGraph, layered, selectedItem?.id],
-  );
-
-  const flowEdges = useMemo<Edge[]>(
-    () =>
-      mainGraph.edges.map((edge) => ({
-        ...readableFlowEdge({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: "layered",
-          focusNodeId: hoveredNodeId || selectedId,
-        }),
-        data: { route: layered.routes[edge.id] },
-      })),
-    [mainGraph, layered, hoveredNodeId, selectedId],
-  );
-
-  const onNodesChange = (changes: NodeChange[]) => {
-    // Keyboard selection (Enter on a focused node) arrives as a select change; nothing else is applied.
-    for (const change of changes) {
-      if (change.type === "select" && change.selected) setSelectedId(change.id);
-    }
-  };
 
   const designImportStatus: string | undefined = artifacts?.design_input_status;
   const emptyNotice = emptyGraphNotice({ run, designImportStatus, importing: importingDesign, isDesignRun });
@@ -484,8 +400,11 @@ export default function Workstation() {
     : isDesignRun || composerMode === "design"
       ? "设计规格"
       : "完整流程";
-  const graphCaption =
-    mainGraph.kind === "tasks"
+  const graphCaption = workPackages.length > 0
+    ? openedPackage
+      ? `${openedPackageItem?.title || openedPackage} · ${mainGraph.items.length} 个子任务`
+      : `工作包 · ${workPackages.length} 个`
+    : mainGraph.kind === "tasks"
       ? `任务依赖图 · ${mainGraph.items.length} 个任务`
       : mainGraph.kind === "modules"
         ? `设计模块 · ${mainGraph.items.length} 个（仅属于 DESIGN）`
@@ -509,16 +428,13 @@ export default function Workstation() {
   );
 
   const isTaskSelected = selectedItem?.kind === "task" && selectedItem.detail?.revision !== undefined;
-  const budgetUsed = budget?.used ?? 0;
-  const budgetLimit = budget?.limit ?? 0;
-  const budgetPct = budgetLimit ? Math.min(100, (budgetUsed / budgetLimit) * 100) : 0;
-
-  const tabs = [
+  const tabs: Array<{ key: WorkstationTab; label: string; count?: number }> = [
     { key: "graph", label: "流程图" },
     { key: "plan", label: "任务计划", count: artifacts?.plan?.tasks?.length },
+    { key: "architecture", label: "架构图", count: artifacts?.design?.modules?.length },
     { key: "details", label: "节点详情" },
     { key: "specs", label: "规格产物" },
-    { key: "activity", label: "活动", count: events.length },
+    { key: "activity", label: "活动" },
   ];
 
   const renderControls = (compact: boolean) => (
@@ -555,97 +471,6 @@ export default function Workstation() {
 
   return (
     <div className="ws">
-      <header className="topbar">
-        <div className="topbar-left">
-          <span className="crumb">
-            工作台 <span style={{ color: "var(--ink-4)" }}>/</span>
-            <strong>{run ? `运行 #${String(run.id).slice(0, 6)}` : "新运行"}</strong>
-          </span>
-          {Array.isArray(availableRuns) && availableRuns.length > 0 && (
-            <Select
-              size="small"
-              aria-label="选择历史运行"
-              classNames={{ popup: { root: "glass-select-popup" } }}
-              variant="filled"
-              style={{ width: 220 }}
-              value={activeRunId}
-              placeholder="选择历史运行"
-              onChange={(val) => nav(`${routeBase}/${val}`)}
-              options={[...availableRuns].reverse().map((r: any) => ({
-                value: r.id,
-                label: `#${r.id.slice(0, 6)} · 阶段 ${r.stage} · ${r.read_only || r.provenance?.mode === "deepseek" ? "已下线（只读）" : RUN_STATUS[r.status] || r.status}`,
-              }))}
-            />
-          )}
-        </div>
-
-        {run && (
-          <div className="topbar-right">
-            <span className="pill">
-              <span className={`dot ${run.status === "done" ? "completed" : run.paused || pendingGate ? "error" : "in_progress"}`} />
-              阶段 {run.stage} · {run.paused ? "已暂停" : RUN_STATUS[run.status] || run.status}
-            </span>
-            <Tooltip title={`令牌 ${budgetUsed.toLocaleString()} / ${budgetLimit.toLocaleString()}`}>
-              <span className="pill" style={{ gap: 8 }}>
-                <span className="mono">
-                  {fmtNum(budgetUsed)} / {fmtNum(budgetLimit)}
-                </span>
-                <span className="meter brand" style={{ width: 48 }}>
-                  <span style={{ width: `${budgetPct}%` }} />
-                </span>
-              </span>
-            </Tooltip>
-            <Tooltip title="自动批准当前挂起关卡以快速推进">
-              <span className="pill auto-advance">
-                <Switch size="small" aria-label="自动过关" checked={autoAdvanceActive} disabled={legacyRetired} onChange={setAutoAdvance} />
-                自动过关
-              </span>
-            </Tooltip>
-            {run.stage === "7" && (
-              <Button
-                size="small"
-                type="primary"
-                aria-label="调度执行"
-                icon={<PlayCircleOutlined />}
-                loading={scheduleMut.isPending}
-                disabled={!canSchedule}
-                onClick={() => scheduleMut.mutate()}
-              >
-                调度执行
-              </Button>
-            )}
-            {run.stage === "8" && run.status !== "done" && !pendingGate && (
-              <Button
-                size="small"
-                type="primary"
-                icon={<CheckOutlined />}
-                loading={acceptMut.isPending}
-                disabled={legacyRetired || runQueryFailed || importingDesign}
-                onClick={() => acceptMut.mutate()}
-              >
-                生成验收报告
-              </Button>
-            )}
-            {runPauseKind && (
-              <Button
-                size="small"
-                icon={runPauseKind === "resume" ? <CaretRightOutlined /> : <PauseOutlined />}
-                aria-label={runPauseKind === "resume" ? "恢复" : "暂停"}
-                data-testid="run-pause-resume"
-                disabled={!runPauseEnabled || runCtrlMut.isPending}
-                loading={runCtrlMut.isPending}
-                onClick={() => runCtrlMut.mutate(runPauseKind)}
-              >
-                {runPauseKind === "resume" ? "恢复" : "暂停"}
-              </Button>
-            )}
-            <Tooltip title="刷新">
-              <Button size="small" type="text" aria-label="刷新" icon={<ReloadOutlined />} onClick={refreshAll} />
-            </Tooltip>
-          </div>
-        )}
-      </header>
-
       <div className={layout.bodyClassName} style={layout.bodyStyle} ref={layout.bodyRef}>
         <aside
           className="ws-left"
@@ -657,10 +482,13 @@ export default function Workstation() {
           {activeRunId && (
             <section className="ws-summary" aria-label="运行摘要" data-testid="run-summary">
               <div className="ws-summary-head">
-                <strong className="ws-summary-name" title={run?.idea || projectName}>
-                  {run?.idea || projectName}
+                <strong className="ws-summary-name" title={summaryTitle}>
+                  {summaryTitle}
                 </strong>
                 <span className="mode-badge" data-testid="mode-badge">{modeBadge}</span>
+                <Tooltip title="刷新">
+                  <Button size="small" type="text" aria-label="刷新" icon={<ReloadOutlined />} onClick={refreshAll} />
+                </Tooltip>
               </div>
               <div className={`ws-status-line tone-${statusLine.tone}`} role="status" data-testid="run-status-line">
                 <span
@@ -669,8 +497,62 @@ export default function Workstation() {
                 />
                 {statusLine.text}
               </div>
+              {run && (
+                <div className="ws-run-actions" data-testid="run-actions">
+                  <Tooltip title="自动批准当前挂起关卡以快速推进">
+                    <span className="pill auto-advance">
+                      <Switch size="small" aria-label="自动过关" checked={autoAdvanceActive} disabled={legacyRetired} onChange={setAutoAdvance} />
+                      自动过关
+                    </span>
+                  </Tooltip>
+                  {run.stage === "7" && (
+                    <Button
+                      size="small"
+                      type="primary"
+                      aria-label="调度执行"
+                      icon={<PlayCircleOutlined />}
+                      loading={scheduleMut.isPending}
+                      disabled={!canSchedule}
+                      onClick={() => scheduleMut.mutate()}
+                    >
+                      调度执行
+                    </Button>
+                  )}
+                  {run.stage === "8" && run.status !== "done" && !pendingGate && (
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<CheckOutlined />}
+                      loading={acceptMut.isPending}
+                      disabled={legacyRetired || runQueryFailed || importingDesign}
+                      onClick={() => acceptMut.mutate()}
+                    >
+                      生成验收报告
+                    </Button>
+                  )}
+                  {runPauseKind && (
+                    <Button
+                      size="small"
+                      icon={runPauseKind === "resume" ? <CaretRightOutlined /> : <PauseOutlined />}
+                      aria-label={runPauseKind === "resume" ? "恢复" : "暂停"}
+                      data-testid="run-pause-resume"
+                      disabled={!runPauseEnabled || runCtrlMut.isPending}
+                      loading={runCtrlMut.isPending}
+                      onClick={() => runCtrlMut.mutate(runPauseKind)}
+                    >
+                      {runPauseKind === "resume" ? "恢复" : "暂停"}
+                    </Button>
+                  )}
+                </div>
+              )}
+              {run?.idea && (
+                <div className="ws-idea-bubble" data-testid="run-idea">
+                  <p>{run.idea}</p>
+                </div>
+              )}
             </section>
           )}
+          {showComposer && (
           <section className="composer glass-panel" aria-labelledby="composer-heading">
             <div className="panel-heading">
               <span className="panel-icon"><ThunderboltOutlined /></span>
@@ -764,6 +646,7 @@ export default function Workstation() {
               </>
             )}
           </section>
+          )}
 
           {runQueryFailed && (
             <Alert
@@ -779,17 +662,11 @@ export default function Workstation() {
             />
           )}
 
-          {persistentProvenance.length > 0 && (
-            <div className="notice" data-testid="run-provenance">
-              <span>{persistentProvenance.join("／")}</span>
-            </div>
-          )}
-
           {showDesignPreview && (
             <DesignSpecPreview
               artifacts={artifacts}
               result={designView}
-              hideProvenance={persistentProvenance.length > 0}
+              hideProvenance
               onEditSource={() => setEditSourceSignal((n) => n + 1)}
             />
           )}
@@ -912,7 +789,10 @@ export default function Workstation() {
                       className={`row ${selectedItem?.id === item.id ? "active" : ""}`}
                       aria-pressed={selectedItem?.id === item.id}
                       data-status={item.status}
-                      onClick={() => setSelectedId(item.id)}
+                      onClick={() => {
+                        setSelectedId(item.id);
+                        if (item.kind === "task" && item.parent) setOpenedPackage(item.parent);
+                      }}
                     >
                       <span className={`dot ${item.status}`} aria-hidden="true" />
                       <span className="row-main">
@@ -1014,53 +894,49 @@ export default function Workstation() {
                           <span className="stage-state">{STATUS_META[stage.status].label}</span>
                         </li>
                       ))}
-                      <li className="stage-caption" data-testid="graph-caption">{graphCaption}</li>
+                      <li className="stage-caption" data-testid="graph-caption">
+                        {openedPackage && (
+                          <button
+                            type="button"
+                            className="graph-back"
+                            onClick={() => {
+                              setOpenedPackage(null);
+                              setSelectedId(null);
+                            }}
+                          >
+                            ← 全部工作包
+                          </button>
+                        )}
+                        <span>{graphCaption}</span>
+                      </li>
                     </ol>
-                    <div className="graph-flow" ref={graphBox.attach}>
-                      {mainGraph.kind === "empty" && (
-                        <div className={`graph-empty tone-${emptyNotice.tone}`} role="status" data-testid="graph-empty">
-                          <strong>{emptyNotice.title}</strong>
-                          <span>{emptyNotice.detail}</span>
-                        </div>
-                      )}
-                      <ReactFlow
-                        nodes={flowNodes}
-                        edges={flowEdges}
-                        nodeTypes={nodeTypes}
-                        edgeTypes={layeredEdgeTypes}
-                        defaultViewport={{ x: 24, y: 24, zoom: 1 }}
-                        minZoom={FLOW_MIN_ZOOM}
-                        maxZoom={FLOW_MAX_ZOOM}
-                        nodesDraggable={false}
-                        nodesConnectable={false}
-                        elementsSelectable
-                        onMoveStart={viewport.onMoveStart}
-                        onNodesChange={onNodesChange}
-                        onNodeClick={(_, node) => setSelectedId(node.id)}
-                        onNodeMouseEnter={(_, node) => hoverNode(node.id)}
-                        onNodeMouseLeave={(_, node) => leaveNode(node.id)}
-                      >
-                        <Background variant={BackgroundVariant.Dots} gap={22} size={0.7} color="#e3ebf0" />
-                        <Controls
-                          position="top-right"
-                          showInteractive={false}
-                          onZoomIn={viewport.markUserMoved}
-                          onZoomOut={viewport.markUserMoved}
-                        />
-                        <FlowAutoFit
-                          structure={`${activeRunId}|${graphStructure}|${canvasAspect}`}
-                          userMoved={viewport.userMoved}
-                          bounds={{ width: layered.width, height: layered.height }}
-                          getSize={graphBox.getSize}
-                        />
-                        <FlowResetButton
-                          userMoved={viewport.userMoved}
-                          bounds={{ width: layered.width, height: layered.height }}
-                          getSize={graphBox.getSize}
-                        />
-                      </ReactFlow>
-                    </div>
-
+                    <TaskDependencyGraph
+                      tasks={mainGraph.items}
+                      edges={mainGraph.edges}
+                      kind={mainGraph.kind}
+                      selected={selectedItem?.id}
+                      focusNodeId={selectedId}
+                      onSelect={(nodeId) => {
+                        const item = mainGraph.items.find((entry) => entry.id === nodeId);
+                        if (item?.kind === "package") {
+                          setOpenedPackage(nodeId);
+                          setSelectedId(null);
+                        } else {
+                          setSelectedId(nodeId);
+                        }
+                      }}
+                      emptyText={null}
+                      fitKey={activeRunId || ""}
+                      className="graph-flow"
+                      overlay={
+                        mainGraph.kind === "empty" ? (
+                          <div className={`graph-empty tone-${emptyNotice.tone}`} role="status" data-testid="graph-empty">
+                            <strong>{emptyNotice.title}</strong>
+                            <span>{emptyNotice.detail}</span>
+                          </div>
+                        ) : null
+                      }
+                    />
                     {selectedItem && (
                       <div className="dock">
                         <div className="dock-info">
@@ -1096,6 +972,21 @@ export default function Workstation() {
                       />
                     </div>
                   </div>
+                )}
+
+                {activeTab === "architecture" && (
+                  <ArchitecturePreview
+                    key={activeRunId}
+                    design={artifacts?.design}
+                    plan={artifacts?.plan}
+                    runtimeTasks={tasks}
+                    loading={artifactsPending}
+                    failed={artifactsFailed}
+                    onSelectTask={(code) => {
+                      setSelectedId(code);
+                      setActiveTab("details");
+                    }}
+                  />
                 )}
 
                 {activeTab === "details" && (

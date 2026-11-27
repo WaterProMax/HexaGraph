@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from app.agents.runtime import RoleRegistry
 from app.api import routes
 from app.events.bus import BUS
+from app.execution.simulation import ExecutionPolicy
 from app.llm.gateway import Gateway
 from app.llm.providers import ScriptedProvider
 from app.main import create_app
@@ -23,7 +24,7 @@ SNAPSHOT = Path(__file__).parent / "snapshots" / "openapi_structure.json"
 
 
 def _bench(tmp_path) -> Workbench:
-    return Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path)
+    return Workbench(Gateway(load_models(), ScriptedProvider()), RoleRegistry(load_roles()), tmp_path, execution_policy=ExecutionPolicy(local_execution_authorized=True))
 
 
 def _app(tmp_path):

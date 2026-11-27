@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
+
+from app.bots.chat import ChatRequest, chat_reply
+from app.bots.files import (
+    BotFileError,
+    BotFileStore,
+    budget_chars,
+    context_window,
+    file_item,
+    summarize,
+)
+from app.bots.registry import (
+    BotAlreadyArchived,
+    BotArchived,
+    BotNameConflict,
+    BotNotFound,
+    BotRegistry,
+)
+from app.errors import AgentOutputError
+from app.llm.bot_secrets import BotSecretStore
+from app.llm.catalog import is_known_provider
+from app.memory.injection import build_memory_slot
+from app.memory.organizer import contains_secret
+from app.schemas.bot import BotCreate, BotPatch
+
+router = APIRouter()
+
+_VALID_STATUS = {"active", "archived"}
+
+
+def _secret_store(request: Request) -> BotSecretStore | None:
+    data_dir = getattr(request.app.state.workbench, "data_dir", None)
+    return BotSecretStore(data_dir) if data_dir is not None else None
+
+
+def _key_value(secret: Any) -> str | None:
+    """Plain key from a write-only SecretStr; None when not supplied."""
+    return None if secret is None else secret.get_secret_value().strip()
+
+
+def _flagged(request: Request, bot: Any, ids: set[str] | None = None) -> dict[str, Any]:
+    """Bot dict plus a read-only ``has_api_key`` flag; the key itself never leaves the store."""
+    store = _secret_store(request)
+    if ids is None:
+        ids = store.ids() if store is not None else set()
+    return {**bot.model_dump(), "has_api_key": bot.bot_id in ids}
+
+
+def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error_category": category, "detail": detail})
+
+
+async def _body(request: Request) -> dict[str, Any] | None:
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+@router.post("/bots", status_code=201)
+async def create_bot(request: Request) -> JSONResponse:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = BotCreate.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    api_key = _key_value(body.api_key)
+    store = _secret_store(request)
+    if api_key:
+        if not is_known_provider(body.provider_ref):
+            return _json_error(400, "validation_error", f"unknown provider: {body.provider_ref}")
+        if store is None:
+            return _json_error(500, "config_error", "server has no data directory for API keys")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).create(body)
+            await session.commit()
+        except BotNameConflict:
+            await session.rollback()
+            return _json_error(
+                409, "bot_name_conflict", f"display_name already exists: {body.display_name}"
+            )
+    if api_key and store is not None:
+        store.set(bot.bot_id, api_key)
+    return JSONResponse(status_code=201, content=_flagged(request, bot))
+
+
+@router.get("/bots")
+async def list_bots(request: Request, status: str | None = None) -> Any:
+    if status is not None and status not in _VALID_STATUS:
+        return _json_error(
+            400, "validation_error", "status must be one of: active, archived"
+        )
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        items = await BotRegistry(session).list_all(status)
+    store = _secret_store(request)
+    ids = store.ids() if store is not None else set()
+    return {"items": [_flagged(request, item, ids) for item in items]}
+
+
+@router.get("/bots/{bot_id}")
+async def get_bot(bot_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+    return _flagged(request, bot)
+
+
+@router.patch("/bots/{bot_id}")
+async def patch_bot(bot_id: str, request: Request) -> Any:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        patch = BotPatch.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    api_key = _key_value(patch.api_key)
+    store = _secret_store(request)
+    if api_key and store is None:
+        return _json_error(500, "config_error", "server has no data directory for API keys")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        registry = BotRegistry(session)
+        try:
+            if api_key:
+                current = await registry.get(bot_id)
+                if not is_known_provider(patch.provider_ref or current.provider_ref):
+                    return _json_error(400, "validation_error", "unknown provider")
+            bot = await registry.update(bot_id, patch)
+            pin = await registry.latest_pin(bot_id)
+            await session.commit()
+        except BotNotFound:
+            await session.rollback()
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        except BotArchived:
+            await session.rollback()
+            return _json_error(409, "bot_archived", "archived bot cannot change its pin")
+        except BotNameConflict:
+            await session.rollback()
+            return _json_error(409, "bot_name_conflict", "display_name already exists")
+        except ValidationError as exc:
+            await session.rollback()
+            return _json_error(400, "validation_error", str(exc))
+    if store is not None and api_key is not None:
+        if api_key:
+            store.set(bot_id, api_key)
+        else:
+            store.delete(bot_id)
+    content = _flagged(request, bot)
+    content["pin_revision"] = pin["revision"]
+    return JSONResponse(status_code=200, content=content)
+
+
+@router.post("/bots/{bot_id}/archive")
+async def archive_bot(bot_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).archive(bot_id)
+            await session.commit()
+        except BotNotFound:
+            await session.rollback()
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        except BotAlreadyArchived:
+            await session.rollback()
+            return _json_error(409, "bot_already_archived", f"bot already archived: {bot_id}")
+    store = _secret_store(request)
+    if store is not None:
+        store.delete(bot.bot_id)
+    return {"bot_id": bot.bot_id, "status": bot.status}
+
+@router.post("/bots/{bot_id}/chat")
+async def chat_with_bot(bot_id: str, request: Request) -> JSONResponse:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ChatRequest.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    if any(contains_secret(item.content) for item in body.messages):
+        return _json_error(400, "secret_in_body", "message contains a secret-like value")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        if bot.status == "archived":
+            return _json_error(409, "bot_archived", "archived bots cannot chat")
+        memory = await build_memory_slot(bot_id, project_id=None, run_id=None, session=session)
+        files = await BotFileStore(session).list(bot_id)
+    try:
+        result = await chat_reply(bench.gateway, bot, body.messages, memory, files)
+    except AgentOutputError as exc:
+        category = exc.category or "model_error"
+        return _json_error(400 if category == "auth" else 502, category, str(exc))
+    except TimeoutError:
+        return _json_error(504, "timeout", "模型响应超时，请稍后重试")
+    if not result["reply"]:
+        return _json_error(502, "empty_reply", "模型没有返回内容，请重试")
+    return JSONResponse(content=result)
+
+
+def _library(bench: Any, bot: Any, rows: list[Any]) -> dict[str, Any]:
+    return {
+        "items": [file_item(row) for row in rows],
+        **summarize(rows),
+        "budget_chars": budget_chars(context_window(bench.gateway, bot.slot)),
+    }
+
+
+@router.get("/bots/{bot_id}/files")
+async def list_bot_files(bot_id: str, request: Request) -> Any:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        rows = await BotFileStore(session).list(bot_id)
+    return _library(bench, bot, rows)
+
+
+@router.post("/bots/{bot_id}/files", status_code=201)
+async def upload_bot_file(bot_id: str, request: Request) -> JSONResponse:
+    payload = await _body(request)
+    if payload is None:
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            bot = await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        if bot.status == "archived":
+            return _json_error(409, "bot_archived", "archived bots cannot take files")
+        budget = budget_chars(context_window(bench.gateway, bot.slot))
+        store = BotFileStore(session)
+        try:
+            row = await store.add(bot_id, payload.get("filename"), payload.get("content"), budget)
+        except BotFileError as exc:
+            await session.rollback()
+            return _json_error(exc.status, exc.category, exc.detail)
+        await session.commit()
+        rows = await store.list(bot_id)
+    return JSONResponse(
+        status_code=201, content={**_library(bench, bot, rows), "file": file_item(row)}
+    )
+
+
+@router.delete("/bots/{bot_id}/files/{file_id}")
+async def delete_bot_file(bot_id: str, file_id: str, request: Request) -> Response:
+    bench = request.app.state.workbench
+    async with bench.db_session() as session:
+        try:
+            await BotRegistry(session).get(bot_id)
+        except BotNotFound:
+            return _json_error(404, "bot_not_found", f"bot not found: {bot_id}")
+        try:
+            await BotFileStore(session).delete(bot_id, file_id)
+        except BotFileError as exc:
+            await session.rollback()
+            return _json_error(exc.status, exc.category, exc.detail)
+        await session.commit()
+    return Response(status_code=204)
+

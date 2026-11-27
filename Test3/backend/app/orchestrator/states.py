@@ -41,6 +41,12 @@ TASK_TRANSITIONS: dict[tuple[str, str], str] = {
     ("blocked", "human_skip"): "skipped",
     ("needs_human", "force_pass"): "done",
     ("failed", "force_pass"): "done",
+    # P5: a rejected module acceptance / defect returns the task to a repairable
+    # state.  ``failed`` is already retryable ("failed" + "retry" -> "running");
+    # force-pass is not opened by this edge.
+    ("done", "defect_found"): "failed",
+    ("verifying", "defect_found"): "failed",
+    ("failed", "defect_found"): "failed",
     ("pending", "cancel"): "cancelled",
     ("ready", "cancel"): "cancelled",
     ("running", "cancel"): "cancelled",
@@ -60,6 +66,13 @@ TASK_TRANSITIONS: dict[tuple[str, str], str] = {
     ("ready", "task_issue"): "needs_human",
     ("running", "repair_exceeded"): "needs_human",
     ("ready", "human_pause"): "pending",
+    # Card 3: explicit human reconciliation after a crash. Never automatic.
+    ("running", "reconcile_accepted"): "done",
+    ("verifying", "reconcile_accepted"): "done",
+    ("ready", "reconcile_accepted"): "done",
+    ("running", "reconcile_failed"): "failed",
+    ("verifying", "reconcile_failed"): "failed",
+    ("ready", "reconcile_failed"): "failed",
     ("running", "interrupted"): "ready",
     ("verifying", "interrupted"): "ready",
 }

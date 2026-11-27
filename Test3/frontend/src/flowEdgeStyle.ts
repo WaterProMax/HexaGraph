@@ -13,6 +13,8 @@ interface ReadableFlowEdgeOptions {
   target: string;
   type?: Edge["type"];
   inactive?: boolean;
+  /** Dashed variant for derived links (e.g. task dependencies next to solid contract edges). */
+  dashed?: boolean;
   focusNodeId?: string | null;
 }
 
@@ -23,6 +25,7 @@ export function readableFlowEdge({
   target,
   type = "smoothstep",
   inactive = false,
+  dashed = false,
   focusNodeId = null,
 }: ReadableFlowEdgeOptions): Edge {
   const hasFocus = Boolean(focusNodeId);
@@ -40,6 +43,7 @@ export function readableFlowEdge({
     connected && "flow-edge--connected",
     dimmed && "flow-edge--dimmed",
     inactive && "flow-edge--inactive",
+    dashed && "flow-edge--dashed",
   ]
     .filter(Boolean)
     .join(" ");
@@ -54,7 +58,7 @@ export function readableFlowEdge({
     style: {
       stroke: color,
       strokeWidth: connected ? 3 : inactive ? 2.25 : 2.5,
-      strokeDasharray: inactive ? "6 4" : undefined,
+      strokeDasharray: dashed ? "5 4" : inactive ? "6 4" : undefined,
       opacity: dimmed ? 0.18 : 1,
     },
     markerEnd: {

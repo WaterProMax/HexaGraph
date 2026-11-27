@@ -1,23 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-
-const legacyRun = {
-  id: "legacy-run",
-  project_id: "p1",
-  status: "waiting",
-  stage: "6",
-  revision: 1,
-  paused: false,
-  idea: "历史 DeepSeek 运行",
-  gates: [],
-  event_count: 0,
-  provenance: { mode: "deepseek", provider: "DeepSeekProvider" },
-  read_only: true,
-  retired_mode: "deepseek",
-};
 
 function renderAt(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -50,12 +35,6 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/api/runs") {
-        return new Response(JSON.stringify([legacyRun]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
       return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
     }),
   );
@@ -69,9 +48,12 @@ afterEach(() => {
 describe("retired entries", () => {
   it("keeps only the surviving sidebar entries", async () => {
     renderAt("/workstation/static-classroom");
-    expect(await screen.findByRole("link", { name: "工作台" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "项目" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "模型槽位" })).toBeTruthy();
+    // jsdom is narrower than the compact breakpoint, so start from the expanded sidebar.
+    fireEvent.click(await screen.findByRole("button", { name: "展开导航" }));
+    expect(await screen.findByRole("link", { name: "新建 Bot" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "创建项目" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "模型槽位" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "工作台" })).toBeNull();
     expect(screen.queryByRole("link", { name: "静态课堂演示" })).toBeNull();
     expect(screen.queryByRole("link", { name: "DeepSeek" })).toBeNull();
   });
@@ -96,12 +78,5 @@ describe("retired entries", () => {
     renderAt("/workstation");
     expect(await screen.findByLabelText("产品想法")).toBeTruthy();
     expect(screen.queryByTestId("retired-run-notice")).toBeNull();
-  });
-
-  it("links a historical deepseek run to the read-only workstation, not /deepseek", async () => {
-    renderAt("/projects");
-    const link = await screen.findByRole("link", { name: /历史 DeepSeek 运行/ });
-    expect(link.getAttribute("href")).toBe("/workstation/legacy-run");
-    expect(screen.getByText("只读")).toBeTruthy();
   });
 });

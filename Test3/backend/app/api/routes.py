@@ -3,23 +3,37 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ValidationError
 
 from app.errors import (
     AgentOutputError,
     DeepSeekRetired,
+    GrantRejected,
     IllegalTransition,
     ImportInProgress,
     RevisionConflict,
     ValidationFailed,
 )
 from app.events.bus import BUS
+from app.execution.run_lock import RunLockBusy
+from app.execution.run_profile import run_approved_baseline_hashes, run_execution_profile
+from app.execution.trace_log import build_execution_trace, last_step_summary, step_count
 from app.schemas.design_input import DesignRunCreate
-from app.services.runtime import Workbench
+from app.schemas.execution_grant import ExecutionGrant, ExecutionGrantCreate
+from app.services.runtime import (
+    AssigneeNotMember,
+    AssignmentBotNotFound,
+    AssignmentForbidden,
+    AssignmentRunReadOnly,
+    Workbench,
+)
+from app.workflow.evidence import evidence_for_run
 
 router = APIRouter()
 
@@ -51,8 +65,43 @@ class ConfirmBody(BaseModel):
     confirm: bool = False
 
 
+class ScheduleRequest(BaseModel):
+    task_codes: list[str] | None = None
+
+
+class AssignmentBody(BaseModel):
+    """A1 dispatch overlay write.  ``assignee_bot_id=None`` clears the overlay.
+
+    ``expected_revision`` is the task-level revision (the same CAS source as
+    the task control routes); the client reads it from the task/monitor row.
+    """
+
+    assignee_bot_id: str | None
+    expected_revision: int
+
+
+class EnableExecutionProfileBody(BaseModel):
+    execution_profile: Literal["granted_v1"]
+    approved_baseline_hashes: dict[str, str]
+    approved_plan_hash: str = ""
+    allowed_tool_refs: list[str] = []
+
+
 def wb(request: Request) -> Workbench:
     return request.app.state.workbench
+
+
+async def _assignee_names(bench: Workbench, project_id: str) -> dict[str, str]:
+    """Read-time assignee display names.
+
+    Tolerates minimal/test workbenches without a bot directory: the overlay
+    then falls back to bot ids instead of failing the whole read endpoint.
+    """
+
+    lookup = getattr(bench, "member_display_names", None)
+    if lookup is None:
+        return {}
+    return await lookup(project_id)
 
 
 def _retired(exc: DeepSeekRetired) -> HTTPException:
@@ -80,8 +129,27 @@ async def create_project(body: CreateProject, request: Request) -> dict[str, Any
 
 
 @router.get("/projects")
-async def list_projects(request: Request) -> list[dict[str, Any]]:
-    return list(wb(request).projects.values())
+async def list_projects(request: Request, include_archived: bool = False) -> list[dict[str, Any]]:
+    projects = list(wb(request).projects.values())
+    if include_archived:
+        return projects
+    return [project for project in projects if not project.get("archived")]
+
+
+@router.post("/projects/{project_id}/archive")
+async def archive_project(project_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).set_project_archived(project_id, True)
+    except KeyError as exc:
+        raise HTTPException(404, "project not found") from exc
+
+
+@router.post("/projects/{project_id}/restore")
+async def restore_project(project_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return wb(request).set_project_archived(project_id, False)
+    except KeyError as exc:
+        raise HTTPException(404, "project not found") from exc
 
 
 @router.post("/projects/{project_id}/runs")
@@ -94,7 +162,7 @@ async def create_run(project_id: str, body: CreateRun, request: Request) -> dict
         started = await bench.start_idea(run)
     except (AgentOutputError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"run": _run_view(run), "result": started}
+    return {"run": _run_view(run), "result": started, "workflow": bench.workflow_projection(run)}
 
 
 @router.post("/projects/{project_id}/design-runs")
@@ -123,7 +191,55 @@ async def list_runs(request: Request) -> list[dict[str, Any]]:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request) -> dict[str, Any]:
-    return _run_view(_run(request, run_id))
+    run = _run(request, run_id)
+    return {**_run_view(run), "workflow": wb(request).workflow_projection(run)}
+
+
+@router.get("/runs/{run_id}/monitor")
+async def monitor(run_id: str, request: Request) -> dict[str, Any]:
+    bench = wb(request)
+    run = _run(request, run_id)
+    names = await _assignee_names(bench, run.project_id)
+    return bench.monitor_snapshot(run, assignee_names=names)
+
+
+@router.post("/runs/{run_id}/reconcile")
+async def reconcile_run(run_id: str, request: Request) -> dict[str, Any]:
+    """Report interrupted tasks; never replays them automatically."""
+    return wb(request).reconcile_run(_run(request, run_id))
+
+
+class ReconciliationBody(BaseModel):
+    decision: str
+    expected_revision: int
+    reason: str = ""
+    verified_safe_scope: str = ""
+    risk_accepted: bool = False
+    attempt_id: str = ""
+
+
+@router.post("/runs/{run_id}/reconcile/{task_code}")
+async def resolve_reconciliation(run_id: str, task_code: str, body: ReconciliationBody, request: Request) -> Any:
+    actor = (request.headers.get("X-Bot-Id") or "").strip()
+    if not actor:
+        raise HTTPException(400, "X-Bot-Id header is required")
+    run = _run(request, run_id)
+    try:
+        return await wb(request).resolve_reconciliation(
+            run,
+            task_code,
+            body.decision,
+            body.expected_revision,
+            actor=actor,
+            reason=body.reason,
+            verified_safe_scope=body.verified_safe_scope,
+            risk_accepted=body.risk_accepted,
+            attempt_id=body.attempt_id,
+        )
+    except RevisionConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/runs/{run_id}/stages")
@@ -169,17 +285,136 @@ async def resolve_gate(gate_id: str, body: GateResolve, request: Request) -> dic
         raise HTTPException(400, str(exc)) from exc
 
 
+def _public_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
+    """Attempt view without the step bodies, plus a list-safe step summary."""
+
+    view = {key: value for key, value in attempt.items() if key != "execution_steps"}
+    view["execution_step_count"] = step_count(attempt)
+    view["last_execution_step"] = last_step_summary(attempt)
+    return view
+
+
+def _public_task(task: dict[str, Any], assignee_names: dict[str, str] | None = None) -> dict[str, Any]:
+    """Task API view without task-scoped memory data or full trace text.
+
+    Task/role memory is served by the membership-checked role-memory routes;
+    raw task endpoints must not bypass that read ACL.  Step-level execution
+    output lives behind the dedicated execution-trace route so a task list
+    response cannot carry large model/tool payloads.
+
+    The A1 assignment overlay is public (reaching the run is the permission):
+    it is normalized to ``None`` when unassigned and the display name is
+    filled at read time from the current member/bot directory.
+    """
+
+    public = dict(task)
+    public.pop("role_memory", None)
+    attempt = public.get("attempt")
+    if isinstance(attempt, dict):
+        public["attempt"] = _public_attempt(attempt)
+    history = public.get("attempt_history")
+    if isinstance(history, list):
+        public["attempt_history"] = [
+            _public_attempt(item) if isinstance(item, dict) else item for item in history
+        ]
+    assignment = public.get("assignment")
+    if isinstance(assignment, dict) and assignment.get("assignee_bot_id"):
+        bot_id = str(assignment["assignee_bot_id"])
+        public["assignment"] = {
+            "assignee_bot_id": bot_id,
+            "assignee_display_name": str(
+                (assignee_names or {}).get(bot_id) or assignment.get("assignee_display_name") or bot_id
+            ),
+            "assigned_by_bot_id": str(assignment.get("assigned_by_bot_id") or ""),
+            "assigned_at": str(assignment.get("assigned_at") or ""),
+            "revision": int(assignment.get("revision") or 0),
+        }
+    else:
+        public["assignment"] = None
+    return public
+
+
 @router.get("/runs/{run_id}/tasks")
 async def tasks(run_id: str, request: Request) -> list[dict[str, Any]]:
-    return list(_run(request, run_id).tasks.values())
+    bench = wb(request)
+    run = _run(request, run_id)
+    names = await _assignee_names(bench, run.project_id)
+    return [_public_task(task, assignee_names=names) for task in run.tasks.values()]
+
+
+@router.put("/runs/{run_id}/tasks/{task_code}/assignment")
+async def put_task_assignment(run_id: str, task_code: str, request: Request) -> Any:
+    """A1: Leader-only dispatch overlay write (single task, CAS guarded).
+
+    The overlay only annotates who is responsible in class; execution and
+    role memory stay role-scoped and the scheduler is unchanged.  Terminated
+    or done runs are read-only here.
+    """
+
+    bench = wb(request)
+    actor = (request.headers.get("X-Bot-Id") or "").strip()
+    if not actor:
+        return _json_error(400, "validation_error", "X-Bot-Id header is required")
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    if not isinstance(payload, dict):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = AssignmentBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    if task_code not in run.tasks:
+        return _json_error(404, "task_not_found", f"task not found: {task_code}")
+    try:
+        updated = await bench.assign_task(
+            run, task_code, body.assignee_bot_id, body.expected_revision, actor=actor
+        )
+    except AssignmentBotNotFound as exc:
+        return _json_error(404, "bot_not_found", str(exc))
+    except AssignmentForbidden as exc:
+        return _json_error(403, "forbidden", str(exc))
+    except AssignmentRunReadOnly as exc:
+        return _json_error(409, "run_read_only", str(exc))
+    except AssigneeNotMember as exc:
+        return _json_error(400, "assignee_not_member", str(exc))
+    except RevisionConflict as exc:
+        return _json_error(409, "revision_conflict", str(exc))
+    except RunLockBusy:
+        return _json_error(409, "run_busy", "run_busy")
+    except ValidationFailed as exc:
+        return _json_error(400, "validation_error", str(exc))
+    names = await _assignee_names(bench, run.project_id)
+    return _public_task(updated, assignee_names=names)
+
+
+@router.get("/runs/{run_id}/tasks/{task_code}/execution-trace")
+async def execution_trace(run_id: str, task_code: str, request: Request) -> dict[str, Any]:
+    """Step-level observation for one task's attempts.
+
+    Read-only and membership-free like ``GET /runs/{run_id}/tasks``: reaching the
+    run is the permission.  A task that exists but has not run returns
+    ``attempts: []`` rather than 404.
+    """
+
+    task = _run(request, run_id).tasks.get(task_code)
+    if task is None:
+        raise HTTPException(404, "task not found")
+    return build_execution_trace(run_id, task_code, task)
 
 
 @router.get("/tasks/{task_id}")
 async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
-    for run in wb(request).runs.values():
+    bench = wb(request)
+    for run in bench.runs.values():
         for task in run.tasks.values():
             if task["id"] == task_id or task["code"] == task_id:
-                return task
+                names = await _assignee_names(bench, run.project_id)
+                return _public_task(task, assignee_names=names)
     raise HTTPException(404, "task not found")
 
 
@@ -190,13 +425,19 @@ async def task_control(task_id: str, action: str, body: ControlBody, request: Re
         for code, task in run.tasks.items():
             if task["id"] == task_id or code == task_id:
                 try:
-                    return await bench.control_task(
+                    updated = await bench.control_task(
                         run, code, action, body.expected_revision, body.reason, payload=body.payload
                     )
+                    if isinstance(updated, dict):
+                        names = await _assignee_names(bench, run.project_id)
+                        return _public_task(updated, assignee_names=names)
+                    return updated
                 except DeepSeekRetired as exc:
                     raise _retired(exc) from exc
                 except RevisionConflict as exc:
                     raise HTTPException(409, str(exc)) from exc
+                except GrantRejected as exc:
+                    return _json_error(exc.status_code, exc.category, exc.message)
                 except (IllegalTransition, ValidationFailed) as exc:
                     raise HTTPException(400, str(exc)) from exc
     raise HTTPException(404, "task not found")
@@ -213,6 +454,8 @@ async def resume_run(run_id: str, request: Request) -> dict[str, Any]:
         return _run_view(wb(request).set_run_control(_run(request, run_id), "resume"))
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except ValidationFailed as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/terminate")
@@ -377,20 +620,118 @@ async def put_models(body: dict[str, Any], request: Request) -> dict[str, Any]:
 @router.post("/config/models/test")
 async def test_models() -> dict[str, Any]:
     # 【修改点】不再返回假成功，真实检查密钥
-    from app.settings import get_settings
     import os
+
+    from app.settings import get_settings
     
     if not os.getenv("DASHSCOPE_API_KEY") and not get_settings().dashscope_api_key:
         raise HTTPException(status_code=400, detail="DASHSCOPE_API_KEY is not set. Cannot run live probe.")
     return {"ok": True, "note": "API key found. Use 'make check-models' to execute the live probe."}
 
 
-@router.post("/runs/{run_id}/schedule")
-async def schedule(run_id: str, request: Request) -> dict[str, Any]:
+def _json_error(status_code: int, category: str, detail: str) -> JSONResponse:
+    """contracts C.5 error body: {"error_category": ..., "detail": ...}."""
+    return JSONResponse(status_code=status_code, content={"error_category": category, "detail": detail})
+
+
+@router.post("/runs/{run_id}/execution-grants", status_code=201)
+async def create_execution_grant(run_id: str, request: Request) -> JSONResponse:
     try:
-        started = await wb(request).schedule_once(_run(request, run_id))
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    if not isinstance(payload, dict):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = ExecutionGrantCreate.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    # execution_profile is server-owned. A legacy run cannot opt into grants via
+    # this endpoint, and there is no route that downgrades granted_v1 to legacy.
+    if run_execution_profile(run) != "granted_v1":
+        return _json_error(403, "profile_not_granted_v1", "run is not granted_v1")
+    if body.approved_baseline_hashes != run_approved_baseline_hashes(run):
+        return _json_error(409, "baseline_stale", "approved_baseline_hashes do not match the run baseline")
+    grant = ExecutionGrant(
+        grant_id=str(uuid.uuid4()),
+        run_id=run_id,
+        status="active",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        **body.model_dump(),
+    )
+    await bench.add_grant(grant)
+    return JSONResponse(status_code=201, content=grant.model_dump())
+
+
+@router.get("/runs/{run_id}/execution-grants")
+async def list_execution_grants(run_id: str, request: Request) -> Any:
+    bench = wb(request)
+    if run_id not in bench.runs:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    grants = await bench.grants_for_run(run_id)
+    return {"items": [grant.model_dump() for grant in grants]}
+
+
+@router.post("/runs/{run_id}/execution-profile")
+async def enable_execution_profile(run_id: str, request: Request) -> JSONResponse:
+    """Server-owned enable path: granted_v1 only, never a legacy downgrade."""
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    if not isinstance(payload, dict):
+        return _json_error(400, "validation_error", "request body must be a JSON object")
+    try:
+        body = EnableExecutionProfileBody.model_validate(payload)
+    except ValidationError as exc:
+        return _json_error(400, "validation_error", str(exc))
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    try:
+        result = await bench.enable_granted_execution(
+            run_id,
+            body.approved_baseline_hashes,
+            approved_plan_hash=body.approved_plan_hash,
+            allowed_tool_refs=body.allowed_tool_refs,
+        )
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
+    except ValidationFailed as exc:
+        return _json_error(400, "validation_error", str(exc))
+    return JSONResponse(status_code=200, content=result)
+
+
+@router.get("/runs/{run_id}/execution-profile")
+async def get_execution_profile(run_id: str, request: Request) -> Any:
+    bench = wb(request)
+    run = bench.runs.get(run_id)
+    if run is None:
+        return _json_error(404, "run_not_found", f"run not found: {run_id}")
+    return {
+        "run_id": run_id,
+        "execution_profile": run_execution_profile(run),
+        "approved_baseline_hashes": run_approved_baseline_hashes(run),
+        "execution_safety_ready": bool(getattr(bench, "execution_safety_ready", False)),
+        "evidence": evidence_for_run(bench, run),
+    }
+
+
+@router.post("/runs/{run_id}/schedule")
+async def schedule(run_id: str, request: Request, body: ScheduleRequest | None = None) -> Any:
+    run = _run(request, run_id)
+    requested = None if body is None or body.task_codes is None else set(body.task_codes)
+    try:
+        started = await wb(request).schedule_once(run, task_codes=requested)
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
     return {"started": started}
 
 
@@ -399,12 +740,22 @@ async def accept_run(run_id: str, request: Request) -> dict[str, Any]:
     run = _run(request, run_id)
     if "spec" not in run.artifacts:
         raise HTTPException(409, "SPEC not ready; run has no spec artifact yet")
+    bench = wb(request)
     try:
-        return await wb(request).accept(run)
+        result = await bench.accept(run)
     except DeepSeekRetired as exc:
         raise _retired(exc) from exc
+    except GrantRejected as exc:
+        return _json_error(exc.status_code, exc.category, exc.message)
     except (IllegalTransition, ValidationFailed) as exc:
         raise HTTPException(400, str(exc)) from exc
+    from app.workflow.evidence import evidence_for_run
+
+    return {
+        **result,
+        "evidence": evidence_for_run(bench, run),
+        "workflow": bench.workflow_projection(run),
+    }
 
 
 def _run(request: Request, run_id: str):

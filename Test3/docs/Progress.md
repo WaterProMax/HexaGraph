@@ -1,5 +1,23 @@
 # Test3 阶段记录
 
+## 2026-11-26 讨论流补齐「需求规格 → 设计规格」步骤
+
+- 问题：讨论流（项目工作台）在 SPEC 批准后由 Leader 一次生成 SPEC/DESIGN/PLAN，直接开 PLAN 关卡；Design.md 第 5 步（架构师 + 设计检查 + 双评审 + DESIGN 基线确认）在前后端都缺失，DESIGN 基线在批准 PLAN 时被搭车冻结。
+- 修复（对齐 Design.md 第 12–13 章）：
+  - 新增 `POST /api/discussion-sessions/{id}/design`：Leader 先把已批准规格整理成结构化 SPEC（`leader_spec.md`），建阶段 5 运行，复用旧想法流 `run_design`（architect + `check_design` + review_arch/review_quality 双评审）开出 `DESIGN基线确认` 关卡；幂等，不重复生成。
+  - DESIGN 批准 → 冻结 DESIGN 基线 → 自动接 Leader 任务拆解（第 6 步）→ PLAN 关卡；`/plan` 要求 DESIGN 已确认（否则 409 `design_not_approved`），已有计划时幂等返回。
+  - PLAN 批准不再搭车冻结 DESIGN；无 DESIGN 关卡的旧讨论运行保留兼容路径。
+  - workflow 阶段与投影补 `designing` / `design_pending` 与 `design_approved`；会话列表/详情均附 `workflow`。
+  - 连带修复：批准后规划调用被讨论检查点 `CooperativeStop(approved)` 拦截的回归（`_call` 增加 `checkpoint=False`，规划类调用专用）。
+  - 前端：进度条七步（新增「设计规格」）、审批按钮改「通过，进入设计规格」、侧栏设计确认面板（模块摘要/评审得分/批准/驳回重写）、`deriveStage` 按 `workflow.design_approved` 分流。
+- 验证（本轮实际执行）：
+  - 后端 `pytest -q -m "not live"` 全量通过（含新增设计阶段集成测试与 admission/idempotency 更新）；OpenAPI 快照按新接口再生。
+  - 前端 546 项 Vitest、`tsc -b && vite build` 通过。
+  - scripted 后端（discussion-e2e fixture，模拟执行器）浏览器回归：discussion-flow（含设计确认新步骤）/ human-intervention / role-memory 全部通过；未调用真实模型。
+- 文档：docs/API.md、docs/design/UI-Design-System.md（v1.34）、UI-Redesign-Log.md 同步；截图 `docs/plans/screenshots/ui-redesign/ui-r34-design-approval.png`。
+
+---
+
 ## 2026-11-15 设计规格工作流修复与证据口径校正
 
 - 本轮修复分支：`fix/design-spec-workflow-validation`，基于 PR23 head `87a23cdf6606430b135725f186637726f4accb2f`。

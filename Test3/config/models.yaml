@@ -6,13 +6,13 @@ limits:
   requests_per_minute: 120
 slots:
   flagship:
-    model: qwen3.8-max-0902
+    model: deepseek-v4.1-flash-1017
     temperature: 0.3
-    max_tokens: 8192
-    fallback: qwen3.7-plus
+    max_tokens: 65536
+    fallback: qwen3.8-max-0902
     json_mode: true
     tool_calls: true
-    context_window: 32768
+    context_window: 1000000
     price_per_1k_in: 0.0
     price_per_1k_out: 0.0
     extra_body: {}

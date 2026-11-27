@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -75,17 +76,31 @@ class TaskToolset:
             ),
         ]
 
+    @staticmethod
+    def _command_args(args: dict[str, Any]) -> list[str]:
+        """兼容模型传命令的三种写法：数组、JSON 字符串数组、空白分隔的普通字符串。"""
+        raw: Any = args.get("cmd") or args.get("command") or []
+        if isinstance(raw, list):
+            return [str(part) for part in raw]
+        text = str(raw).strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(part) for part in parsed]
+        return text.split() if text else []
+
     async def execute(self, name: str, arguments: dict[str, Any] | None) -> Any:
         args = arguments or {}
         if name == "write_file":
             return self._write_file(str(args.get("path") or ""), str(args.get("content") or ""))
         if name == "run_command":
-            cmd = args.get("cmd") or args.get("command") or []
-            if isinstance(cmd, str):
-                cmd = cmd.split()
+            cmd = self._command_args(args)
             try:
                 return await run_command(
-                    list(cmd),
+                    cmd,
                     cwd=self.root,
                     whitelist=self.whitelist,
                     timeout=self.timeout,

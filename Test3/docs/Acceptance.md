@@ -149,3 +149,13 @@ UI_PLAYWRIGHT_MODULE=/tmp/hexagraph-e2e/node_modules/playwright \
 计划写下的 pre-fix 基线（前端 11 测 + tsc；后端 138 过 / 1 失败）**不是**本轮结果。空队列失败用测试夹具 `test3_scripted_fixture=""`（空字符串，关闭 study-room 自动灌队列；不是环境值 `none`）复现为 `POST /runs` 400，已在测试夹具灌入 `scripted_m1_queue()`，断言未删。
 
 本轮未沙箱回归：后端 `179 passed, 1 deselected`；前端 `tsc` + `89 passed / 11 files`。逐按钮 mock 表 10 行见 `docs/superpowers/evidence/task-5-click-log.md`。真实 HTTP scripted 覆盖成功路径的暂停/恢复/调度与缺项刷新；驳回 DESIGN 因离线队列只有一次成功导入，只在 mock 点击。离线成功 ≠ 真实模型通过。
+
+## 9. 首版关闭条件（P7）
+
+首版关闭以真实、可打开的 PR 为准。当前记录仍是 `BLOCKED`（缺少 C.7 `github_write`，`github_pr_url=null`），关闭校验按设计失败：
+
+- 关闭门槛测试：`Test3/backend/tests/unit/test_pr_record_not_blocked_as_done.py::test_real_p1_pr_record_is_complete`
+- 校验函数：`assert_pr_record_complete`
+- 证据与待办：`Test3/docs/plans/P7-report.md` 的「关闭节」
+
+本指针不改变上面历史验收口径；真实 PR 由父代理在整期独立验收通过且用户授权后幂等创建，再更新记录并重跑关闭校验。

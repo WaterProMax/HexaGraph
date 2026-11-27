@@ -5,6 +5,7 @@ import {
   layoutLayered,
   rankGapFor,
   routePath,
+  routePathOrtho,
   sampleRoute,
   structureKey,
   type LayeredEdgeInput,
@@ -134,6 +135,22 @@ describe("layoutLayered", () => {
     const list = edges([["A", "B"], ["A", "C"], ["B", "D"], ["C", "D"]]);
     expect(layoutLayered(ids, list)).toEqual(layoutLayered(ids, list));
   });
+
+  it("keeps parallel edges between adjacent columns, each fanned to its own route", () => {
+    const ids = ["A", "B"];
+    const list = [
+      { id: "contract", source: "A", target: "B" },
+      { id: "task1", source: "A", target: "B" },
+      { id: "task2", source: "A", target: "B" },
+    ];
+    const dropped = layoutLayered(ids, list);
+    expect(dropped.dropped).toEqual(["task1", "task2"]);
+    const layout = layoutLayered(ids, list, { parallelEdges: true });
+    expect(layout.dropped).toEqual([]);
+    expect(layout.routes.contract).toEqual({ kind: "forward", lanes: [], lift: -22 });
+    expect(layout.routes.task1).toEqual({ kind: "forward", lanes: [], lift: 0 });
+    expect(layout.routes.task2).toEqual({ kind: "forward", lanes: [], lift: 22 });
+  });
 });
 
 describe("routePath", () => {
@@ -146,6 +163,38 @@ describe("routePath", () => {
     const d = routePath(layout.routes["A>B"], s, t);
     expect(d.startsWith(`M${s.x},${s.y}`)).toBe(true);
     expect(d.endsWith(`${t.x},${t.y}`)).toBe(true);
+  });
+});
+
+describe("routePathOrtho", () => {
+  it("draws only straight segments and keeps start/end", () => {
+    const ids = ["A", "B"];
+    const list = edges([["A", "B"]]);
+    const layout = layoutLayered(ids, list);
+    const s = { x: layout.positions.A.x + W, y: layout.positions.A.y + H / 2 };
+    const t = { x: layout.positions.B.x, y: layout.positions.B.y + H / 2 };
+    const d = routePathOrtho(layout.routes["A>B"], s, t);
+    expect(d.startsWith(`M${s.x},${s.y}`)).toBe(true);
+    expect(d.endsWith(`${t.x},${t.y}`)).toBe(true);
+    // 直线折线：没有三次贝塞尔曲线命令。
+    expect(/[a-z]/i.test(d.replace(/[MLQ\d.,\s-]/g, ""))).toBe(false);
+    expect(d.includes(" C")).toBe(false);
+  });
+
+  it("offsets parallel edges with a straight vertical step", () => {
+    const ids = ["A", "B"];
+    const list = [
+      { id: "a", source: "A", target: "B" },
+      { id: "b", source: "A", target: "B" },
+    ];
+    const layout = layoutLayered(ids, list, { parallelEdges: true });
+    const s = { x: layout.positions.A.x + W, y: layout.positions.A.y + H / 2 };
+    const t = { x: layout.positions.B.x, y: layout.positions.B.y + H / 2 };
+    const d1 = routePathOrtho(layout.routes.a, s, t);
+    const d2 = routePathOrtho(layout.routes.b, s, t);
+    expect(d1.includes(" C")).toBe(false);
+    expect(d2.includes(" C")).toBe(false);
+    expect(d1).not.toBe(d2);
   });
 });
 
